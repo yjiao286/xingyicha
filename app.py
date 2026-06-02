@@ -668,6 +668,54 @@ def extract_prices(text):
                     result['totalPrice'] = val
                     break
 
+    # ── Channel 5: Docx pipe-separated total (总计 | 893000) ── confidence: 0.83
+    if result['totalPriceInTax'] is None:
+        # 合计 row with | separators: look for a 合计 row where one of the last
+        # columns has a large number (>= 10000, to avoid matching small sub-totals)
+        for m in re.finditer(r'合计\s*\|.+', text):
+            row = m.group()
+            # Extract all pipe parts
+            parts = [p.strip() for p in row.split('|')]
+            nums = []
+            for p in parts:
+                nm = re.search(r'([\d,]+\.?\d*)', p.replace(',', '').replace('，', ''))
+                if nm:
+                    nums.append(float(nm.group(1)))
+            # The total summary row has large numbers (>= 10000) in the last columns
+            large_nums = [n for n in nums if n >= 10000]
+            if len(large_nums) >= 2:
+                # Last two large numbers are typically 不含税总价 and 含税总价
+                result['totalPrice'] = large_nums[-2]
+                result['totalPriceInTax'] = large_nums[-1]
+                break
+            elif len(large_nums) == 1 and large_nums[0] >= 50000:
+                result['totalPrice'] = large_nums[0]
+                result['totalPriceInTax'] = large_nums[0]
+                break
+
+        # Fallback: simple "总计 | number" pattern
+        if result['totalPrice'] is None:
+            m = re.search(r'总计\s*\|\s*(\d{4,10}(?:\.\d{2})?)', text)
+            if m:
+                val = _parse_amount(m.group(1))
+                if val >= 100:
+                    result['totalPrice'] = val
+                    result['totalPriceInTax'] = val
+
+        # Fallback: "不含税总价：" / "含税总价：" labels
+        if result['totalPrice'] is None:
+            m = re.search(r'不含税总价[：:]\s*([\d,]+\.?\d*)', text)
+            if m:
+                val = _parse_amount(m.group(1))
+                if val >= 100:
+                    result['totalPrice'] = val
+        if result['totalPriceInTax'] is None:
+            m = re.search(r'含税总价[：:]\s*([\d,]+\.?\d*)', text)
+            if m:
+                val = _parse_amount(m.group(1))
+                if val >= 100:
+                    result['totalPriceInTax'] = val
+
     # ── Tax rate decomposition ──
     _extract_tax_decomposition(text, bid_section if bid_section else text, result)
 
@@ -722,8 +770,10 @@ def _extract_structured_items(text, result):
     and generic cost line detection."""
 
     # ── Enhanced section discovery ──
+    # Order matters: longer keywords first to avoid partial matches
     section_keywords = [
-        '分项报价表', '分项报价', '报价明细', '价格表', '开标一览',
+        '报价明细表', '报价一览表', '分项报价表', '经费总表', '费用明细表',
+        '分项报价', '报价明细', '价格表', '开标一览',
         '报价清单', '费用明细', '价格清单', '投标报价', '价格构成',
         '设备清单', '费用清单', '报价构成', '价格明细', '成本明细',
         '项目报价', '费用构成', '费用表'
@@ -734,7 +784,7 @@ def _extract_structured_items(text, result):
     kw_pattern = '|'.join(re.escape(kw) for kw in section_keywords)
     for m in re.finditer(
         r'(?:^|\n)(?:[一二三四五六七八九十\d]+[、.。]\s*|\d+(?:\.\d+)+\s*|\d+\s+)?(' +
-        kw_pattern + r')\s*\n', text
+        kw_pattern + r')[^\n]*\n', text
     ):
         pos = m.start()
         # Skip if preceded by dots (TOC entry)
@@ -760,10 +810,92 @@ def _extract_structured_items(text, result):
         break
 
     if bid_section:
-        _parse_pdf_bid_table(bid_section, result)
+        # Detect docx pipe-separated tables (vs PDF space-separated)
+        pipe_lines = len(re.findall(r'\n[^|\n]+\|[^|\n]+\|[^\n]+', bid_section))
+        if pipe_lines >= 2:
+            _parse_docx_bid_table(bid_section, result)
+        else:
+            _parse_pdf_bid_table(bid_section, result)
+
+    # ── Global fallback: scan full text for docx pipe tables ──
+    # (section-based approach may miss tables far from the section header)
+    if not result.get('subItemPrice'):
+        # Find any pipe-separated table with header keywords anywhere in the text
+        pipe_lines_global = len(re.findall(r'\n[^|\n]+\|[^|\n]+\|[^\n]+', text))
+        if pipe_lines_global >= 3:
+            # Extract the region with the most dense pipe lines
+            _parse_docx_bid_table(text, result)
 
     # ── Generic cost line extraction ──
-    # Match lines with: Chinese name (2-20 chars containing 费/成本/支出 etc) + large number (>= 100)
+    # Normalize cost names for dedup and noise filtering
+    def _norm_cost_name(name):
+        n = name.strip()
+        n = re.sub(r'^本项目', '', n)
+        n = re.sub(r'为$', '', n)
+        # Filter category headers (not real cost items)
+        if re.search(r'(?:项目预计成本|预计成本|小计|合计|总价|总计)', n):
+            return None
+        return n.strip()
+
+    # Pattern A: "本项目材料费为   340,000.00元" (defense industry descriptive format)
+    desc_cost_pat = re.compile(
+        r'本项目\s*([一-鿿]{2,20}(?:费|成本|支出|收益|利润))\s*为\s*([\d,]+\.?\d*)\s*元',
+        re.MULTILINE
+    )
+    seen_names = set()
+    for m in desc_cost_pat.finditer(text):
+        raw_name = m.group(1).strip()
+        name = _norm_cost_name(raw_name)
+        if not name or name in seen_names:
+            continue
+        val = float(m.group(2).replace(',', ''))
+        if val == 0:
+            seen_names.add(name)
+            continue
+        if val >= 100:
+            seen_names.add(name)
+            if '收益' in name or '利润' in name:
+                if result['revenue'] is None:
+                    result['revenue'] = val
+            else:
+                result['costDetails'].append({
+                    'priceName': name,
+                    'totalPrice': val,
+                    'unit': None, 'count': None, 'unitPrice': None,
+                    'tax': None, 'totalPriceInTax': val,
+                    'extras': {}, 'details': []
+                })
+
+    # Pattern B: Docx pipe-separated cost lines: "材料费 | 340000"
+    pipe_cost_pat = re.compile(
+        r'(?:^|\n)\s*(?:[（(][一二三四五六七八九十\d]+[）)]\s*)?'
+        r'(\d+\.\d+\s*)?'   # optional "1.1 " prefix
+        r'([一-鿿]{2,20}(?:费|成本|支出|收益|利润|不可预见))\s*\|\s*(\d{3,}(?:\.\d{2})?)',
+        re.MULTILINE
+    )
+    for m in pipe_cost_pat.finditer(text):
+        raw_name = m.group(2).strip() if m.group(2) else m.group(1).strip()
+        name = _norm_cost_name(raw_name)
+        if not name or name in seen_names:
+            continue
+        val = float(m.group(3).replace(',', ''))
+        if val == 0:
+            seen_names.add(name)
+            continue
+        seen_names.add(name)
+        if '收益' in name or '利润' in name:
+            if result['revenue'] is None:
+                result['revenue'] = val
+        else:
+            result['costDetails'].append({
+                'priceName': name,
+                'totalPrice': val,
+                'unit': None, 'count': None, 'unitPrice': None,
+                'tax': None, 'totalPriceInTax': val,
+                'extras': {}, 'details': []
+            })
+
+    # Pattern C: Whitespace-separated cost lines (original pattern, kept as fallback)
     cost_pattern = re.compile(
         r'(?:^|\n)\s*([一-鿿]{2,20}(?:费|成本|支出|投入|工资|薪酬|酬金|折旧|摊销|租赁|租金|'
         r'维护|保养|检测|试验|测试|设计|开发|研制|采购|运输|差旅|会议|培训|办公|印刷|'
@@ -772,12 +904,15 @@ def _extract_structured_items(text, result):
         r'收益|利润|税金|公积金|基金)[一-鿿]{0,6})\s+(\d{4,}(?:\.\d{2})?)',
         re.MULTILINE
     )
-    seen_names = set()
     for m in cost_pattern.finditer(text):
-        name = m.group(1).strip()
-        if name in seen_names:
+        raw_name = m.group(1).strip()
+        name = _norm_cost_name(raw_name)
+        if not name or name in seen_names:
             continue
         val = float(m.group(2).replace(',', ''))
+        if val == 0:
+            seen_names.add(name)
+            continue
         if val >= 100:
             seen_names.add(name)
             if '收益' in name or '利润' in name:
@@ -1012,7 +1147,37 @@ def _assign_columns(item, all_nums, smalls, larges, col_order, uses_wan):
 
 def _extract_summary_total(section, result):
     """Extract total/summary line from pricing table section."""
-    for kw in ['合计', '总价', '小计', '总计']:
+    # Docx pipe format: look for "总计 | 893000" or "合计 | ... | 893000元 | 1009090元"
+    for kw in ['总计', '合计', '总价', '小计']:
+        # Pattern: "总计 | 893000" (simple pipe row)
+        m = re.search(kw + r'\s*\|\s*(\d{4,12}(?:\.\d{2})?)', section)
+        if m:
+            val = float(m.group(1))
+            if val >= 10000:
+                result['totalPrice'] = val
+                if result['totalPriceInTax'] is None:
+                    result['totalPriceInTax'] = val
+                return
+        # Pattern: "合计 | ... (many cols) ... | 893000元 | 1009090元" (wide pipe row)
+        # Search for rows starting with kw and having 2+ large numbers near the end
+        for row_m in re.finditer(kw + r'\s*\|.+', section):
+            row = row_m.group()
+            parts = [p.strip() for p in row.split('|')]
+            nums = []
+            for p in parts:
+                nm = re.search(r'([\d,]+\.?\d+)', p.replace(',', '').replace('，', ''))
+                if nm:
+                    nums.append(float(nm.group(1)))
+            large = [n for n in nums if n >= 50000]
+            if len(large) >= 2:
+                result['totalPrice'] = large[-2]
+                result['totalPriceInTax'] = large[-1]
+                return
+            elif len(large) == 1 and large[0] >= 100000:
+                result['totalPrice'] = large[0]
+                result['totalPriceInTax'] = large[0]
+                return
+        # Standard ws-separated
         m = re.search(kw + r'\s+([\d.]+)\s*万', section)
         if m:
             result['totalPrice'] = _parse_amount(m.group(1) + '万')
@@ -1021,6 +1186,224 @@ def _extract_summary_total(section, result):
         if m:
             result['totalPrice'] = float(m.group(1))
             return
+
+
+def _parse_docx_bid_table(section, result):
+    """Parse a docx pipe-separated (|) pricing table.
+    Handles the 'text | text | number | number | ...' format from docx table extraction.
+    Also parses '科目 | 总价（元，不含税）\n总计 | 893000\n材料费 | 340000' cost summary format."""
+    lines = section.split('\n')
+
+    # -- Sub-item rows: detect rows with multiple | separators and numeric values --
+    sub_items = []
+    # Find the header row: contains column names like 序号|分项|数量|单价|总价|税率
+    # Handle multi-line headers by merging consecutive header candidate lines
+    header_idx = -1
+    HEADER_KW = r'(?:序号|名称|分项|数量|单位|单价|总价|税率|型号|规格|厂家|备注|产品|服务)'
+    for i, line in enumerate(lines):
+        if '|' not in line:
+            continue
+        parts = [p.strip() for p in line.split('|')]
+        col_hits = sum(1 for p in parts if re.search(HEADER_KW, p))
+        if col_hits >= 2:
+            header_idx = i
+            break
+
+    if header_idx >= 0:
+        # Merge multi-line header: scan next lines for header continuations
+        header_parts = [p.strip() for p in lines[header_idx].split('|')]
+        merged_header = lines[header_idx]
+        for j in range(header_idx + 1, min(header_idx + 4, len(lines))):
+            nxt = lines[j].strip()
+            if not nxt or '|' not in nxt:
+                continue
+            nxt_parts = [p.strip() for p in nxt.split('|')]
+            nxt_hits = sum(1 for p in nxt_parts if re.search(HEADER_KW, p))
+            # If this line has header keywords AND no large numbers, it's a continuation
+            has_large_num = any(re.search(r'\d{4,}', p) for p in nxt_parts)
+            if nxt_hits >= 1 and not has_large_num:
+                # Merge: append parts to header line
+                merged_header += ' | ' + nxt
+                header_idx = j  # advance past this line too
+            else:
+                break
+
+        header_parts = [p.strip() for p in merged_header.split('|')]
+        # Infer column positions from merged header
+        col_map = {}
+        for ci, h in enumerate(header_parts):
+            h_clean = re.sub(r'\s+', '', h)
+            if re.search(r'序\s*号', h):
+                col_map['seq'] = ci
+            elif re.search(r'(?:分项\s*)?名\s*称|分项|产品|服务|项目|内容', h):
+                if 'name' not in col_map:
+                    col_map['name'] = ci
+            elif re.search(r'型号|规格|厂家|制造商|品牌', h):
+                col_map['model'] = ci
+            elif re.search(r'数\s*量', h):
+                col_map['count'] = ci
+            elif re.search(r'单\s*价.*?(?:不含|未含税)|不含税.*?单', h):
+                col_map['unit_price_ex'] = ci
+            elif re.search(r'单\s*价.*?(?:含税|含)|含税.*?单', h):
+                col_map['unit_price_in'] = ci
+            elif re.search(r'总\s*价.*?(?:不含|未含税)|不含税.*?总', h):
+                col_map['total_ex'] = ci
+            elif re.search(r'总\s*价.*?(?:含税|含)|含税.*?总', h):
+                col_map['total_in'] = ci
+            elif re.search(r'税\s*率', h):
+                col_map['tax_rate'] = ci
+            elif re.search(r'备\s*注', h):
+                col_map['remark'] = ci
+            elif re.search(r'单\s*位', h):
+                col_map['unit'] = ci
+
+        # If no explicit ex/in split found, use simple heuristics
+        if 'total_ex' not in col_map:
+            for ci, h in enumerate(header_parts):
+                if re.search(r'总\s*价|金\s*额', h) and ci not in col_map.values():
+                    col_map['total_ex'] = ci
+                    break
+        if 'unit_price_ex' not in col_map:
+            for ci, h in enumerate(header_parts):
+                if re.search(r'单\s*价', h) and ci not in col_map.values():
+                    col_map['unit_price_ex'] = ci
+                    break
+        # Total_in: if not found, assign to position after total_ex
+        if 'total_in' not in col_map and 'total_ex' in col_map:
+            total_ex_pos = col_map['total_ex']
+            for ci in range(total_ex_pos + 1, len(header_parts)):
+                if re.search(r'总\s*价|金\s*额', header_parts[ci]) and ci not in col_map.values():
+                    col_map['total_in'] = ci
+                    break
+            if 'total_in' not in col_map:
+                # Default: position after total_ex
+                col_map['total_in'] = total_ex_pos + 1 if total_ex_pos + 1 < len(header_parts) else total_ex_pos
+
+        # Parse data rows
+        prev_name = None
+        for i in range(header_idx + 1, len(lines)):
+            line = lines[i].strip()
+            if not line or '|' not in line:
+                continue
+            if any(line.startswith(kw) for kw in ['合计', '总价', '小计', '总计', '注：', '备注：']):
+                # Extract totals from 合计 row, but only if values are large (>= 50000)
+                # AND only overwrite if we have BOTH values, to avoid partial overwrites
+                parts = [p.strip() for p in line.split('|')]
+                nums = []
+                for p in parts:
+                    m = re.search(r'(\d{3,}(?:\.\d{2})?)', p.replace(',', ''))
+                    if m:
+                        nums.append(float(m.group(1)))
+                large_in_row = [n for n in nums if n >= 50000]
+                if len(large_in_row) >= 2:
+                    # Complete pair: set both with confidence
+                    result['totalPrice'] = large_in_row[-2]
+                    result['totalPriceInTax'] = large_in_row[-1]
+                # Single large value rows are sub-totals — DON'T overwrite
+                continue
+            if re.match(r'^[三四五六七八九十]、', line):
+                break
+
+            parts = [p.strip() for p in line.split('|')]
+
+            # Get name
+            name = parts[col_map['name']].strip() if 'name' in col_map and len(parts) > col_map['name'] else ''
+            # Try second column as name if 'name' column seems wrong
+            if not name or re.search(r'(?:有限公司|有限责任|公司|集团|大学|学院|中心)', name):
+                if len(parts) >= 2:
+                    alt_name = parts[1].strip() if len(parts) > 1 else ''
+                    if alt_name and not re.search(r'(?:有限公司|有限责任|公司|集团)', alt_name):
+                        name = alt_name
+            name = re.sub(r'^\d+(?:\.\d+)?\s*', '', name).strip()
+
+            # Skip company names and header-like rows
+            if re.search(r'(?:有限公司|有限责任|公司|集团|大学|学院)', name):
+                continue
+            # Skip rows where all cells have the same value (section-group headers like "硬件费用 | 硬件费用 | ...")
+            unique_parts = set(p.strip() for p in parts if p.strip())
+            if len(unique_parts) <= 2 and len(parts) >= 4:
+                if all(not re.search(r'\d{4,}', p) for p in parts):
+                    continue
+
+            if not name and prev_name:
+                name = prev_name
+            elif name and len(name) >= 2:
+                prev_name = name
+
+            if len(name) < 2:
+                continue
+
+            # ── Value-based extraction (more reliable than column mapping) ──
+            # Extract ALL numbers from all parts, preserving order
+            all_numbers = []
+            for pi, p in enumerate(parts):
+                # Check for percentage
+                pct_m = re.search(r'(\d{1,2})\s*[%％]', p)
+                if pct_m:
+                    all_numbers.append(('tax', float(pct_m.group(1)), pi))
+                # Check for numeric value
+                nm = re.search(r'([\d,]+\.?\d*)', p.replace(',', '').replace('，', ''))
+                if nm:
+                    val = float(nm.group(1))
+                    # Also check if the part has 元 suffix → price
+                    has_yuan = '元' in p
+                    all_numbers.append(('price' if (val >= 100 or has_yuan) else 'count', val, pi))
+
+            if len(all_numbers) < 2:
+                continue
+
+            # Categorize
+            counts = [(v, pi) for t, v, pi in all_numbers if t == 'count' and 1 <= v <= 999 and v == int(v)]
+            taxes = [(v, pi) for t, v, pi in all_numbers if t == 'tax']
+            prices = [(v, pi) for t, v, pi in all_numbers if t == 'price' and v >= 100]
+
+            if len(prices) < 2:
+                continue
+
+            item = {
+                'priceName': name,
+                'unit': '项',
+                'count': int(counts[0][0]) if counts else 1,
+                'unitPrice': None,
+                'tax': (str(int(taxes[0][0])) + '%') if taxes else None,
+                'totalPrice': None,
+                'totalPriceInTax': None,
+                'extras': {},
+                'details': []
+            }
+
+            # Price assignment: unit_price is smallest large number, totals are larger
+            sorted_prices = sorted(prices, key=lambda x: x[0])
+            if len(sorted_prices) >= 4:
+                # [unit_ex, unit_in, total_ex, total_in] or [unit_ex, count_small, total_ex, total_in]
+                item['unitPrice'] = sorted_prices[0][0]
+                item['totalPrice'] = sorted_prices[-2][0]
+                item['totalPriceInTax'] = sorted_prices[-1][0]
+            elif len(sorted_prices) == 3:
+                item['unitPrice'] = sorted_prices[0][0]
+                item['totalPrice'] = sorted_prices[1][0]
+                item['totalPriceInTax'] = sorted_prices[2][0]
+            elif len(sorted_prices) == 2:
+                item['unitPrice'] = sorted_prices[0][0]
+                item['totalPrice'] = sorted_prices[1][0]
+                item['totalPriceInTax'] = sorted_prices[1][0]
+
+            # Fix: when only 2 prices and they're the same (single-price item), use position order
+            if item['unitPrice'] == item['totalPrice'] and len(sorted_prices) == 2:
+                # Earlier position → unit price, later position → total price
+                if sorted_prices[0][1] < sorted_prices[1][1]:
+                    item['unitPrice'] = sorted_prices[0][0]
+                    item['totalPrice'] = sorted_prices[1][0]
+                    item['totalPriceInTax'] = sorted_prices[1][0]
+
+            if item['totalPrice'] and item['totalPrice'] >= 100:
+                sub_items.append(item)
+
+    if sub_items:
+        result['subItemPrice'] = sub_items
+
+    # -- Also check for 总计 line --
+    _extract_summary_total(section, result)
 
 
 # ── Text Similarity ─────────────────────────────────────────────
