@@ -474,8 +474,10 @@ def extract_personnel(text):
     text = re.sub(r'法\s*\n\s*定代表人', '法定代表人', text)
     text = re.sub(r'授权委\s*\n\s*托书', '授权委托书', text)
     text = re.sub(r'供应\s*\n\s*商名称', '供应商名称', text)
-    # Also fix name splits across lines
-    text = re.sub(r'([一-鿿])\s*\n\s*([一-鿿]{1,2})', r'\1\2', text)
+    # Fix common name splits: "王\n稼琼" → "王某某" (only when first char is a surname)
+    # Limit to common Chinese surnames to avoid false joins
+    _SURNAMES = '王李张刘陈杨黄赵周吴徐孙马胡朱郭何罗高林郑梁谢唐宋韩冯于董萧程曹袁邓许傅沈曾彭吕苏卢蒋蔡贾丁魏薛叶阎余潘杜戴夏钟汪田任姜范方石姚谭廖邹熊金陆郝孔白崔康毛邱秦江史顾侯邵孟龙万段雷钱汤尹易常武乔贺赖龚文'
+    text = re.sub(rf'([{_SURNAMES}])\s*\n\s*([一-鿿]{{1,2}})', r'\1\2', text)
 
     # ── Section Detection ──
     sections = _find_personnel_sections(text)
