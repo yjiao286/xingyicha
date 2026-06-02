@@ -253,119 +253,293 @@ def extract_text_with_tables(filepath):
 
 
 # ── Personnel Extraction ────────────────────────────────────────
-def extract_personnel(text):
-    """Extract legal representative, authorized agent info from bid text"""
-    info = {}
+def _find_personnel_sections(text):
+    """Identify personnel-related sections in bid text by chapter markers.
+    Returns list of {type, text, start, end}."""
+    section_markers = {
+        'auth_letter': [
+            '法定代表人授权委托书', '法定代表人授权书', '授权委托书',
+            '法人授权书', '法人代表授权书', '法人授权委托书'
+        ],
+        'legal_rep_proof': [
+            '法定代表人身份证明', '法定代表人证明', '法人代表证明',
+            '单位负责人证明', '法定代表人资格证明'
+        ],
+        'personnel_table': [
+            '项目管理机构', '项目组成员', '主要人员', '项目成员',
+            '拟投入人员', '拟派人员', '项目团队', '组织机构',
+            '人员配备', '人员配置', '岗位人员', '主要管理人员'
+        ],
+        'qualification': [
+            '投标人基本情况表', '资格审查资料', '投标人资格',
+            '企业基本情况', '公司简介', '单位简介'
+        ],
+        'signature_page': [
+            '签字盖章', '签章', '签字或盖章', '盖章签字',
+            '法定代表人或其委托代理人', '投标人（盖单位章）',
+            '（单位公章）', '（盖章）'
+        ],
+        'cover_letter': [
+            '投标函', '投标书', '投标文件', '报价函'
+        ],
+    }
 
-    # Normalize line breaks within key phrases that often get split across lines
-    # e.g., "法定代\n表人" → "法定代表人", "授权委\n托书" → "授权委托书"
+    found = []
+    for section_type, markers in section_markers.items():
+        for marker in markers:
+            idx = text.find(marker)
+            while idx >= 0:
+                start = max(0, idx - 200)
+                end = min(idx + 5000, len(text))
+                for next_marker in [
+                    '\n一、', '\n二、', '\n三、', '\n四、', '\n五、',
+                    '\n1.', '\n2.', '\n3.', '\n4.', '\n5.',
+                    '\n六、', '\n七、', '\n八、',
+                ]:
+                    ep = text.find(next_marker, idx + 10)
+                    if ep > idx and ep < end:
+                        end = ep
+                sec_text = text[start:end]
+                found.append({'type': section_type, 'text': sec_text, 'start': start, 'end': end})
+                idx = text.find(marker, idx + len(marker))
+    return found
+
+
+def _extract_from_auth_section(section_text, info):
+    """Extract legal rep, authorized rep from authorization letter section."""
+    # Pattern 0: "我张三（姓名）系四川某某电子科技有限公司（供应商名称）的法定代表人"
+    m = re.search(r'(?:本人\s*)?我?\s*([一-鿿]{2,4})\s*[（(]姓名[）)]\s*系\s*(.{1,40}?)\s*[（(]供应商名称[）)]\s*的法定代表人', section_text)
+    if m:
+        info['legal_rep'] = m.group(1).strip()
+        info['company_name'] = _clean_company(m.group(2).strip())
+        info['all_persons'].append({'name': info['legal_rep'], 'role': 'legal_rep', 'confidence': 0.95})
+
+    # Pattern 1: "姓名：XXX 职务：XXX 系 XXX 的法定代表人"
+    if not info['legal_rep']:
+        m = re.search(r'姓名[：:]\s*([^\s]{2,10})\s*[\s\S]{0,100}?系\s*(.{1,30}?)\s*的法定代表人', section_text)
+        if m:
+            info['legal_rep'] = m.group(1).strip()
+            info['company_name'] = _clean_company(m.group(2).strip())
+            info['all_persons'].append({'name': info['legal_rep'], 'role': 'legal_rep', 'confidence': 0.90})
+
+    # Pattern 2: "本人 XXX 系 XXX 的法定代表人"
+    if not info['legal_rep']:
+        m = re.search(r'(?:本人\s*)?([一-鿿]{2,4})\s*(?:[（(]姓名[）)])?\s*系\s*(.{1,30}?)\s*的法定代表人', section_text)
+        if m:
+            info['legal_rep'] = m.group(1).strip()
+            info['company_name'] = _clean_company(m.group(2).strip())
+            info['all_persons'].append({'name': info['legal_rep'], 'role': 'legal_rep', 'confidence': 0.85})
+
+    # Pattern 3: "（王戈、董事长）代表本公司授权（赵凯、销售经理）"
+    m = re.search(r'[（(]([一-鿿]{2,4})[、，].{0,6}?[）)]\s*代表本公司授权\s*[（(]([一-鿿]{2,4})', section_text)
+    if m:
+        if not info['legal_rep']:
+            info['legal_rep'] = m.group(1).strip()
+            info['all_persons'].append({'name': info['legal_rep'], 'role': 'legal_rep', 'confidence': 0.85})
+        info['authorized_rep'] = m.group(2).strip()
+        info['all_persons'].append({'name': info['authorized_rep'], 'role': 'authorized_rep', 'confidence': 0.85})
+
+    # Pattern 4: "现委托 XXX（姓名）为我方代理人"
+    if not info['authorized_rep']:
+        m = re.search(r'(?:现委托|委托)\s*([一-鿿]{2,4})\s*[（(]姓名[）)]', section_text)
+        if m:
+            info['authorized_rep'] = m.group(1).strip()
+            info['all_persons'].append({'name': info['authorized_rep'], 'role': 'authorized_rep', 'confidence': 0.90})
+
+    # Pattern 5: "代理人：XXX" or "授权代表：XXX"
+    if not info['authorized_rep']:
+        m = re.search(r'(?:代理人|授权代表|被授权人|受托人)[：:]\s*([一-鿿]{2,4})', section_text)
+        if m:
+            info['authorized_rep'] = m.group(1).strip()
+            info['all_persons'].append({'name': info['authorized_rep'], 'role': 'authorized_rep', 'confidence': 0.80})
+
+    # Pattern 6: "法定代表人：XXX"
+    if not info['legal_rep']:
+        m = re.search(r'(?:法定代表人|单位负责人|法人代表)[：:]\s*([一-鿿]{2,4})', section_text)
+        if m:
+            info['legal_rep'] = m.group(1).strip()
+            info['all_persons'].append({'name': info['legal_rep'], 'role': 'legal_rep', 'confidence': 0.80})
+
+
+def _extract_from_personnel_table(section_text, info):
+    """Extract project members from personnel/team tables."""
+    patterns = [
+        r'姓名[：:]\s*([一-鿿]{2,4})\s*.*?(?:职务|岗位|角色|职称)[：:]\s*([一-鿿]{2,10})',
+        r'([一-鿿]{2,4})\s{2,}(项目经理|项目负责人|技术负责人|技术总监|总工程师|安全员|质量员|施工员|材料员|资料员|造价员|预算员)',
+        r'(项目经理|项目负责人|技术负责人|技术总监|总工程师)[：:]\s*([一-鿿]{2,4})',
+        r'(?:项目经理|项目负责人|技术负责人|安全负责人)\s+([一-鿿]{2,4})',
+    ]
+    for pat in patterns:
+        for m in re.finditer(pat, section_text):
+            groups = m.groups()
+            if len(groups) == 2:
+                # Determine which is name (2-4 chars) and which is role
+                if len(groups[0]) <= 4 and re.match(r'^[一-鿿]+$', groups[0]):
+                    name, role_str = groups[0], groups[1]
+                else:
+                    name, role_str = groups[1], groups[0]
+                role = _infer_role_label(role_str)
+            else:
+                name = groups[0]
+                role = 'team_member'
+
+            name = name.strip()
+            if len(name) >= 2:
+                info['all_persons'].append({'name': name, 'role': role, 'confidence': 0.80})
+
+
+def _extract_from_signature_page(section_text, info):
+    """Extract signatory names from signature/seal pages."""
+    m = re.search(r'法定代表人或其委托代理人[：:][（(]?\s*(?:签字|签章|盖章|签名)\s*[）)]?\s*([一-鿿]{2,4})', section_text)
+    if m:
+        info['all_persons'].append({'name': m.group(1).strip(), 'role': 'signatory', 'confidence': 0.75})
+
+    m = re.search(r'投标人[：:]\s*[（(]?(?:盖章|公章|单位章)[）)]?\s*(.{2,40}?)(?:\n|$)', section_text)
+    if m and not info.get('company_name'):
+        company = m.group(1).strip()
+        if len(company) >= 4 and not re.match(r'^[\s（(）)]+$', company):
+            info['company_name'] = _clean_company(company)
+
+
+def _extract_from_cover(section_text, info):
+    """Extract company name from cover/bid letter."""
+    if info.get('company_name'):
+        return
+    m = re.search(r'(?:投标人|供应商|申请.?|报价.?)[：:]\s*(.{2,40}?)(?:\n|$)', section_text)
+    if m:
+        company = m.group(1).strip()
+        if len(company) >= 4:
+            info['company_name'] = _clean_company(company)
+
+
+def _infer_role_label(role_str):
+    """Map Chinese role strings to standardized role labels."""
+    role_str = role_str.strip()
+    mapping = {
+        '项目经理': 'project_manager', '项目负责人': 'project_manager',
+        '技术负责人': 'tech_lead', '技术总监': 'tech_lead', '总工程师': 'tech_lead',
+        '安全员': 'team_member', '质量员': 'team_member', '施工员': 'team_member',
+        '材料员': 'team_member', '资料员': 'team_member', '造价员': 'team_member',
+        '预算员': 'team_member', '安全负责人': 'tech_lead',
+    }
+    for cn, en in mapping.items():
+        if cn in role_str:
+            return en
+    return 'team_member'
+
+
+def _clean_company(name):
+    """Clean company name from parenthetical annotations."""
+    name = re.sub(r'[（(]投标人名称[）)]|[（(]单位负责人[）)]|[（(]供应商名称[）)]', '', name)
+    name = re.sub(r'^[（(]|[）)]$', '', name).strip()
+    return name
+
+
+def _cleanup_name(info, key):
+    """Clean up extracted person name."""
+    val = info.get(key)
+    if not val:
+        return
+    val = re.sub(r'^(?:本人\s*)+', '', val).strip()
+    val = re.sub(r'^我(?=[一-鿿])', '', val)
+    val = re.sub(r'\s*[（(](?:姓名|签字|盖章|单位负责人|法定代表人)[）)]\s*$', '', val)
+    val = re.sub(r'^\s*[（(](?:姓名|签字|盖章|单位负责人|法定代表人)[）)]\s*', '', val)
+    if len(val) < 2 or any(w in val for w in ['注册', '签字', '盖章', '地址', '电话', '投标人']):
+        info[key] = None
+    else:
+        info[key] = val
+
+
+def extract_personnel(text):
+    """Extract personnel information from bid text using chapter-scoped extraction.
+
+    Only searches within specific sections: authorization letter, personnel table,
+    qualification review, signature page, cover/bid letter.
+    """
+    info = {
+        'legal_rep': None,
+        'authorized_rep': None,
+        'company_name': None,
+        'id_number': None,
+        'phone': None,
+        'address': None,
+        'response_date': None,
+        'all_persons': [],
+        'contacts': {'phone': None, 'email': None, 'address': None}
+    }
+
+    # Normalize line breaks within key phrases
     text = re.sub(r'法定代\s*\n\s*表人', '法定代表人', text)
     text = re.sub(r'法定\s*\n\s*代表人', '法定代表人', text)
     text = re.sub(r'法\s*\n\s*定代表人', '法定代表人', text)
     text = re.sub(r'授权委\s*\n\s*托书', '授权委托书', text)
     text = re.sub(r'供应\s*\n\s*商名称', '供应商名称', text)
+    # Also fix name splits across lines
+    text = re.sub(r'([一-鿿])\s*\n\s*([一-鿿]{1,2})', r'\1\2', text)
 
-    # Legal representative — try multiple patterns
-    rep = None
-    co = None
+    # ── Section Detection ──
+    sections = _find_personnel_sections(text)
 
-    # Pattern 0: "我张三（姓名）系四川某某电子科技有限公司（供应商名称）的法定代表人"
-    # Common in 法定代表人授权委托书 — captures name before （姓名） and company before （供应商名称）
-    if not rep:
-        m = re.search(r'(?:本人\s*)?我?\s*([一-鿿]{2,4})\s*[（(]姓名[）)]\s*系\s*(.{1,40}?)\s*[（(]供应商名称[）)]\s*的法定代表人', text)
+    # ── 1. Authorization Letter Section ──
+    auth_sections = [s for s in sections if s['type'] in ('auth_letter', 'legal_rep_proof')]
+    for sec in auth_sections:
+        _extract_from_auth_section(sec['text'], info)
+
+    # ── 2. Personnel Table Section ──
+    personnel_sections = [s for s in sections if s['type'] in ('personnel_table', 'qualification')]
+    for sec in personnel_sections:
+        _extract_from_personnel_table(sec['text'], info)
+
+    # ── 3. Signature Page Section ──
+    sig_sections = [s for s in sections if s['type'] == 'signature_page']
+    for sec in sig_sections:
+        _extract_from_signature_page(sec['text'], info)
+
+    # ── 4. Cover / Bid Letter Section ──
+    cover_sections = [s for s in sections if s['type'] == 'cover_letter']
+    for sec in cover_sections:
+        _extract_from_cover(sec['text'], info)
+
+    # ── Global extraction (section-scoped) ──
+    for sec in auth_sections + sig_sections:
+        m = re.search(r'身份证号[码字]?[：:]\s*(\d{17}[\dXx])', sec['text'])
+        if m and not info.get('id_number'):
+            info['id_number'] = m.group(1).strip()
+
+    for sec in auth_sections + personnel_sections + sig_sections:
+        m = re.search(r'(?:电话|手机|联系电话|联系方式)[：:]\s*(\d[\d\-]{6,15})', sec['text'])
         if m:
-            rep = m.group(1).strip()
-            co = m.group(2).strip()
+            phone = m.group(1).strip()
+            if not info.get('phone'):
+                info['phone'] = phone
+            if not info['contacts'].get('phone'):
+                info['contacts']['phone'] = phone
 
-    # Pattern 1: "姓名：刘某某 ... 职务：院长 系 XXX 的法定代表人" (身份证明 section)
-    if not rep:
-        m = re.search(r'姓名[：:]\s*([^\s]{2,10})\s*[\s\S]*?系\s*(.{1,30}?)\s*的法定代表人', text)
-        if m:
-            rep = m.group(1).strip()
-            co = m.group(2).strip()
+    for sec in auth_sections:
+        m = re.search(r'地址[：:]\s*(.{8,80})', sec['text'])
+        if m and not info.get('address'):
+            addr = m.group(1).strip()[:100]
+            info['address'] = addr
+            info['contacts']['address'] = addr
 
-    # Pattern 2: "本人 王某某 系 北京某某大学 的法定代表人"
-    if not rep:
-        m = re.search(r'(?:本人\s*)?([^\s系]{2,10})\s*(?:[（(]姓名[）)])?\s*系\s*(.{1,30}?)\s*的法定代表人', text)
-        if m:
-            rep = m.group(1).strip()
-            co = m.group(2).strip()
-
-    # Pattern 3: 法定代表人授权书 "（王戈、董事长）代表本公司授权（赵凯、销售经理）"
-    m = re.search(r'（([^、）]{2,10})[、，].{1,6}?）\s*代表本公司授权\s*（([^、）]{2,10})', text)
-    if m:
-        rep = m.group(1).strip()
-        info['authorized_rep'] = m.group(2).strip()
-    if not rep:
-        m = re.search(r'（([^、）]{2,10})[、，].{1,6}?）\s*代表.{1,10}授权', text)
-        if m:
-            rep = m.group(1).strip()
-
-    # Pattern 4: "（兰某某）系（北京某某航天技术有限公司）的法定代表人"
-    if not rep:
-        m = re.search(r'[（(]([^\s系]{2,10})[）)]\s*系\s*[（(](.{1,30}?)[）)]\s*的法定代表人', text)
-        if m:
-            rep = m.group(1).strip()
-            co = m.group(2).strip()
-
-    # Pattern 4: 法定代表人授权书 — find name after the section
-    if not rep:
-        m = re.search(r'法定代表人授权书[\s\S]{0,500}?(?:被授权人|授权代表|代理人)[：:]\s*([^\s]{2,10})', text)
-        if m:
-            info['authorized_rep'] = m.group(1).strip()
-        m = re.search(r'法定代表人授权书[\s\S]{0,300}?(?:法定代表人|单位负责人)[^：:]*?[：:]\s*([^\s]{2,10})', text)
-        if m:
-            rep = m.group(1).strip()
-    if not rep:
-        m = re.search(r'[（(]([^\s系]{2,10})[）)]\s*系\s*[（(](.{1,30}?)[）)]\s*的法定代表人', text)
-        if m:
-            rep = m.group(1).strip()
-            co = m.group(2).strip()
-
-    if rep:
-        rep = re.sub(r'^(?:本人\s*)+', '', rep).strip()
-        rep = re.sub(r'^[（(]|[）)]$', '', rep)
-        # Strip "我" prefix (common in 授权委托书: "我张三（姓名）系...")
-        rep = re.sub(r'^我(?=[一-鿿])', '', rep)
-        # Strip trailing parenthesized labels like （姓名）, (姓名), （签字）, (签字)
-        rep = re.sub(r'\s*[（(](?:姓名|签字|盖章|单位负责人|法定代表人)[）)]\s*$', '', rep)
-        # Strip leading parenthesized labels
-        rep = re.sub(r'^\s*[（(](?:姓名|签字|盖章|单位负责人|法定代表人)[）)]\s*', '', rep)
-        # Exclude garbage matches
-        if len(rep) < 2 or any(w in rep for w in ['注册', '签字', '盖章', '国）', '地址', '电话', '投标人']):
-            rep = None
-        else:
-            info['legal_rep'] = rep
-        co = re.sub(r'[（(]投标人名称[）)]|[（(]单位负责人[）)]|[（(]供应商名称[）)]', '', co or '')
-        co = re.sub(r'^[（(]|[）)]$', '', co).strip()
-        info['company_name'] = co
-
-    # Authorized representative
-    m = re.search(r'现委托\s*(.{1,10})\s*[（(]姓名[）)]', text)
-    if not m:
-        m = re.search(r'委托\s*(.{1,10})\s*[（(]姓名[）)]\s*为我方', text)
-    if m:
-        info['authorized_rep'] = m.group(1).strip()
-
-    # ID number
-    m = re.search(r'身份证号码[：:]\s*(\d{17}[\dXx])', text)
-    if m:
-        info['id_number'] = m.group(1).strip()
-
-    # Phone
-    m = re.search(r'电话[：:]\s*(\d{7,15})', text)
-    if m:
-        info['phone'] = m.group(1).strip()
-
-    # Address
-    m = re.search(r'地址[：:]\s*(.{10,80})', text)
-    if m:
-        info['address'] = m.group(1).strip()[:100]
-
-    # Response date
+    # Response date (can be anywhere near top of document)
     m = re.search(r'(\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日)', text[:800])
     if m:
         info['response_date'] = m.group(1).strip()
+
+    # Cleanup names
+    _cleanup_name(info, 'legal_rep')
+    _cleanup_name(info, 'authorized_rep')
+
+    # Deduplicate all_persons
+    seen = set()
+    unique_persons = []
+    for p in info['all_persons']:
+        key = (p['name'], p['role'])
+        if key not in seen:
+            seen.add(key)
+            unique_persons.append(p)
+    info['all_persons'] = unique_persons
 
     return info
 
