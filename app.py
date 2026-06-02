@@ -542,37 +542,44 @@ def _extract_tax_decomposition(text, section, result):
 
 
 def _extract_structured_items(text, result):
-    """Extract sub-item pricing and cost details from table text.
-    Handles both PDF table format and docx cost format."""
+    """Extract sub-item pricing and cost details using enhanced section discovery
+    and generic cost line detection."""
 
-    # ── PDF sub-item pricing table parser ──
-    # Find the ACTUAL 分项报价表 section (not TOC entry with dots)
-    # Handles various section numbering formats:
-    # "二、分项报价表", "2. 分项报价表", "2.2 分项报价表", or plain "分项报价表"
+    # ── Enhanced section discovery ──
+    section_keywords = [
+        '分项报价表', '分项报价', '报价明细', '价格表', '开标一览',
+        '报价清单', '费用明细', '价格清单', '投标报价', '价格构成',
+        '设备清单', '费用清单', '报价构成', '价格明细', '成本明细',
+        '项目报价', '费用构成', '费用表'
+    ]
+
     bid_section = None
-    for m in re.finditer(r'(?:^|\n)(?:[一二三四五六七八九十\d]+[、.。]\s*|\d+(?:\.\d+)+\s*|\d+\s+)?分项报价表\s*\n', text):
+    # Build alternation pattern from keywords
+    kw_pattern = '|'.join(re.escape(kw) for kw in section_keywords)
+    for m in re.finditer(
+        r'(?:^|\n)(?:[一二三四五六七八九十\d]+[、.。]\s*|\d+(?:\.\d+)+\s*|\d+\s+)?(' +
+        kw_pattern + r')\s*\n', text
+    ):
         pos = m.start()
         # Skip if preceded by dots (TOC entry)
-        prefix = text[max(0,pos-30):pos]
+        prefix = text[max(0, pos - 30):pos]
         if re.search(r'\.{3,}', prefix):
             continue
-        # Find the next major section: look for numbered section headers
-        # like "三、xxx", "3. xxx", "3 xxx" but not within the current section
+        # Find next major section boundary
         next_pos = len(text)
         for end_marker in ['\n三、', '\n四、', '\n五、', '\n六、', '\n七、',
-                           '\n3.', '\n4.', '\n5.', '\n6.', '\n7.']:
+                           '\n3.', '\n4.', '\n5.', '\n6.', '\n7.',
+                           '\n3 ', '\n4 ', '\n5 ', '\n6 ', '\n7 ']:
             ep = text.find(end_marker, pos + 10)
             if ep > pos and ep < next_pos:
                 next_pos = ep
-        # Also detect "3 法定代表人" style (section number + space + >=5 Chinese chars)
-        # Exclude data rows: section headers have no 4+ digit amounts on the line
-        for m in re.finditer(r'\n(\d{1,2})\s+[一-鿿]{5,}', text):
-            if m.start() > pos + 20 and m.start() < next_pos:
-                line_end = text.find('\n', m.end())
-                line = text[m.start()+1:line_end if line_end > m.start() else m.end()+80]
-                # Section headers are short lines without price amounts
+        # Also stop at section headers (number + 5+ Chinese chars, no price amounts)
+        for sm in re.finditer(r'\n(\d{1,2})\s+[一-鿿]{5,}', text):
+            if sm.start() > pos + 20 and sm.start() < next_pos:
+                line_end = text.find('\n', sm.end())
+                line = text[sm.start()+1:line_end if line_end > sm.start() else sm.end()+80]
                 if len(line) < 60 and not re.search(r'\d{4,}', line):
-                    next_pos = m.start()
+                    next_pos = sm.start()
                     break
         bid_section = text[pos:next_pos]
         break
@@ -580,38 +587,39 @@ def _extract_structured_items(text, result):
     if bid_section:
         _parse_pdf_bid_table(bid_section, result)
 
-    # ── Docx 国防科技工业 cost format ──
-    cost_labels = [
-        (r'材料费[为是\s]*([\d,]+)', '材料费'),
-        (r'专用费[为是\s]*([\d,]+)', '专用费'),
-        (r'外协费[为是\s]*([\d,]+)', '外协费'),
-        (r'燃料动力费[为是\s]*([\d,]+)', '燃料动力费'),
-        (r'事务费[为是\s]*([\d,]+)', '事务费'),
-        (r'固定资产折旧费[为是\s]*([\d,]+)', '固定资产折旧费'),
-        (r'管理费[为是\s]*([\d,]+)', '管理费'),
-        (r'工资及劳务费[为是\s]*([\d,]+)', '工资及劳务费'),
-        (r'不可预见费[为是\s]*([\d,]+)', '不可预见费'),
-        (r'预计收益[费为是\s]*([\d,]+)', '预计收益'),
-    ]
-    total_cost = 0
-    for pattern, label in cost_labels:
-        m = re.search(pattern, text)
-        if m:
-            val = float(m.group(1).replace(',', ''))
-            if val >= 100:
-                if label == '预计收益':
+    # ── Generic cost line extraction ──
+    # Match lines with: Chinese name (2-20 chars containing 费/成本/支出 etc) + large number (>= 100)
+    cost_pattern = re.compile(
+        r'(?:^|\n)\s*([一-鿿]{2,20}(?:费|成本|支出|投入|工资|薪酬|酬金|折旧|摊销|租赁|租金|'
+        r'维护|保养|检测|试验|测试|设计|开发|研制|采购|运输|差旅|会议|培训|办公|印刷|'
+        r'咨询|审计|评估|保险|税费|利息|手续费|管理|服务|劳务|材料|设备|仪器|软件|'
+        r'许可|专利|著作|技术|咨询|外协|加工|燃料|动力|事务|不可预见|预备|风险|'
+        r'收益|利润|税金|公积金|基金)[一-鿿]{0,6})\s+(\d{4,}(?:\.\d{2})?)',
+        re.MULTILINE
+    )
+    seen_names = set()
+    for m in cost_pattern.finditer(text):
+        name = m.group(1).strip()
+        if name in seen_names:
+            continue
+        val = float(m.group(2).replace(',', ''))
+        if val >= 100:
+            seen_names.add(name)
+            if '收益' in name or '利润' in name:
+                if result['revenue'] is None:
                     result['revenue'] = val
-                else:
-                    result['costDetails'].append({
-                        'priceName': label,
-                        'totalPrice': val,
-                        'unit': None, 'count': None, 'unitPrice': None,
-                        'tax': None, 'totalPriceInTax': val,
-                        'extras': {}, 'details': []
-                    })
-                    total_cost += val
-    if total_cost > 0:
-        result['cost'] = total_cost
+            else:
+                result['costDetails'].append({
+                    'priceName': name,
+                    'totalPrice': val,
+                    'unit': None, 'count': None, 'unitPrice': None,
+                    'tax': None, 'totalPriceInTax': val,
+                    'extras': {}, 'details': []
+                })
+
+    # Recalculate total cost from cost details if not already set
+    if result['costDetails'] and result['cost'] is None:
+        result['cost'] = sum(item['totalPrice'] for item in result['costDetails'])
 
 
 def _parse_pdf_bid_table(section, result):
