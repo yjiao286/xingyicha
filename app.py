@@ -1346,20 +1346,55 @@ def _parse_docx_rows(lines, hdr_idx, HEADER_KW):
         elif name and len(name) >= 2: prev_name = name
         if len(name) < 2: continue
 
-        # Value extraction
+        # Value extraction with context-aware classification
+        # Detect spec/non-price patterns in cells (resolution, IP ratings, model numbers)
+        _SPEC_PAT = re.compile(r'(?:分辨率|IP\d|dB|MHz|GHz|mm|cm|kg|g\b|V\b|A\b|W\b|'
+                               r'像素|英寸|寸|比特|波特|bps|kbps|℃|℉|'
+                               r'规格|型号|品牌|厂家|制造商)')
         all_nums = []
         for pi, p in enumerate(parts):
             pct = re.search(r'(\d{1,2})\s*[%％]', p)
-            if pct: all_nums.append(('tax', float(pct.group(1)), pi))
+            if pct:
+                all_nums.append(('tax', float(pct.group(1)), pi))
+                continue
             nm = re.search(r'([\d,]+\.?\d+)', p.replace(',','').replace('，',''))
-            if nm:
-                v = float(nm.group(1))
-                all_nums.append(('price' if (v >= 100 or '元' in p) else 'count', v, pi))
+            if not nm:
+                continue
+            v = float(nm.group(1))
+            # Skip spec-related numbers (resolution, IP ratings, etc.) unless marked with 元
+            is_spec = bool(_SPEC_PAT.search(p))
+            has_yuan = '元' in p
+            is_pure_num = re.match(r'^\s*[\d,]+\.?\d*\s*(?:元)?\s*$', p) is not None
+
+            if is_spec and not has_yuan:
+                # Spec numbers: classify as count if small, ignore otherwise
+                if v < 1000 and v == int(v):
+                    all_nums.append(('count', v, pi))
+                # else: ignore (false price from spec text)
+            elif v >= 100 or has_yuan:
+                all_nums.append(('price', v, pi))
+            else:
+                all_nums.append(('count', v, pi))
 
         if len(all_nums) < 2: continue
         counts = [(v, pi) for t, v, pi in all_nums if t == 'count' and 1 <= v <= 999 and v == int(v)]
         taxes = [(v, pi) for t, v, pi in all_nums if t == 'tax']
         prices = [(v, pi) for t, v, pi in all_nums if t == 'price' and v >= 100]
+
+        # Prefer count from pure-number cells over seq numbers (1, 2, 3...)
+        if counts:
+            pure_counts = [(v, pi) for v, pi in counts
+                          if re.match(r'^\s*[\d,]+\s*$', parts[pi].strip())]
+            if pure_counts:
+                counts = pure_counts
+            # Sort by position: prefer counts that appear AFTER the first column
+            counts.sort(key=lambda x: x[1])
+            # Heuristic: if there's a value >= 10 and a tiny value (1-9), prefer the larger
+            big = [(v, pi) for v, pi in counts if v >= 10]
+            if big:
+                counts = big
+            # Skip common tax-rate values masquerading as count (13, 6, 9, 3, 17)
+            counts = [(v, pi) for v, pi in counts if v not in (3, 6, 9, 13, 17)]
         if len(prices) < 2: continue
 
         sp = sorted(prices, key=lambda x: x[0])
