@@ -330,6 +330,7 @@ body {
   flex-shrink: 0; white-space: nowrap; letter-spacing: .3px;
 }
 .badge-high { background: #fee2e2; color: var(--danger); }
+.badge-critical { background: #fce7f3; color: #9d174d; font-weight: 800; }
 .badge-medium { background: #eef0f4; color: var(--text-muted); }
 .meta-empty { text-align: center; padding: 36px; font-size: 14px; color: var(--text-muted); }
 
@@ -339,6 +340,7 @@ body {
   border-radius: var(--radius); margin-bottom: 8px; background: var(--bg-surface);
 }
 .match-card:has(.badge-high) { border-color: #fecaca; background: #fff5f5; }
+.match-card:has(.badge-critical) { border-color: #fbcfe8; background: #fdf2f8; }
 
 /* ── Text match ── */
 .text-match-item {

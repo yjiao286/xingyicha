@@ -408,37 +408,74 @@ function renderPersonnel() {
   const p = analysisResult.personnel;
   if (!p) return;
 
+  // Role display labels
+  const ROLE_LABELS = {
+    'legal_rep': '法定代表人', 'authorized_rep': '授权代表',
+    'project_manager': '项目经理', 'tech_lead': '技术负责人',
+    'bid_contact': '投标联系人', 'team_member': '团队成员',
+    'signatory': '签署人', 'other': '其他人员'
+  };
+
   let html = '';
   let hasAnyData = false;
 
   p.files.forEach(f => {
     const rows = [
+      ['公司名称', f.company_name],
       ['法定代表人', f.legal_rep], ['授权代表', f.authorized_rep],
       ['身份证号', f.id_number], ['联系电话', f.phone],
       ['联系地址', f.address], ['响应日期', f.response_date],
     ];
     const filled = rows.filter(r => r[1]);
-    if (filled.length === 0) return;
+
+    // Check for project team members
+    const allPersons = f.all_persons || [];
+    const teamMembers = allPersons.filter(function(p) {
+      return ['project_manager', 'tech_lead', 'team_member', 'bid_contact'].indexOf(p.role) >= 0;
+    });
+
+    if (filled.length === 0 && teamMembers.length === 0) return;
 
     hasAnyData = true;
     html += '<h3 style="margin-bottom:8px;">' + escapeHtml(f.name) + '</h3>';
-    html += '<table class="data-table"><thead><tr><th>属性</th><th>值</th></tr></thead><tbody>';
-    filled.forEach(function(row) {
-      html += '<tr><td>' + row[0] + '</td><td>' + escapeHtml(String(row[1])) + '</td></tr>';
-    });
-    html += '</tbody></table>';
+
+    // Basic info table
+    if (filled.length > 0) {
+      html += '<table class="data-table"><thead><tr><th>属性</th><th>值</th></tr></thead><tbody>';
+      filled.forEach(function(row) {
+        html += '<tr><td>' + row[0] + '</td><td>' + escapeHtml(String(row[1])) + '</td></tr>';
+      });
+      html += '</tbody></table>';
+    }
+
+    // Project team members table
+    if (teamMembers.length > 0) {
+      html += '<h4 style="margin:12px 0 6px;">项目团队成员</h4>';
+      html += '<table class="data-table"><thead><tr><th>姓名</th><th>角色</th><th>置信度</th></tr></thead><tbody>';
+      teamMembers.forEach(function(m) {
+        var roleLabel = ROLE_LABELS[m.role] || m.role;
+        var conf = m.confidence ? Math.round(m.confidence * 100) + '%' : '-';
+        html += '<tr><td>' + escapeHtml(m.name) + '</td><td>' + roleLabel + '</td><td>' + conf + '</td></tr>';
+      });
+      html += '</tbody></table>';
+    }
   });
 
   if (!hasAnyData) {
-    html = '<p style="color:#888;text-align:center;padding:32px;">未从标书中提取到人员信息（法定代表人、授权代表、身份证号等）</p>';
+    html = '<p style="color:#888;text-align:center;padding:32px;">未从标书中提取到人员信息（法定代表人、授权代表、项目成员等）</p>';
   }
   document.getElementById('personnelTables').innerHTML = html;
 
+  // Cross-match findings
   var mhtml = '';
   if (p.cross_matches && p.cross_matches.length > 0) {
     p.cross_matches.forEach(function(m) {
+      var sevClass = 'badge-medium';
+      var sevLabel = '一般';
+      if (m.severity === 'high') { sevClass = 'badge-high'; sevLabel = '严重'; }
+      if (m.severity === 'critical') { sevClass = 'badge-critical'; sevLabel = '致命'; }
       mhtml += '<div class="match-card">';
-      mhtml += '<span class="match-badge ' + (m.severity === 'high' ? 'badge-high' : 'badge-medium') + '">' + (m.severity === 'high' ? '严重' : '一般') + '</span>';
+      mhtml += '<span class="match-badge ' + sevClass + '">' + sevLabel + '</span>';
       mhtml += '<strong>' + escapeHtml(m.type) + '</strong>';
       mhtml += '<p style="margin-top:4px;font-size:14px;">' + escapeHtml(m.detail) + '</p>';
       mhtml += '</div>';
