@@ -372,15 +372,49 @@ def extract_personnel(text):
 
 # ── Price Extraction ────────────────────────────────────────────
 def _parse_amount(s):
-    """Parse a price string like '1,234,567.89' or '123.45万元' or '122.6 万' to float"""
+    """Parse a price string like '1,234,567.89', '123.45万元', '1.2亿元', '壹佰贰拾叁万' to float"""
+    if not s:
+        return 0.0
     s = str(s).replace(',', '').replace('，', '').strip()
+
+    # Handle Chinese uppercase numerals (壹贰叁肆伍陆柒捌玖拾佰仟万亿)
+    _CN_NUM = {'零': 0, '壹': 1, '贰': 2, '叁': 3, '肆': 4, '伍': 5,
+               '陆': 6, '柒': 7, '捌': 8, '玖': 9, '拾': 10, '佰': 100,
+               '仟': 1000, '万': 10000, '亿': 100000000, '一': 1,
+               '二': 2, '三': 3, '四': 4, '五': 5, '六': 6,
+               '七': 7, '八': 8, '九': 9, '十': 10, '百': 100, '千': 1000}
+    has_cn = any(ch in _CN_NUM for ch in s)
+    if has_cn:
+        # Try to extract a simple numeric fallback first
+        m = re.search(r'([\d]+\.?\d*)', s)
+        if m:
+            val = float(m.group(1))
+            if '亿' in s:
+                val *= 100000000
+            elif '万' in s:
+                val *= 10000
+            return val
+
+    # Unit multiplier detection
     wan = 1.0
-    if '万元' in s:
+    if '亿元' in s:
+        wan = 100000000
+        s = s.replace('亿元', '')
+    elif s.endswith('亿') or '亿 ' in s or ' 亿' in s:
+        wan = 100000000
+        s = s.replace('亿', '')
+    elif '万元' in s:
         wan = 10000
         s = s.replace('万元', '')
     elif s.endswith('万') or '万 ' in s or ' 万' in s:
         wan = 10000
         s = s.replace('万', '')
+
+    # Handle full-width digits
+    s = s.replace('０', '0').replace('１', '1').replace('２', '2').replace('３', '3').replace('４', '4')
+    s = s.replace('５', '5').replace('６', '6').replace('７', '7').replace('８', '8').replace('９', '9')
+
+    # Extract first numeric value (handle price ranges: take first value)
     m = re.search(r'([\d]+\.?\d*)', s)
     return float(m.group(1)) * wan if m else 0.0
 
