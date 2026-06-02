@@ -1169,7 +1169,7 @@ def _parse_pdf_bid_table(section, result):
             items.append(item)
 
     if items:
-        result['subItemPrice'] = items
+        result['subItemPrice'] = _filter_price_items(items)
         _extract_summary_total(section, result)
 
 
@@ -1439,13 +1439,26 @@ def _parse_docx_rows(lines, hdr_idx, HEADER_KW):
 
         parts = [p.strip() for p in line.split('|')]
         name = parts[name_col].strip() if len(parts) > name_col else ''
-        if not name or re.search(r'(?:有限公司|有限责任|公司|集团|大学|学院)', name):
-            if len(parts) >= 2:
-                alt = parts[1].strip()
-                if alt and not re.search(r'(?:有限公司|有限责任|公司|集团)', alt):
-                    name = alt
+        # Patterns that indicate a manufacturer/company name rather than a price item
+        _MFG_NAME_RE = re.compile(
+            r'(?:有限公司|有限责任|公司|集团|大学|学院|研究所|'
+            r'(?:科技|技术|电子|光电|仪器|测量|通信|半导体|激光)'
+            r'.{0,5}(?:中国|日本|美国|德国|英国|法国|意大利|加拿大|澳大利亚|'
+            r'马来西亚|新加坡|韩国|越南|印度|泰国|台湾|香港|澳门|'
+            r'北京|上海|深圳|广州|成都|武汉|南京|杭州|西安))')
+        if not name or _MFG_NAME_RE.search(name):
+            # Try alternative columns for the real item name (skip seq col 0)
+            for alt_ci in range(1, len(parts)):
+                if alt_ci == name_col:
+                    continue
+                alt = parts[alt_ci].strip()
+                if alt and not _MFG_NAME_RE.search(alt) and len(alt) >= 2:
+                    # Only use if it doesn't look like a pure number/spec
+                    if not re.match(r'^[\d.,\s]+$', alt) and not re.search(r'^\d{4,}', alt):
+                        name = alt
+                        break
         name = re.sub(r'^\d+(?:\.\d+)?\s*', '', name).strip()
-        if re.search(r'(?:有限公司|有限责任|公司|集团|大学|学院)', name): continue
+        if _MFG_NAME_RE.search(name): continue
 
         # Skip all-same-value group headers
         unique = set(p.strip() for p in parts if p.strip())
@@ -1523,14 +1536,20 @@ def _parse_docx_rows(lines, hdr_idx, HEADER_KW):
 
 
 def _filter_price_items(items):
-    """Remove non-price items (personnel, projects, tech specs)."""
+    """Remove non-price items (personnel, projects, tech specs, manufacturers)."""
     BAD = re.compile(
         r'(?:经理|工程师|工人|主任|主管|专员|总监|总裁|董事长|秘书|助理|'
         r'合同|协议|订单|项目\s*名称|供应商|投标人|采购人|'
         r'灵敏度|dB|MHz|GHz|指标\s*要求|功能\s*要求|'
         r'验收测试|测试评审|联通测试|差旅|交通|住宿|会议内容|出差|'
         r'^其他$|^无$|^备注$|^说明$|^小计$|'
-        r'硬件费用|软件费用|其他费用)')  # Generic/section names
+        r'硬件费用|软件费用|其他费用|'
+        # Manufacturer/company names misidentified as price items
+        r'(?:有限公司|有限责任|公司|集团|大学|学院|研究所|'
+        r'(?:科技|技术|电子|光电|仪器|测量|通信|网络|半导体|激光)'
+        r'.{0,5}(?:中国|日本|美国|德国|英国|法国|意大利|加拿大|澳大利亚|'
+        r'马来西亚|新加坡|韩国|越南|印度|泰国|台湾|香港|澳门|'
+        r'北京|上海|深圳|广州|成都|武汉|南京|杭州|西安)))')
     valid = []
     for item in items:
         if BAD.search(item.get('priceName', '')): continue
