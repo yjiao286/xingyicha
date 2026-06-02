@@ -1384,7 +1384,9 @@ def _filter_price_items(items):
         r'(?:经理|工程师|工人|主任|主管|专员|总监|总裁|董事长|秘书|助理|'
         r'合同|协议|订单|项目\s*名称|供应商|投标人|采购人|'
         r'灵敏度|dB|MHz|GHz|指标\s*要求|功能\s*要求|'
-        r'验收测试|测试评审|联通测试|差旅|交通|住宿|会议内容|出差)')
+        r'验收测试|测试评审|联通测试|差旅|交通|住宿|会议内容|出差|'
+        r'^其他$|^无$|^备注$|^说明$|^小计$|'
+        r'硬件费用|软件费用|其他费用)')  # Generic/section names
     valid = []
     for item in items:
         if BAD.search(item.get('priceName', '')): continue
@@ -1615,8 +1617,9 @@ def _build_sub_item_comparison(all_prices, filenames):
         n = n.replace('０', '0').replace('１', '1').replace('２', '2').replace('３', '3').replace('４', '4')
         n = n.replace('５', '5').replace('６', '6').replace('７', '7').replace('８', '8').replace('９', '9')
         n = n.replace('Ａ', 'A').replace('Ｂ', 'B').replace('Ｃ', 'C').replace('Ｄ', 'D')
-        # Common suffixes/prefixes
-        n = re.sub(r'(及配套.*|配套.*|等.*)$', '', n)
+        # Common suffixes (only strip standalone suffixes, not content)
+        n = re.sub(r'(及配套代码|及配套成果|及配套)$', '', n)
+        n = re.sub(r'等$', '', n)
         return n.strip()
 
     all_items = []
@@ -1631,18 +1634,6 @@ def _build_sub_item_comparison(all_prices, filenames):
                 'totalPrice': item.get('totalPrice'), 'totalPriceInTax': item.get('totalPriceInTax'),
                 'tax': item.get('tax'), 'extras': item.get('extras', {})
             })
-    # Collect from costDetails (docx 国防科技工业 format - 成本明细)
-    for fn in filenames:
-        for item in all_prices.get(fn, {}).get('costDetails', []):
-            all_items.append({
-                'file': fn, 'type': '成本明细',
-                'name': item.get('priceName', ''),
-                'norm': item.get('priceName', ''),
-                'count': item.get('count'), 'unitPrice': item.get('unitPrice'),
-                'totalPrice': item.get('totalPrice'), 'totalPriceInTax': item.get('totalPriceInTax'),
-                'tax': item.get('tax'), 'extras': item.get('extras', {})
-            })
-
     if not all_items:
         return []
 
@@ -1679,10 +1670,10 @@ def _build_sub_item_comparison(all_prices, filenames):
             if j in used: continue
             # Match: exact same name, or fuzzy match via LCS / Jaccard 2-gram
             same_name = item_i['norm'] == item_j['norm']
-            min_len = 6
+            min_len = 4
             lcs_val = _lcs_len(item_i['norm'], item_j['norm']) if len(item_i['norm']) >= min_len and len(item_j['norm']) >= min_len else 0
             jaccard_val = _jaccard_2gram(item_i['norm'], item_j['norm']) if len(item_i['norm']) >= min_len and len(item_j['norm']) >= min_len else 0
-            long_match = len(item_i['norm']) >= min_len and len(item_j['norm']) >= min_len and (lcs_val >= 10 or jaccard_val >= 0.55)
+            long_match = len(item_i['norm']) >= min_len and len(item_j['norm']) >= min_len and (lcs_val >= 6 or jaccard_val >= 0.55)
             if same_name or long_match:
                 cluster.append(item_j)
                 used.add(j)
