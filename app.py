@@ -1056,10 +1056,20 @@ def _build_sub_item_comparison(all_prices, filenames):
     """Build fuzzy-merged sub-item pricing comparison table."""
     # Normalize names
     def _norm_name(name):
+        """Aggressive normalization for item name comparison."""
         n = name.strip()
-        n = re.sub(r'^算法设计文档[《<]', '', n)
-        n = re.sub(r'[》>]及配套(?:代码|成果|成)\s*$', '', n)
-        n = re.sub(r'及配套(?:成果|成)\s*$', '', n)
+        # Remove parenthesized/bracketed content and quotes
+        n = re.sub(r'[（(][^）)]*[）)]', '', n)
+        n = re.sub(r'[【\[《<][^】\]》>]*[】\]》>]', '', n)
+        n = re.sub(r'["“”‘’ ]', '', n)
+        # Remove punctuation and whitespace
+        n = re.sub(r'[、，。；：！？\s\-–—/\\|,\.;:!?]+', '', n)
+        # Full-width to half-width
+        n = n.replace('０', '0').replace('１', '1').replace('２', '2').replace('３', '3').replace('４', '4')
+        n = n.replace('５', '5').replace('６', '6').replace('７', '7').replace('８', '8').replace('９', '9')
+        n = n.replace('Ａ', 'A').replace('Ｂ', 'B').replace('Ｃ', 'C').replace('Ｄ', 'D')
+        # Common suffixes/prefixes
+        n = re.sub(r'(及配套.*|配套.*|等.*)$', '', n)
         return n.strip()
 
     all_items = []
@@ -1101,6 +1111,16 @@ def _build_sub_item_comparison(all_prices, filenames):
                     best = max(best, dp[i][j])
         return best
 
+    # Jaccard similarity on 2-grams for fuzzy name matching
+    def _jaccard_2gram(a, b):
+        if not a or not b:
+            return 0.0
+        sa = set(a[i:i+2] for i in range(len(a)-1))
+        sb = set(b[i:i+2] for i in range(len(b)-1))
+        if not sa or not sb:
+            return 0.0
+        return len(sa & sb) / len(sa | sb)
+
     clusters = []
     used = set()
     for i, item_i in enumerate(all_items):
@@ -1110,9 +1130,12 @@ def _build_sub_item_comparison(all_prices, filenames):
         best_name = item_i['name']
         for j, item_j in enumerate(all_items):
             if j in used: continue
-            # Match: exact same name, or long common substring
+            # Match: exact same name, or fuzzy match via LCS / Jaccard 2-gram
             same_name = item_i['norm'] == item_j['norm']
-            long_match = len(item_i['norm']) >= 10 and len(item_j['norm']) >= 10 and _lcs_len(item_i['norm'], item_j['norm']) >= 15
+            min_len = 6
+            lcs_val = _lcs_len(item_i['norm'], item_j['norm']) if len(item_i['norm']) >= min_len and len(item_j['norm']) >= min_len else 0
+            jaccard_val = _jaccard_2gram(item_i['norm'], item_j['norm']) if len(item_i['norm']) >= min_len and len(item_j['norm']) >= min_len else 0
+            long_match = len(item_i['norm']) >= min_len and len(item_j['norm']) >= min_len and (lcs_val >= 10 or jaccard_val >= 0.55)
             if same_name or long_match:
                 cluster.append(item_j)
                 used.add(j)
@@ -1144,9 +1167,13 @@ def _build_sub_item_comparison(all_prices, filenames):
             if pmax > 0:
                 diff_pct = (pmax - pmin) / pmax * 100
                 if diff_pct < 2:
-                    findings.append(f'不含税报价差异仅{diff_pct:.1f}%，高度接近')
+                    files_with_price = [(it['file'], it['totalPrice']) for it in items if it.get('totalPrice')]
+                    detail = ' | '.join(f'{os.path.basename(f)}: {p:,.0f}元' for f, p in files_with_price)
+                    findings.append(f'不含税报价差异仅{diff_pct:.1f}%（{detail}），高度接近')
                 elif diff_pct < 10:
-                    findings.append(f'不含税报价差异{diff_pct:.1f}%')
+                    files_with_price = [(it['file'], it['totalPrice']) for it in items if it.get('totalPrice')]
+                    detail = ' | '.join(f'{os.path.basename(f)}: {p:,.0f}元' for f, p in files_with_price)
+                    findings.append(f'不含税报价差异{diff_pct:.1f}%（{detail}）')
 
         # 3. Sequential pattern detection
         if len(prices_excl) >= 3:
