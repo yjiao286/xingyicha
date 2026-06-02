@@ -257,15 +257,32 @@ def extract_personnel(text):
     """Extract legal representative, authorized agent info from bid text"""
     info = {}
 
+    # Normalize line breaks within key phrases that often get split across lines
+    # e.g., "法定代\n表人" → "法定代表人", "授权委\n托书" → "授权委托书"
+    text = re.sub(r'法定代\s*\n\s*表人', '法定代表人', text)
+    text = re.sub(r'法定\s*\n\s*代表人', '法定代表人', text)
+    text = re.sub(r'法\s*\n\s*定代表人', '法定代表人', text)
+    text = re.sub(r'授权委\s*\n\s*托书', '授权委托书', text)
+    text = re.sub(r'供应\s*\n\s*商名称', '供应商名称', text)
+
     # Legal representative — try multiple patterns
     rep = None
     co = None
 
+    # Pattern 0: "我张三（姓名）系四川某某电子科技有限公司（供应商名称）的法定代表人"
+    # Common in 法定代表人授权委托书 — captures name before （姓名） and company before （供应商名称）
+    if not rep:
+        m = re.search(r'(?:本人\s*)?我?\s*([一-鿿]{2,4})\s*[（(]姓名[）)]\s*系\s*(.{1,40}?)\s*[（(]供应商名称[）)]\s*的法定代表人', text)
+        if m:
+            rep = m.group(1).strip()
+            co = m.group(2).strip()
+
     # Pattern 1: "姓名：刘某某 ... 职务：院长 系 XXX 的法定代表人" (身份证明 section)
-    m = re.search(r'姓名[：:]\s*([^\s]{2,10})\s*[\s\S]*?系\s*(.{1,30}?)\s*的法定代表人', text)
-    if m:
-        rep = m.group(1).strip()
-        co = m.group(2).strip()
+    if not rep:
+        m = re.search(r'姓名[：:]\s*([^\s]{2,10})\s*[\s\S]*?系\s*(.{1,30}?)\s*的法定代表人', text)
+        if m:
+            rep = m.group(1).strip()
+            co = m.group(2).strip()
 
     # Pattern 2: "本人 王某某 系 北京某某大学 的法定代表人"
     if not rep:
@@ -308,6 +325,12 @@ def extract_personnel(text):
     if rep:
         rep = re.sub(r'^(?:本人\s*)+', '', rep).strip()
         rep = re.sub(r'^[（(]|[）)]$', '', rep)
+        # Strip "我" prefix (common in 授权委托书: "我张三（姓名）系...")
+        rep = re.sub(r'^我(?=[一-鿿])', '', rep)
+        # Strip trailing parenthesized labels like （姓名）, (姓名), （签字）, (签字)
+        rep = re.sub(r'\s*[（(](?:姓名|签字|盖章|单位负责人|法定代表人)[）)]\s*$', '', rep)
+        # Strip leading parenthesized labels
+        rep = re.sub(r'^\s*[（(](?:姓名|签字|盖章|单位负责人|法定代表人)[）)]\s*', '', rep)
         # Exclude garbage matches
         if len(rep) < 2 or any(w in rep for w in ['注册', '签字', '盖章', '国）', '地址', '电话', '投标人']):
             rep = None
@@ -377,8 +400,12 @@ def extract_prices(text):
     }
 
     # ── Top-level totals ──
-    # Pattern 0: CNY format "投标总价为（CNY 8,123,000.00" or "总计 8,123,000"
-    m = re.search(r'CNY\s*([\d,]+\.?\d*)', text)
+    # Pattern 0: various price formats
+    m = re.search(r'(?:CNY|RMB|￥|¥)\s*([\d,]+\.?\d*)', text)
+    if not m:
+        m = re.search(r'人民币[：:]\s*([\d,]+\.?\d*)', text)
+    if not m:
+        m = re.search(r'小写[：:]\s*([\d,]+\.?\d*)', text)
     if not m:
         m = re.search(r'总计\s*([\d,]+\.?\d*)', text)
     if m:
@@ -387,10 +414,17 @@ def extract_prices(text):
         result['totalPrice'] = val
         # Still try to find pricing section for sub-items
 
-    # Locate pricing section
+    # Locate pricing section (skip TOC entries with dot leaders)
     bid_start = -1
     for kw in ['投标总价', '开标一览', '报价一览', '分项报价', '报价明细']:
-        bid_start = text.find(kw)
+        idx = text.find(kw)
+        while idx >= 0:
+            # Skip TOC entries (preceded by long dot sequences)
+            prefix = text[max(0,idx-40):idx]
+            if not re.search(r'\.{3,}', prefix):
+                bid_start = idx
+                break
+            idx = text.find(kw, idx + 1)
         if bid_start >= 0:
             break
     if bid_start < 0:
@@ -400,21 +434,35 @@ def extract_prices(text):
     section = text[bid_start:bid_start+6000]
 
     # Extract totals: multiple patterns
-    # Pattern A: CNY "CNY 8,123,000.00" or "RMB 8,123,000.00"
-    cny_m = re.search(r'(?:CNY|RMB)\s*([\d,]+\.?\d*)', section)
+    # Pattern A: "CNY 8,123,000.00" / "RMB 8,123,000.00" / "￥664800.00" / "人民币：669000 元" / "小写：665400 元"
+    cny_m = re.search(r'(?:CNY|RMB|￥|¥)\s*([\d,]+\.?\d*)', section)
+    if not cny_m:
+        cny_m = re.search(r'人民币[：:]\s*([\d,]+\.?\d*)', section)
+    if not cny_m:
+        cny_m = re.search(r'小写[：:]\s*([\d,]+\.?\d*)', section)
     if cny_m:
         val = _parse_amount(cny_m.group(1))
         result['totalPriceInTax'] = val
         result['totalPrice'] = val
 
-    # Pattern B: "不含税...含税...税率...NNNNNN NNNNNN N%" or "NN.N万 NN.N万 N%"
-    m = re.search(r'(\d{6,8})\s+(\d{6,8})\s+(\d{1,2})\s', section)
+    # Pattern B1: "￥664800.00 13% ￥751224.00" or "￥664800.00 13 % ￥751224.00"
+    # Order: 不含税价 → 税率 → 含税价
+    m = re.search(r'(?:￥|¥)?(\d{6,8}(?:\.\d{2})?)\s+(\d{1,2})\s*[%％]\s*(?:￥|¥)?(\d{6,8}(?:\.\d{2})?)', section)
+    if not m:
+        # Pattern B2: "人民币：669000 元 13 % 人民币：755970 元"
+        m = re.search(r'人民币[：:]\s*(\d{6,8}(?:\.\d{2})?)\s*元?\s+(\d{1,2})\s*[%％]?\s+人民币[：:]\s*(\d{6,8}(?:\.\d{2})?)', section)
+    if not m:
+        # Pattern B3: old format "NNNNNN NNNNNN N%" (two 6-8 digit numbers then rate)
+        m = re.search(r'(\d{6,8})\s+(\d{6,8})\s+(\d{1,2})\s', section)
+    if not m:
+        # Pattern B4: "小写：665400 元 ... 13% ... 小写：751902 元" (multiline)
+        m = re.search(r'小写[：:]\s*(\d{6,8}(?:\.\d{2})?)\s*元[\s\S]*?(\d{1,2})\s*[%％][\s\S]*?小写[：:]\s*(\d{6,8}(?:\.\d{2})?)', section)
     if m:
-        v1 = _parse_amount(m.group(1))
-        v2 = _parse_amount(m.group(2))
-        result['totalPrice'] = min(v1, v2)
-        result['totalPriceInTax'] = max(v1, v2)
-        result['taxRate'] = str(int(m.group(3))) + '%'
+        v1 = _parse_amount(m.group(1))    # 不含税
+        v2 = _parse_amount(m.group(3))    # 含税
+        result['totalPrice'] = v1
+        result['totalPriceInTax'] = v2
+        result['taxRate'] = str(int(m.group(2))) + '%'
     else:
         m2 = re.search(r'([\d.]+)\s*万\s+([\d.]+)\s*万\s+(\d{1,2})', section)
         if m2:
@@ -433,20 +481,34 @@ def _extract_structured_items(text, result):
     Handles both PDF table format and docx cost format."""
 
     # ── PDF sub-item pricing table parser ──
-    # Find the ACTUAL "三、分项报价表" section (not TOC entry with dots)
+    # Find the ACTUAL 分项报价表 section (not TOC entry with dots)
+    # Handles various section numbering formats:
+    # "二、分项报价表", "2. 分项报价表", "2.2 分项报价表", or plain "分项报价表"
     bid_section = None
-    for m in re.finditer(r'(?:^|\n)(三、分项报价表|分项报价表)\s*\n', text):
+    for m in re.finditer(r'(?:^|\n)(?:[一二三四五六七八九十\d]+[、.。]\s*|\d+(?:\.\d+)+\s*|\d+\s+)?分项报价表\s*\n', text):
         pos = m.start()
         # Skip if preceded by dots (TOC entry)
         prefix = text[max(0,pos-30):pos]
         if re.search(r'\.{3,}', prefix):
             continue
-        # Find the next major section
+        # Find the next major section: look for numbered section headers
+        # like "三、xxx", "3. xxx", "3 xxx" but not within the current section
         next_pos = len(text)
-        for end_marker in ['\n四、', '\n五、', '\n六、', '\n七、']:
+        for end_marker in ['\n三、', '\n四、', '\n五、', '\n六、', '\n七、',
+                           '\n3.', '\n4.', '\n5.', '\n6.', '\n7.']:
             ep = text.find(end_marker, pos + 10)
             if ep > pos and ep < next_pos:
                 next_pos = ep
+        # Also detect "3 法定代表人" style (section number + space + >=5 Chinese chars)
+        # Exclude data rows: section headers have no 4+ digit amounts on the line
+        for m in re.finditer(r'\n(\d{1,2})\s+[一-鿿]{5,}', text):
+            if m.start() > pos + 20 and m.start() < next_pos:
+                line_end = text.find('\n', m.end())
+                line = text[m.start()+1:line_end if line_end > m.start() else m.end()+80]
+                # Section headers are short lines without price amounts
+                if len(line) < 60 and not re.search(r'\d{4,}', line):
+                    next_pos = m.start()
+                    break
         bid_section = text[pos:next_pos]
         break
 
@@ -492,39 +554,62 @@ def _parse_pdf_bid_table(section, result):
     Columns: 序号|名称|型号/厂家|数量|单价(不含税)|总价(不含税)|税率|单价(含税)|总价(含税)|备注
     Handles both 元 and 万 unit formats."""
     clean = re.sub(r'[.]{3,}\s*\d*', '', section)
-    clean = re.sub(r'\n\s*\d{1,3}\s*\n', '\n', clean)
+    clean = re.sub(r'\n\s*\d{2,3}\s*\n', '\n', clean)
 
-    if not re.search(r'序\s*号.*产品', clean, re.DOTALL):
+    # Find the table header in the full text.
+    # First try single-line match (most common), then fall back to multi-line (DOTALL).
+    header_match = re.search(r'序\s*号[^\n]*(?:产品|分项名称|服务名称|名称|型号)', clean)
+    if not header_match:
+        header_match = re.search(r'序\s*号.*?(?:产品|分项\s*名\s*称|服务名称|名称|型号)', clean, re.DOTALL)
+    if not header_match:
         return
 
     lines = clean.split('\n')
+    # Determine the line index where the header ends
+    header_end_pos = header_match.end()
+    header_end_line = clean[:header_end_pos].count('\n')
+    data_start = header_end_line + 1  # first line after the header
 
-    # Find table boundaries
-    data_start = data_end = None
-    for i, line in enumerate(lines):
-        s = line.strip()
-        if not s: continue
-        if re.search(r'序\s*号.*产品', s) or re.search(r'产品.*服务名称', s) or re.search(r'/生产厂家', s):
-            data_start = i + 1
-        if data_start and (s.startswith('合计') or re.match(r'^[四五六七八九十]、', s)):
-            data_end = i
-            break
-    if data_start is None or data_end is None:
-        return
-
-    # Filter data lines: keep only those with meaningful content
-    data_lines = []
-    for i in range(data_start, data_end):
+    # Find table end (合计/总价/小计 row)
+    data_end = None
+    for i in range(data_start, len(lines)):
         s = lines[i].strip()
         if not s: continue
-        if len(s) < 6 and re.match(r'^[（(]?[\w%比价备注号量单总]{1,4}[）)]?$', s): continue
-        if s in ('产品型号', '/生产厂家', '数量', '总价（元）', '单价（元）',
-                 '总价(元)', '单价(元)', '产品/服务名称'): continue
+        if s.startswith('合计') or s.startswith('总价') or s.startswith('小计') or re.match(r'^[三四五六七八九十]、', s):
+            data_end = i
+            break
+    if data_end is None:
+        return
+
+    # Skip past multi-line header: find the first actual data line.
+    # Format 1: "1 数据采集" (row number + Chinese on same line)
+    # Format 2: "1" on its own line (row number isolated, name on next line)
+    first_data = data_start
+    for i in range(data_start, data_end):
+        s = lines[i].strip()
+        if re.match(r'^\d{1,2}\s+[一-鿿]', s):
+            first_data = i
+            break
+        # Row number on its own line followed by Chinese name on next line
+        if re.match(r'^\d{1,2}$', s) and i + 1 < data_end:
+            next_s = lines[i + 1].strip()
+            if next_s and re.match(r'^[一-鿿]', next_s):
+                first_data = i
+                break
+
+    # Collect data lines from first_data to data_end
+    data_lines = []
+    for i in range(first_data, data_end):
+        s = lines[i].strip()
+        if not s: continue
+        # Skip pure page numbers and short numeric-only lines
+        if re.match(r'^\d{1,3}$', s): continue
         data_lines.append(s)
 
     # Merge name lines into rows. A data line has amounts (4+ digits or NN.N万).
-    # When a data line starts with trailing Chinese name text (before "/" or "--" separator),
-    # append that text to the name and keep manufacturer+amounts as the data line.
+    # When a data line starts with trailing Chinese name text (before "/", "--", a
+    # unit word, or — if name_parts already has entries — before a number), append
+    # that text to the name and keep the rest as data.
     merged_rows = []
     name_parts = []
     for s in data_lines:
@@ -534,6 +619,14 @@ def _parse_pdf_bid_table(section, result):
             prefix_match = re.match(r'([一-鿿]{2,})\s*/\s', s)
             if not prefix_match:
                 prefix_match = re.match(r'([一-鿿]{2,})\s*--\s', s)
+            # Also handle wrapped name before unit words
+            if not prefix_match:
+                prefix_match = re.match(r'([一-鿿]{2,})\s+(?:套|台|个|项|份|只|件|组|次|张|本|支|把|块|根|条|片|辆|艘|架|部|册|包|箱|桶|瓶|袋|盒|卷|对|双|打)\s', s)
+            # When we already have name parts and the line starts with Chinese
+            # text followed by a number, it's a wrapped name continuation.
+            # Use lookahead to not consume the number itself.
+            if not prefix_match and name_parts:
+                prefix_match = re.match(r'([一-鿿]{2,})\s+(?=\d)', s)
             if prefix_match:
                 name_parts.append(prefix_match.group(1))
                 s = s[prefix_match.end():]
@@ -562,7 +655,7 @@ def _parse_pdf_bid_table(section, result):
                     v *= 10000
                 nums_parsed.append(v)
         else:
-            nums = re.findall(r'(\d+)', data)
+            nums = re.findall(r'(\d+(?:\.\d+)?)', data)
             nums_parsed = [float(n) for n in nums]
 
         if len(nums_parsed) < 3:
@@ -583,13 +676,34 @@ def _parse_pdf_bid_table(section, result):
         if not manufacturer or manufacturer in ('/', '--', '-'):
             manufacturer = None
 
-        # Column assignment (6-value row: count, up_ex, tp_ex, tax, up_in, tp_in)
-        count = int(smalls[0]) if smalls and smalls[0] < 20 else 1
-        unit_price_ex = larges[0] * multiplier if not uses_wan else larges[0]
-        total_ex = larges[1] * multiplier if not uses_wan else larges[1]
-        tax_val = int(smalls[1]) if len(smalls) > 1 and smalls[1] < 30 else int(smalls[0]) if len(smalls) == 1 and smalls[0] < 30 else None
-        unit_price_in = (larges[2] * multiplier if len(larges) > 2 else None) if not uses_wan else (larges[2] if len(larges) > 2 else None)
-        total_in = (larges[3] * multiplier if len(larges) > 3 else total_ex) if not uses_wan else (larges[3] if len(larges) > 3 else total_ex)
+        # Column assignment.
+        # When 4 large values: [unit_ex, unit_in, total_ex, total_in] (most common)
+        # When 2-3 large values: [unit_ex, total_ex, (total_in)]
+        if len(larges) >= 4:
+            # 4 large values: typical format unit_ex, unit_in, total_ex, total_in
+            unit_price_ex = larges[0]
+            unit_price_in = larges[1]
+            total_ex = larges[2]
+            total_in = larges[3]
+        else:
+            unit_price_ex = larges[0] * multiplier if not uses_wan else larges[0]
+            total_ex = larges[1] * multiplier if not uses_wan else larges[1]
+            unit_price_in = (larges[2] * multiplier if len(larges) > 2 else None) if not uses_wan else (larges[2] if len(larges) > 2 else None)
+            total_in = (larges[3] * multiplier if len(larges) > 3 else total_ex) if not uses_wan else (larges[3] if len(larges) > 3 else total_ex)
+
+        # Count detection: prefer the single-digit or small value before tax rate
+        count = 1
+        if smalls:
+            # Filter out decimal remainders (0.0 from ".00" splits)
+            real_smalls = [v for v in smalls if v >= 1]
+            if real_smalls:
+                count = int(real_smalls[0])
+        # Tax rate: find value in 1-30 range from real_smalls
+        tax_val = None
+        if smalls:
+            real_smalls = [v for v in smalls if 1 <= v <= 30]
+            if real_smalls:
+                tax_val = int(real_smalls[-1])  # last small value is usually tax rate
 
         # For 万 format, all large values are already multiplied
         if uses_wan:
@@ -617,13 +731,16 @@ def _parse_pdf_bid_table(section, result):
     if items:
         result['subItemPrice'] = items
         if not result.get('totalPrice'):
-            m = re.search(r'合计\s+([\d.]+)\s*万', section)
-            if m:
-                result['totalPrice'] = _parse_amount(m.group(1) + '万')
-            else:
-                m = re.search(r'合计\s+(\d{6,8})', section)
+            # Try various total-line patterns: 合计, 总价, 小计
+            for kw in ['合计', '总价', '小计']:
+                m = re.search(kw + r'\s+([\d.]+)\s*万', section)
+                if m:
+                    result['totalPrice'] = _parse_amount(m.group(1) + '万')
+                    break
+                m = re.search(kw + r'\s+(\d{6,8}(?:\.\d{2})?)', section)
                 if m:
                     result['totalPrice'] = float(m.group(1))
+                    break
 
 # ── Text Similarity ─────────────────────────────────────────────
 def find_common_segments(text1, text2, min_len=15):
