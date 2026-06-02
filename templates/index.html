@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>星易查 — 围串标风险识别分析系统</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700;9..40,800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+
+<div class="scanline"></div>
+
+<div class="app-container">
+  <div class="top-bar">
+    <button class="btn btn-ghost btn-sm" onclick="openHistory()">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+      历史记录
+    </button>
+  </div>
+
+  <header class="app-header">
+    <div class="header-badge">
+      <span class="badge-dot"></span>
+      BID FORENSICS
+    </div>
+    <div class="header-brand">
+      <div class="logo-mark">
+        <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
+          <rect x="2" y="2" width="32" height="32" rx="8" stroke="currentColor" stroke-width="2"/>
+          <circle cx="18" cy="14" r="5" stroke="currentColor" stroke-width="2"/>
+          <path d="M10 26c0-4.418 3.582-8 8-8s8 3.582 8 8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <circle cx="28" cy="10" r="2" fill="currentColor"/>
+          <circle cx="8" cy="10" r="1.5" fill="currentColor"/>
+        </svg>
+      </div>
+      <div>
+        <h1>星易查</h1>
+        <p class="header-sub">围串标风险识别分析系统</p>
+      </div>
+    </div>
+    <p class="header-legal">依据《中华人民共和国招标投标法实施条例》第四十条</p>
+  </header>
+
+  <!-- Upload Section -->
+  <section class="upload-section" id="uploadSection">
+    <div class="upload-row">
+      <div class="upload-col">
+        <label class="col-label">标书文件 <span class="required">*</span></label>
+        <div class="upload-area" id="uploadArea">
+          <div class="upload-icon">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+            </svg>
+          </div>
+          <p class="upload-text">拖拽标书文件到此处</p>
+          <p class="upload-hint">.docx .doc .pdf — 至少 2 份</p>
+        </div>
+        <input type="file" id="fileInput" multiple accept=".docx,.doc,.pdf" hidden>
+        <div class="file-list" id="fileList"></div>
+      </div>
+      <div class="upload-col">
+        <label class="col-label">招标文件 / 技术要求 <span class="optional">可选</span></label>
+        <div class="upload-area upload-area-ref" id="refUploadArea">
+          <div class="upload-icon">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
+            </svg>
+          </div>
+          <p class="upload-text">拖拽招标文件</p>
+          <p class="upload-hint">用于扣减模板内容 — .docx .doc .pdf</p>
+        </div>
+        <input type="file" id="refFileInput" multiple accept=".docx,.doc,.pdf" hidden>
+        <div class="file-list" id="refFileList"></div>
+      </div>
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-primary" id="btnAnalyze" disabled>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+        请至少上传 2 份标书文件
+      </button>
+      <button class="btn btn-ghost" id="btnClear">清空</button>
+    </div>
+    <div class="progress-panel" id="progressPanel" style="display:none">
+      <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+      <div class="progress-text" id="progressText">准备中...</div>
+      <div class="progress-steps" id="progressSteps"></div>
+    </div>
+  </section>
+
+  <!-- Results Section -->
+  <section class="results-section" id="resultsSection" style="display:none">
+    <nav class="tabs-nav">
+      <button class="tab-btn active" data-tab="tab-verdict">综合结论</button>
+      <button class="tab-btn" data-tab="tab-metadata">元数据对比</button>
+      <button class="tab-btn" data-tab="tab-personnel">人员交叉</button>
+      <button class="tab-btn" data-tab="tab-similarity">文本查重</button>
+      <button class="tab-btn" data-tab="tab-pricing">报价分析</button>
+    </nav>
+
+    <div class="tab-content active" id="tab-verdict">
+      <div class="verdict-banner" id="verdictBanner"></div>
+      <div class="clauses-grid" id="clausesGrid"></div>
+    </div>
+
+    <div class="tab-content" id="tab-metadata">
+      <div id="metadataMatches"></div>
+      <div id="metadataTables"></div>
+    </div>
+
+    <div class="tab-content" id="tab-personnel">
+      <div id="personnelTables"></div>
+      <div id="personnelMatches"></div>
+    </div>
+
+    <div class="tab-content" id="tab-similarity">
+      <div id="similaritySummary"></div>
+      <div class="filter-bar">
+        <span class="filter-label">筛选</span>
+        <label class="filter-radio"><input type="radio" name="simFilter" value="all" checked onchange="renderSimilarity()"> 全部</label>
+        <label class="filter-radio"><input type="radio" name="simFilter" value="abnormal" onchange="renderSimilarity()"> 异常一致</label>
+        <label class="filter-radio"><input type="radio" name="simFilter" value="template" onchange="renderSimilarity()"> 模板匹配</label>
+      </div>
+      <div id="similarityDetails"></div>
+    </div>
+
+    <div class="tab-content" id="tab-pricing">
+      <div id="pricingTable"></div>
+      <div id="pricingFindings"></div>
+      <div id="subItemTable"></div>
+    </div>
+
+    <div class="download-row">
+      <button class="btn btn-primary" id="btnDownload">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        下载综合报告 (.docx)
+      </button>
+    </div>
+  </section>
+</div>
+
+<!-- Match Modal -->
+<div class="modal-overlay" id="matchModal" style="display:none">
+  <div class="modal-container">
+    <div class="modal-header">
+      <span class="modal-title" id="modalTitle"></span>
+      <div class="modal-nav">
+        <button class="btn btn-sm btn-ghost" id="btnPrevMatch">◀ 上一个</button>
+        <span class="modal-counter" id="matchCounter"></span>
+        <button class="btn btn-sm btn-ghost" id="btnNextMatch">下一个 ▶</button>
+      </div>
+      <button class="modal-close" id="btnCloseModal">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div id="matchReason"></div>
+      <div class="diff-pane">
+        <div class="diff-side">
+          <div class="diff-label" id="diffLabel1"></div>
+          <div class="diff-content" id="diffContent1"></div>
+        </div>
+        <div class="diff-side">
+          <div class="diff-label" id="diffLabel2"></div>
+          <div class="diff-content" id="diffContent2"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- History Modal -->
+<div class="modal-overlay" id="historyModal" style="display:none">
+  <div class="modal-container" style="max-width:640px;">
+    <div class="modal-header">
+      <span class="modal-title">📋 历史记录</span>
+      <button class="modal-close" id="btnCloseHistory">&times;</button>
+    </div>
+    <div class="modal-body" id="historyBody" style="max-height:60vh;overflow-y:auto;">
+      <p style="color:var(--text-muted);text-align:center;padding:32px;">加载中...</p>
+    </div>
+  </div>
+</div>
+
+<script src="/static/js/main.js?v=3"></script>
+</body>
+</html>

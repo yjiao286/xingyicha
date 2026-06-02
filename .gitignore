@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+venv/
+
+# macOS
+.DS_Store
+
+# IDE
+.claude/
+
+# Docker
+*.tar.gz
+
+# Uploads (运行时生成的投标文件)
+uploads/
+temp_uploads/
+
+# 部署文档 (非代码)
+部署手册.docx

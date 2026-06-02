@@ -1,0 +1,9 @@
+version: '3.8'
+services:
+  bid-analyzer:
+    build: .
+    ports:
+      - "5001:5001"
+    volumes:
+      - ./uploads:/data/uploads
+    restart: unless-stopped

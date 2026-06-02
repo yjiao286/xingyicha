@@ -1,0 +1,10 @@
+.git
+__pycache__
+*.pyc
+.env
+.DS_Store
+*.docx
+*.pdf
+uploads/
+*.log
+node_modules/
