@@ -2711,6 +2711,13 @@ def delete_history(history_id):
         return jsonify({'ok': True})
     return jsonify({'error': '记录不存在'}), 404
 
+@app.after_request
+def _nocache(response):
+    """Disable caching for static assets during development."""
+    if request.path.startswith('/static/'):
+        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    return response
+
 
 if __name__ == '__main__':
     import sys
