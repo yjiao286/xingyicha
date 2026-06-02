@@ -913,6 +913,47 @@ async function deleteHistory(id) {
   openHistory();
 }
 
+// ── Download Report ──
+btnDownload.addEventListener('click', async () => {
+  if (!analysisResult) {
+    alert('请先完成分析，再下载报告');
+    return;
+  }
+
+  const originalText = btnDownload.innerHTML;
+  btnDownload.disabled = true;
+  btnDownload.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg> 生成报告中...';
+
+  try {
+    const resp = await fetch('/api/report', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ analysis: analysisResult })
+    });
+
+    if (!resp.ok) {
+      const errData = await resp.json().catch(() => null);
+      throw new Error(errData?.error || `服务器错误 (${resp.status})`);
+    }
+
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = '围串标分析报告_' + new Date().toISOString().slice(0, 10).replace(/-/g, '') + '.docx';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    console.error('Report download failed:', err);
+    alert('报告生成失败: ' + (err.message || '未知错误'));
+  } finally {
+    btnDownload.disabled = false;
+    btnDownload.innerHTML = originalText;
+  }
+});
+
 document.getElementById('btnCloseHistory').addEventListener('click', () => {
   document.getElementById('historyModal').style.display = 'none';
 });

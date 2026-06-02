@@ -16,5 +16,8 @@ venv/
 uploads/
 temp_uploads/
 
+# 分析历史记录
+history/
+
 # 部署文档 (非代码)
 部署手册.docx
