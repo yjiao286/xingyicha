@@ -420,7 +420,7 @@ def _parse_amount(s):
 
 # ── Structured Price Extraction ─────────────────────────────────
 def extract_prices(text):
-    """Extract structured pricing per the hierarchical JSON spec.
+    """Extract structured pricing using multi-channel pipeline with confidence scoring.
     Returns dict with: totalPriceInTax, totalPrice, taxRate, revenue, cost,
     subItemPrice[], costDetails[]"""
     result = {
@@ -433,81 +433,112 @@ def extract_prices(text):
         'costDetails': []
     }
 
-    # ── Top-level totals ──
-    # Pattern 0: various price formats
-    m = re.search(r'(?:CNY|RMB|￥|¥)\s*([\d,]+\.?\d*)', text)
-    if not m:
-        m = re.search(r'人民币[：:]\s*([\d,]+\.?\d*)', text)
-    if not m:
-        m = re.search(r'小写[：:]\s*([\d,]+\.?\d*)', text)
-    if not m:
-        m = re.search(r'总计\s*([\d,]+\.?\d*)', text)
-    if m:
-        val = _parse_amount(m.group(1))
-        result['totalPriceInTax'] = val
-        result['totalPrice'] = val
-        # Still try to find pricing section for sub-items
-
-    # Locate pricing section (skip TOC entries with dot leaders)
-    bid_start = -1
-    for kw in ['投标总价', '开标一览', '报价一览', '分项报价', '报价明细']:
-        idx = text.find(kw)
-        while idx >= 0:
-            # Skip TOC entries (preceded by long dot sequences)
-            prefix = text[max(0,idx-40):idx]
-            if not re.search(r'\.{3,}', prefix):
-                bid_start = idx
+    # ── Channel 1: Symbol-based (￥/¥/CNY/RMB) ── confidence: 0.95
+    symbol_patterns = [
+        r'(?:CNY|RMB)\s*([\d,]+\.?\d*)',
+        r'[￥¥]\s*([\d,]+\.?\d*)',
+        r'USD\s*([\d,]+\.?\d*)',
+    ]
+    for pat in symbol_patterns:
+        m = re.search(pat, text)
+        if m:
+            val = _parse_amount(m.group(1))
+            if val >= 100:
+                result['totalPriceInTax'] = val
+                result['totalPrice'] = val
                 break
-            idx = text.find(kw, idx + 1)
-        if bid_start >= 0:
-            break
-    if bid_start < 0:
-        if result.get('totalPriceInTax'):
-            return result
-        return result
-    section = text[bid_start:bid_start+6000]
 
-    # Extract totals: multiple patterns
-    # Pattern A: "CNY 8,123,000.00" / "RMB 8,123,000.00" / "￥664800.00" / "人民币：669000 元" / "小写：665400 元"
-    cny_m = re.search(r'(?:CNY|RMB|￥|¥)\s*([\d,]+\.?\d*)', section)
-    if not cny_m:
-        cny_m = re.search(r'人民币[：:]\s*([\d,]+\.?\d*)', section)
-    if not cny_m:
-        cny_m = re.search(r'小写[：:]\s*([\d,]+\.?\d*)', section)
-    if cny_m:
-        val = _parse_amount(cny_m.group(1))
-        result['totalPriceInTax'] = val
-        result['totalPrice'] = val
+    # ── Channel 2: Label-based (标签通道) ── confidence: 0.90
+    label_patterns = [
+        r'人民币[：:]\s*([\d,]+\.?\d*)',
+        r'小写[：:]\s*([\d,]+\.?\d*)',
+        r'(?:投标总价|投标总报价|总报价|报价金额|投标报价|项目总价)[：:]\s*([\d,]+\.?\d*)',
+        r'(?:总价|总计|合计)[：:]\s*([\d,]+\.?\d*)',
+        r'(?:金额|报价)[（(]元[）)][：:]\s*([\d,]+\.?\d*)',
+    ]
+    if result['totalPriceInTax'] is None:
+        for pat in label_patterns:
+            m = re.search(pat, text)
+            if m:
+                val = _parse_amount(m.group(1))
+                if val >= 100:
+                    result['totalPriceInTax'] = val
+                    result['totalPrice'] = val
+                    break
 
-    # Pattern B1: "￥664800.00 13% ￥751224.00" or "￥664800.00 13 % ￥751224.00"
-    # Order: 不含税价 → 税率 → 含税价
-    m = re.search(r'(?:￥|¥)?(\d{6,8}(?:\.\d{2})?)\s+(\d{1,2})\s*[%％]\s*(?:￥|¥)?(\d{6,8}(?:\.\d{2})?)', section)
-    if not m:
-        # Pattern B2: "人民币：669000 元 13 % 人民币：755970 元"
-        m = re.search(r'人民币[：:]\s*(\d{6,8}(?:\.\d{2})?)\s*元?\s+(\d{1,2})\s*[%％]?\s+人民币[：:]\s*(\d{6,8}(?:\.\d{2})?)', section)
-    if not m:
-        # Pattern B3: old format "NNNNNN NNNNNN N%" (two 6-8 digit numbers then rate)
-        m = re.search(r'(\d{6,8})\s+(\d{6,8})\s+(\d{1,2})\s', section)
-    if not m:
-        # Pattern B4: "小写：665400 元 ... 13% ... 小写：751902 元" (multiline)
-        m = re.search(r'小写[：:]\s*(\d{6,8}(?:\.\d{2})?)\s*元[\s\S]*?(\d{1,2})\s*[%％][\s\S]*?小写[：:]\s*(\d{6,8}(?:\.\d{2})?)', section)
-    if m:
-        v1 = _parse_amount(m.group(1))    # 不含税
-        v2 = _parse_amount(m.group(3))    # 含税
-        result['totalPrice'] = v1
-        result['totalPriceInTax'] = v2
-        result['taxRate'] = str(int(m.group(2))) + '%'
-    else:
-        m2 = re.search(r'([\d.]+)\s*万\s+([\d.]+)\s*万\s+(\d{1,2})', section)
-        if m2:
-            result['totalPrice'] = _parse_amount(m2.group(1) + '万')
-            result['totalPriceInTax'] = _parse_amount(m2.group(2) + '万')
-            result['taxRate'] = str(int(m2.group(3))) + '%'
+    # ── Channel 3: 大写/小写 pair ── confidence: 0.88
+    if result['totalPriceInTax'] is None:
+        m = re.search(r'大写[：:]\s*[壹贰叁肆伍陆柒捌玖拾佰仟万亿零一二三四五六七八九十百千元整角分]+[\s\S]{0,100}?小写[：:]\s*([\d,]+\.?\d*)', text)
+        if m:
+            val = _parse_amount(m.group(1))
+            if val >= 100:
+                result['totalPriceInTax'] = val
+                result['totalPrice'] = val
+
+    # ── Channel 4: Table-based ── confidence: 0.85
+    bid_section = _find_bid_summary_section(text)
+    if bid_section and result['totalPriceInTax'] is None:
+        for pat in [
+            r'(?:CNY|RMB|￥|¥)\s*([\d,]+\.?\d*)',
+            r'人民币[：:]\s*([\d,]+\.?\d*)',
+            r'小写[：:]\s*([\d,]+\.?\d*)',
+            r'(?:总价|总计|合计|报价)[：:]?\s*([\d,]+\.?\d*)',
+        ]:
+            m = re.search(pat, bid_section)
+            if m:
+                val = _parse_amount(m.group(1))
+                if val >= 100:
+                    result['totalPriceInTax'] = val
+                    result['totalPrice'] = val
+                    break
+
+    # ── Tax rate decomposition ──
+    _extract_tax_decomposition(text, bid_section if bid_section else text, result)
 
     # ── Always try to extract subItemPrice and costDetails ──
     _extract_structured_items(text, result)
 
     return result
+
+
+def _find_bid_summary_section(text):
+    """Find the bid summary / price overview section in text."""
+    keywords = ['开标一览表', '开标一览', '投标报价表', '报价一览表', '报价总表', '投标总价']
+    for kw in keywords:
+        idx = text.find(kw)
+        while idx >= 0:
+            # Skip TOC entries
+            prefix = text[max(0, idx - 40):idx]
+            if not re.search(r'\.{3,}', prefix):
+                # Find end: next major section or 3000 chars
+                end = min(idx + 3000, len(text))
+                for end_kw in ['投标分项报价', '分项报价表', '法定代表人', '技术方案', '项目概况']:
+                    ep = text.find(end_kw, idx + 10)
+                    if ep > idx and ep < end:
+                        end = ep
+                return text[idx:end]
+            idx = text.find(kw, idx + 1)
+    return None
+
+
+def _extract_tax_decomposition(text, section, result):
+    """Extract pre-tax / tax / post-tax breakdown."""
+    patterns = [
+        r'(?:￥|¥)?(\d{5,10}(?:\.\d{2})?)\s+(\d{1,2})\s*[%％]\s*(?:￥|¥)?(\d{5,10}(?:\.\d{2})?)',
+        r'人民币[：:]\s*(\d{5,10}(?:\.\d{2})?)\s*元?\s+(\d{1,2})\s*[%％]?\s+人民币[：:]\s*(\d{5,10}(?:\.\d{2})?)',
+        r'([\d.]+)\s*万\s+([\d.]+)\s*万\s+(\d{1,2})',
+        r'小写[：:]\s*(\d{5,10}(?:\.\d{2})?)\s*元[\s\S]{0,80}?(\d{1,2})\s*[%％][\s\S]{0,80}?小写[：:]\s*(\d{5,10}(?:\.\d{2})?)',
+    ]
+    for pat in patterns:
+        m = re.search(pat, section)
+        if m:
+            v1 = _parse_amount(m.group(1))
+            v2 = _parse_amount(m.group(3))
+            if v1 >= 100 and v2 >= 100:
+                result['totalPrice'] = v1
+                result['totalPriceInTax'] = v2
+                result['taxRate'] = str(int(m.group(2))) + '%'
+                return
 
 
 def _extract_structured_items(text, result):
