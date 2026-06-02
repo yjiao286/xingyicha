@@ -1496,6 +1496,13 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
     # ── Compile personnel cross-comparison (all group pairs) ──
     personnel_matches = []
     personnel_dedup = set()
+
+    # Collect all persons per file for cross-file matching
+    all_persons_map = {}
+    for gn in out_names:
+        persons = all_personnel.get(gn, {}).get('all_persons', [])
+        all_persons_map[gn] = persons
+
     if len(out_names) >= 2:
         for i in range(len(out_names)):
             for j in range(i+1, len(out_names)):
@@ -1503,7 +1510,60 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
                 pi, pj = all_personnel[gi], all_personnel[gj]
                 mi, mj = group_meta.get(gi, {}), group_meta.get(gj, {})
 
-                # Check if one company's authorized rep = another's creator
+                # ── Layer 1: Exact name match (shared personnel across files) ──
+                names_i = {p['name']: p for p in all_persons_map[gi]}
+                names_j = {p['name']: p for p in all_persons_map[gj]}
+                shared_names = set(names_i.keys()) & set(names_j.keys())
+
+                for name in shared_names:
+                    role_i = names_i[name].get('role', 'other')
+                    role_j = names_j[name].get('role', 'other')
+                    if role_i == role_j:
+                        key = f'same_person|{name}|{gi}|{gj}'
+                        if key not in personnel_dedup:
+                            personnel_dedup.add(key)
+                            personnel_matches.append({
+                                'type': '人员重叠（同角色）',
+                                'detail': f'"{name}"（{role_i}）同时出现在 {gi} 和 {gj} 中',
+                                'severity': 'high'
+                            })
+                    else:
+                        key = f'same_person_diff_role|{name}|{gi}|{gj}'
+                        if key not in personnel_dedup:
+                            personnel_dedup.add(key)
+                            personnel_matches.append({
+                                'type': '人员重叠（不同角色）',
+                                'detail': f'"{name}"在{gi}中为{role_i}，在{gj}中为{role_j}',
+                                'severity': 'medium'
+                            })
+
+                # ── Layer 2: Phone cross-match ──
+                phone_i = pi.get('phone') or (pi.get('contacts') or {}).get('phone')
+                phone_j = pj.get('phone') or (pj.get('contacts') or {}).get('phone')
+                if phone_i and phone_j and phone_i == phone_j:
+                    key = f'same_phone|{phone_i}'
+                    if key not in personnel_dedup:
+                        personnel_dedup.add(key)
+                        personnel_matches.append({
+                            'type': '联系电话相同',
+                            'detail': f'{gi} 和 {gj} 联系电话均为 {phone_i}',
+                            'severity': 'high'
+                        })
+
+                # ── Layer 3: ID number cross-match ──
+                id_i = pi.get('id_number')
+                id_j = pj.get('id_number')
+                if id_i and id_j and id_i == id_j:
+                    key = f'same_id|{id_i}'
+                    if key not in personnel_dedup:
+                        personnel_dedup.add(key)
+                        personnel_matches.append({
+                            'type': '身份证号相同',
+                            'detail': f'{gi} 和 {gj} 出现同一身份证号 {id_i[:6]}****',
+                            'severity': 'critical'
+                        })
+
+                # ── Layer 4: Auth rep vs document creator cross-match ──
                 if pi.get('authorized_rep') and mj.get('creator'):
                     if pi['authorized_rep'] == mj['creator']:
                         key = f'auth_creator|{pi["authorized_rep"]}'
@@ -1525,7 +1585,7 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
                                 'severity': 'high'
                             })
 
-                # Check if same person modified both
+                # ── Layer 5: Same last modifier ──
                 if mi.get('last_modified_by') and mj.get('last_modified_by'):
                     if mi['last_modified_by'] == mj['last_modified_by']:
                         key = f'same_modifier|{mi["last_modified_by"]}'
@@ -1535,6 +1595,21 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
                                 'type': '最后修改人为同一人',
                                 'detail': f'"{mi["last_modified_by"]}"同时为 {gi} 和 {gj} 的最后修改人',
                                 'severity': 'high'
+                            })
+
+                # ── Layer 6: Personnel overlap rate ──
+                if len(names_i) >= 2 and len(names_j) >= 2:
+                    overlap = len(shared_names)
+                    total = min(len(names_i), len(names_j))
+                    overlap_rate = overlap / total if total > 0 else 0
+                    if overlap_rate >= 0.5:
+                        key = f'high_overlap|{gi}|{gj}'
+                        if key not in personnel_dedup:
+                            personnel_dedup.add(key)
+                            personnel_matches.append({
+                                'type': '人员高度重叠',
+                                'detail': f'{gi} 和 {gj} 提取到的人员重叠率 {overlap_rate:.0%}（{overlap}/{total}）',
+                                'severity': 'medium'
                             })
 
         # Phone anomaly (per file, not pairwise)
@@ -1547,7 +1622,7 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
                     'severity': 'medium'
                 })
 
-    _progress('personnel', '人员交叉比对', 40, f'交叉比对法定代表人、授权代表等，发现 {len(personnel_matches)} 处异常')
+    _progress('personnel', '人员交叉比对', 40, f'交叉比对法定代表人、授权代表、项目成员等，发现 {len(personnel_matches)} 处异常')
 
     # ── Text similarity findings (summary before pricing) ──
     total_abnormal = sum(p['abnormal_count'] for p in similarity['pair_results'])
