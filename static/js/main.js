@@ -699,11 +699,22 @@ function renderPricing() {
       subHtml += '<div style="margin-bottom:14px;border:1px solid var(--border-light);border-radius:8px;padding:12px;">';
       subHtml += '<strong style="font-size:14px;">' + escapeHtml(c.name || ('分项 ' + (ci + 1))) + '</strong>';
       if (c.items && c.items.length > 1) {
-        subHtml += '<table class="data-table" style="margin-top:8px;"><thead><tr><th>投标人</th><th>单价</th><th>数量</th><th>不含税总价</th><th>含税总价</th><th>税率</th></tr></thead><tbody>';
+        // Check if any item has manufacturer/model extras
+        var hasExtras = c.items.some(function(it) { return it.extras && it.extras['厂家/型号']; });
+        var hasType = c.items.some(function(it) { return it.type; });
+
+        var headerCols = '<th>投标人</th>';
+        if (hasType) headerCols += '<th>来源</th>';
+        if (hasExtras) headerCols += '<th>厂家/型号</th>';
+        headerCols += '<th>单价</th><th>数量</th><th>不含税总价</th><th>含税总价</th><th>税率</th>';
+
+        subHtml += '<table class="data-table" style="margin-top:8px;"><thead><tr>' + headerCols + '</tr></thead><tbody>';
         c.items.forEach(function(it) {
           var sf = (it.file || '').length > 25 ? (it.file || '').substring(0, 25) + '...' : (it.file || '');
           subHtml += '<tr>';
           subHtml += '<td>' + escapeHtml(sf) + '</td>';
+          if (hasType) subHtml += '<td>' + escapeHtml(it.type || '—') + '</td>';
+          if (hasExtras) subHtml += '<td>' + escapeHtml((it.extras && it.extras['厂家/型号']) || '—') + '</td>';
           subHtml += '<td>' + (it.unitPrice != null ? it.unitPrice.toLocaleString() : '—') + '</td>';
           subHtml += '<td>' + (it.count != null ? it.count : '—') + '</td>';
           subHtml += '<td>' + (it.totalPrice != null ? it.totalPrice.toLocaleString() : '—') + '</td>';
