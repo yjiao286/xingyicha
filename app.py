@@ -568,8 +568,7 @@ def _extract_structured_items(text, result):
         # Find next major section boundary
         next_pos = len(text)
         for end_marker in ['\n三、', '\n四、', '\n五、', '\n六、', '\n七、',
-                           '\n3.', '\n4.', '\n5.', '\n6.', '\n7.',
-                           '\n3 ', '\n4 ', '\n5 ', '\n6 ', '\n7 ']:
+                           '\n3.', '\n4.', '\n5.', '\n6.', '\n7.']:
             ep = text.find(end_marker, pos + 10)
             if ep > pos and ep < next_pos:
                 next_pos = ep
@@ -622,198 +621,231 @@ def _extract_structured_items(text, result):
         result['cost'] = sum(item['totalPrice'] for item in result['costDetails'])
 
 
-def _parse_pdf_bid_table(section, result):
-    """Parse a PDF 分项报价表 into structured subItemPrice items with full column extraction.
-    Columns: 序号|名称|型号/厂家|数量|单价(不含税)|总价(不含税)|税率|单价(含税)|总价(含税)|备注
-    Handles both 元 and 万 unit formats."""
-    clean = re.sub(r'[.]{3,}\s*\d*', '', section)
-    clean = re.sub(r'\n\s*\d{2,3}\s*\n', '\n', clean)
 
-    # Find the table header in the full text.
-    # First try single-line match (most common), then fall back to multi-line (DOTALL).
-    header_match = re.search(r'序\s*号[^\n]*(?:产品|分项名称|服务名称|名称|型号)', clean)
-    if not header_match:
-        header_match = re.search(r'序\s*号.*?(?:产品|分项\s*名\s*称|服务名称|名称|型号)', clean, re.DOTALL)
-    if not header_match:
-        return
+def _parse_pdf_bid_table(section, result):
+    """Parse a pricing table section with dynamic column detection.
+    Automatically identifies column types regardless of ordering."""
+    clean = re.sub(r'[.]{3,}\s*\d*', '', section)
 
     lines = clean.split('\n')
-    # Determine the line index where the header ends
-    header_end_pos = header_match.end()
-    header_end_line = clean[:header_end_pos].count('\n')
-    data_start = header_end_line + 1  # first line after the header
 
-    # Find table end (合计/总价/小计 row)
+    # Find header row — look for 序号 + column name keywords
+    col_keywords = ['序号', '名称', '型号', '规格', '数量', '单价', '总价', '税率', '备注', '厂家']
+    header_line = -1
+    for i, line in enumerate(lines):
+        hits = sum(1 for kw in col_keywords if kw in line)
+        if hits >= 3:
+            header_line = i
+            break
+
+    if header_line < 0:
+        # Fallback: search relaxed
+        for i, line in enumerate(lines):
+            if re.search(r'序\s*号', line) and re.search(r'(?:名称|型号|产品|服务)', line):
+                header_line = i
+                break
+
+    if header_line < 0:
+        return
+
+    # ── Column type inference from header ──
+    col_order = _infer_columns(lines[header_line])
+
+    # ── Data row parsing ──
     data_end = None
-    for i in range(data_start, len(lines)):
+    for i in range(header_line + 1, len(lines)):
         s = lines[i].strip()
-        if not s: continue
-        if s.startswith('合计') or s.startswith('总价') or s.startswith('小计') or re.match(r'^[三四五六七八九十]、', s):
+        if not s:
+            continue
+        if any(s.startswith(kw) for kw in ['合计', '总价', '小计', '总计', '注：', '备注：']):
+            data_end = i
+            break
+        if re.match(r'^[三四五六七八九十]、', s):
             data_end = i
             break
     if data_end is None:
-        return
+        data_end = len(lines)
 
-    # Skip past multi-line header: find the first actual data line.
-    # Format 1: "1 数据采集" (row number + Chinese on same line)
-    # Format 2: "1" on its own line (row number isolated, name on next line)
-    first_data = data_start
-    for i in range(data_start, data_end):
+    # Collect and merge data lines
+    raw_rows = []
+    for i in range(header_line + 1, data_end):
         s = lines[i].strip()
-        if re.match(r'^\d{1,2}\s+[一-鿿]', s):
-            first_data = i
-            break
-        # Row number on its own line followed by Chinese name on next line
-        if re.match(r'^\d{1,2}$', s) and i + 1 < data_end:
-            next_s = lines[i + 1].strip()
-            if next_s and re.match(r'^[一-鿿]', next_s):
-                first_data = i
-                break
+        if not s or re.match(r'^\d{1,3}$', s):
+            continue
+        raw_rows.append(s)
 
-    # Collect data lines from first_data to data_end
-    data_lines = []
-    for i in range(first_data, data_end):
-        s = lines[i].strip()
-        if not s: continue
-        # Skip pure page numbers and short numeric-only lines
-        if re.match(r'^\d{1,3}$', s): continue
-        data_lines.append(s)
-
-    # Merge name lines into rows. A data line has amounts (4+ digits or NN.N万).
-    # When a data line starts with trailing Chinese name text (before "/", "--", a
-    # unit word, or — if name_parts already has entries — before a number), append
-    # that text to the name and keep the rest as data.
+    # Merge wrapped names: a line with no amounts merges into the next line with amounts
     merged_rows = []
-    name_parts = []
-    for s in data_lines:
+    pending_name = []
+    for s in raw_rows:
         has_amounts = bool(re.search(r'(\d{4,}|[\d.]+\s*万)', s))
         if has_amounts:
-            # Check for trailing name text before " / " or " -- " separator
-            prefix_match = re.match(r'([一-鿿]{2,})\s*/\s', s)
-            if not prefix_match:
-                prefix_match = re.match(r'([一-鿿]{2,})\s*--\s', s)
-            # Also handle wrapped name before unit words
-            if not prefix_match:
-                prefix_match = re.match(r'([一-鿿]{2,})\s+(?:套|台|个|项|份|只|件|组|次|张|本|支|把|块|根|条|片|辆|艘|架|部|册|包|箱|桶|瓶|袋|盒|卷|对|双|打)\s', s)
-            # When we already have name parts and the line starts with Chinese
-            # text followed by a number, it's a wrapped name continuation.
-            # Use lookahead to not consume the number itself.
-            if not prefix_match and name_parts:
-                prefix_match = re.match(r'([一-鿿]{2,})\s+(?=\d)', s)
-            if prefix_match:
-                name_parts.append(prefix_match.group(1))
-                s = s[prefix_match.end():]
-            merged_rows.append((''.join(name_parts), s))
-            name_parts = []
+            if pending_name:
+                merged_rows.append((''.join(pending_name), s))
+                pending_name = []
+            else:
+                merged_rows.append(('', s))
         else:
-            name_parts.append(s)
+            pending_name.append(s)
 
-    # Parse each row
+    # Process each data row
     items = []
-    for name, data in merged_rows:
+    prev_name = None
+    for name_part, data in merged_rows:
+        name = name_part.strip() if name_part.strip() else ''
         name = re.sub(r'^\d+\s*', '', name).strip()
-        if len(name) < 5: continue
+        # When name is on the same line as data (not wrapped), extract it from data
+        if not name:
+            rest = re.sub(r'^\d+\s*', '', data).strip()
+            # Find first digit position (count field) in rest
+            first_digit = re.search(r'\d', rest)
+            if first_digit:
+                prefix = rest[:first_digit.start()].strip()
+                # prefix is "name mfr" — split on last whitespace to separate
+                parts = prefix.rsplit(None, 1)
+                name = parts[0].strip() if parts else prefix
+        if not name and prev_name:
+            name = prev_name
+        elif name:
+            prev_name = name
 
-        # Detect 万 unit
+        if len(name) < 2:
+            continue
+
+        # Extract numbers (strip leading row number first)
+        data = re.sub(r'^\d+\s*', '', data).strip()
         uses_wan = '万' in data
-        multiplier = 10000 if uses_wan else 1
-
-        # Extract ALL numbers from data line preserving order
         if uses_wan:
-            # "39 万 39 万 3 40.17 万 40.17 万" → parse each number-万 pair
             nums_parsed = []
             for m in re.finditer(r'([\d.]+)\s*(万)?', data):
                 v = float(m.group(1))
-                if m.group(2):  # followed by 万
+                if m.group(2):
                     v *= 10000
                 nums_parsed.append(v)
         else:
             nums = re.findall(r'(\d+(?:\.\d+)?)', data)
             nums_parsed = [float(n) for n in nums]
 
-        if len(nums_parsed) < 3:
+        if len(nums_parsed) < 2:
             continue
 
-        # Separate: small nums (count=1, tax=3) vs large nums (prices >= 100)
+        # Separate small values (count, tax rate) from large values (prices)
         smalls = [v for v in nums_parsed if v < 100]
         larges = [v for v in nums_parsed if v >= 100]
 
         if len(larges) < 2:
             continue
 
-        # Extract manufacturer from data: text before the first number
-        # "北邮自研 1 406000..." → mfr="北邮自研", "-- 1 39 万..." → mfr=None
-        mfr_match = re.match(r'([^\d]+?)\s+\d', data)
-        manufacturer = mfr_match.group(1).strip() if mfr_match else ''
-        manufacturer = re.sub(r'^[/\-\s]+', '', manufacturer).strip()
-        if not manufacturer or manufacturer in ('/', '--', '-'):
-            manufacturer = None
+        # ── Column mapping using inferred order ──
+        item = {'priceName': name, 'unit': '项', 'extras': {}, 'details': []}
 
-        # Column assignment.
-        # When 4 large values: [unit_ex, unit_in, total_ex, total_in] (most common)
-        # When 2-3 large values: [unit_ex, total_ex, (total_in)]
-        if len(larges) >= 4:
-            # 4 large values: typical format unit_ex, unit_in, total_ex, total_in
-            unit_price_ex = larges[0]
-            unit_price_in = larges[1]
-            total_ex = larges[2]
-            total_in = larges[3]
-        else:
-            unit_price_ex = larges[0] * multiplier if not uses_wan else larges[0]
-            total_ex = larges[1] * multiplier if not uses_wan else larges[1]
-            unit_price_in = (larges[2] * multiplier if len(larges) > 2 else None) if not uses_wan else (larges[2] if len(larges) > 2 else None)
-            total_in = (larges[3] * multiplier if len(larges) > 3 else total_ex) if not uses_wan else (larges[3] if len(larges) > 3 else total_ex)
+        _assign_columns(item, nums_parsed, smalls, larges, col_order, uses_wan)
 
-        # Count detection: prefer the single-digit or small value before tax rate
-        count = 1
-        if smalls:
-            # Filter out decimal remainders (0.0 from ".00" splits)
-            real_smalls = [v for v in smalls if v >= 1]
-            if real_smalls:
-                count = int(real_smalls[0])
-        # Tax rate: find value in 1-30 range from real_smalls
-        tax_val = None
-        if smalls:
-            real_smalls = [v for v in smalls if 1 <= v <= 30]
-            if real_smalls:
-                tax_val = int(real_smalls[-1])  # last small value is usually tax rate
+        # Manufacturer extraction
+        mfr_match = re.match(r'([^\d]+?)\s+(?=\d)', data)
+        if mfr_match:
+            mfr = mfr_match.group(1).strip()
+            mfr = re.sub(r'^[/\-\s]+', '', mfr)
+            if mfr and mfr != name and mfr not in ('/', '--', '-'):
+                item['extras']['厂家/型号'] = mfr
 
-        # For 万 format, all large values are already multiplied
-        if uses_wan:
-            unit_price_ex = larges[0]
-            total_ex = larges[1]
-            total_in = larges[-1] if len(larges) > 2 else total_ex
-
-        extras = {}
-        if manufacturer:
-            extras['厂家/型号'] = manufacturer
-        tax_str = (str(tax_val) + '%') if tax_val else result.get('taxRate')
-
-        items.append({
-            'priceName': name,
-            'unit': '项',
-            'count': count,
-            'unitPrice': unit_price_ex,
-            'tax': tax_str,
-            'totalPrice': total_ex,
-            'totalPriceInTax': total_in,
-            'extras': extras,
-            'details': []
-        })
+        if item.get('totalPrice'):
+            items.append(item)
 
     if items:
         result['subItemPrice'] = items
-        if not result.get('totalPrice'):
-            # Try various total-line patterns: 合计, 总价, 小计
-            for kw in ['合计', '总价', '小计']:
-                m = re.search(kw + r'\s+([\d.]+)\s*万', section)
-                if m:
-                    result['totalPrice'] = _parse_amount(m.group(1) + '万')
-                    break
-                m = re.search(kw + r'\s+(\d{6,8}(?:\.\d{2})?)', section)
-                if m:
-                    result['totalPrice'] = float(m.group(1))
-                    break
+        _extract_summary_total(section, result)
+
+
+def _infer_columns(header_line):
+    """Infer column types and order from header text.
+    Returns list of column type strings sorted by position."""
+    col_map = []
+    detectors = [
+        (r'序\s*号', 'seq'),
+        (r'(?:分项\s*)?名\s*称|产品|服务|项目|内容', 'name'),
+        (r'型号|规格|厂家|制造商|品牌', 'model'),
+        (r'数\s*量', 'count'),
+        (r'单价\s*[（(]?\s*不含税\s*[）)]?|不含税\s*单价', 'unit_price_ex'),
+        (r'单价\s*[（(]?\s*含税\s*[）)]?|含税\s*单价', 'unit_price_in'),
+        (r'总价\s*[（(]?\s*不含税\s*[）)]?|不含税\s*总价', 'total_ex'),
+        (r'总价\s*[（(]?\s*含税\s*[）)]?|含税\s*总价', 'total_in'),
+        (r'税\s*率', 'tax_rate'),
+        (r'备\s*注', 'remark'),
+    ]
+    for pattern, col_type in detectors:
+        m = re.search(pattern, header_line)
+        if m:
+            col_map.append((col_type, m.start()))
+    col_map.sort(key=lambda x: x[1])
+
+    # If no explicit ex/in split, use generic unit_price/total labels
+    has_explicit = any(c[0] in ('unit_price_ex', 'unit_price_in', 'total_ex', 'total_in') for c in col_map)
+    if not has_explicit:
+        col_map = [(t if t not in ('unit_price_ex', 'unit_price_in') else 'unit_price', pos)
+                   for t, pos in col_map]
+
+    return [c[0] for c in col_map]
+
+
+def _assign_columns(item, all_nums, smalls, larges, col_order, uses_wan):
+    """Assign extracted numbers to item fields based on inferred column order."""
+    # Count: first small integer (1-999)
+    count = 1
+    for v in smalls:
+        if 1 <= v <= 999 and v == int(v):
+            count = int(v)
+            break
+    item['count'] = count
+
+    # Tax rate: value in 1-30 range
+    for v in reversed(smalls):
+        if 1 <= v <= 30:
+            item['tax'] = str(int(v)) + '%'
+            break
+
+    # Price columns: map large values to correct fields
+    # Common patterns:
+    # [unit_ex, unit_in, total_ex, total_in] (4 large values)
+    # [unit_ex, total_ex, total_in] (3 large values)
+    # [unit_ex, total_ex] (2 large values)
+
+    has_ex_in_split = any(col in col_order for col in ['unit_price_ex', 'unit_price_in', 'total_ex', 'total_in'])
+
+    if has_ex_in_split and len(larges) >= 4:
+        # Pattern: [unit_ex, total_ex, unit_in, total_in]
+        item['unitPrice'] = larges[0]
+        item['totalPrice'] = larges[1]
+        item['totalPriceInTax'] = larges[3]
+    elif len(larges) >= 4:
+        # Pattern without explicit split: [unit, total, ...] — use safe defaults
+        item['unitPrice'] = larges[0]
+        item['totalPrice'] = larges[1]
+        item['totalPriceInTax'] = larges[-1]
+    elif len(larges) == 3:
+        # Pattern: [unit_ex, total_ex, total_in]
+        item['unitPrice'] = larges[0]
+        item['totalPrice'] = larges[1]
+        item['totalPriceInTax'] = larges[2]
+    elif len(larges) == 2:
+        # Pattern: [unit_ex, total_ex]
+        item['unitPrice'] = larges[0]
+        item['totalPrice'] = larges[1]
+        item['totalPriceInTax'] = larges[1]
+
+
+def _extract_summary_total(section, result):
+    """Extract total/summary line from pricing table section."""
+    for kw in ['合计', '总价', '小计', '总计']:
+        m = re.search(kw + r'\s+([\d.]+)\s*万', section)
+        if m:
+            result['totalPrice'] = _parse_amount(m.group(1) + '万')
+            return
+        m = re.search(kw + r'\s+(\d{5,12}(?:\.\d{2})?)', section)
+        if m:
+            result['totalPrice'] = float(m.group(1))
+            return
+
 
 # ── Text Similarity ─────────────────────────────────────────────
 def find_common_segments(text1, text2, min_len=15):
