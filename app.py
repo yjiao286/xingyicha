@@ -817,14 +817,10 @@ def _extract_structured_items(text, result):
         else:
             _parse_pdf_bid_table(bid_section, result)
 
-    # ── Global fallback: scan full text for docx pipe tables ──
-    # (section-based approach may miss tables far from the section header)
+    # ── Smart docx table scan: find pricing-relevant pipe tables anywhere in text ──
+    # Score each pipe table region by pricing relevance and parse only the best ones
     if not result.get('subItemPrice'):
-        # Find any pipe-separated table with header keywords anywhere in the text
-        pipe_lines_global = len(re.findall(r'\n[^|\n]+\|[^|\n]+\|[^\n]+', text))
-        if pipe_lines_global >= 3:
-            # Extract the region with the most dense pipe lines
-            _parse_docx_bid_table(text, result)
+        _scan_docx_tables_for_pricing(text, result)
 
     # ── Generic cost line extraction ──
     # Normalize cost names for dedup and noise filtering
@@ -1188,223 +1184,215 @@ def _extract_summary_total(section, result):
             return
 
 
+def _scan_docx_tables_for_pricing(text, result):
+    """Scan full text for pipe-separated tables and parse only the most pricing-relevant ones.
+    Filters out personnel, project history, tech spec tables by scoring header keywords."""
+    # Split text into pipe-table regions (consecutive lines with |)
+    lines = text.split('\n')
+    regions = []
+    region_start = -1
+    for i, line in enumerate(lines):
+        has_pipe = '|' in line
+        if has_pipe and region_start < 0:
+            region_start = i
+        elif not has_pipe and region_start >= 0:
+            if i - region_start >= 3:  # at least 3 pipe lines
+                regions.append((region_start, i))
+            region_start = -1
+    if region_start >= 0 and len(lines) - region_start >= 3:
+        regions.append((region_start, len(lines)))
+
+    # Merge nearby regions (gap <= 6 non-pipe lines) to handle split multi-line headers
+    merged = []
+    for start, end in regions:
+        if merged and start - merged[-1][1] <= 6:
+            merged[-1] = (merged[-1][0], end)
+        else:
+            merged.append((start, end))
+    regions = merged
+
+    if not regions:
+        return
+
+    # Score each region for pricing relevance
+    PRICE_COL_KW = ['单价', '总价', '税率', '金额', '价格', '报价', '不含税', '含税']
+    NON_PRICE_KW = ['出差事由', '合同金额', '项目名称', '职务', '岗位', '职称',
+                    '联系人', '联系电话', '项目经理', '指标要求', '功能要求']
+    scored = []
+    for start, end in regions:
+        region_text = '\n'.join(lines[start:end])
+        score = 0
+        # Bonus for pricing column headers
+        for kw in PRICE_COL_KW:
+            if kw in region_text:
+                score += 3
+        # Penalty for non-price table keywords
+        for kw in NON_PRICE_KW:
+            if kw in region_text:
+                score -= 2
+        # Bonus for having rows with large numbers (>= 10000)
+        large_count = len(re.findall(r'\b\d{5,}(?:\.\d{2})?\b', region_text))
+        score += min(large_count, 10)
+        scored.append((score, region_text))
+
+    # Parse all qualifying regions (score >= 5), accumulating items from EACH table
+    all_sub_items = []
+    for score, region_text in sorted(scored, key=lambda x: -x[0]):
+        if score >= 5:
+            temp_result = {'subItemPrice': [], 'totalPrice': None, 'totalPriceInTax': None}
+            _parse_docx_bid_table(region_text, temp_result)
+            if temp_result.get('subItemPrice'):
+                all_sub_items.extend(temp_result['subItemPrice'])
+            # Capture totals from the first region that has BOTH values
+            if (temp_result.get('totalPrice') and temp_result.get('totalPriceInTax')
+                    and not result.get('totalPrice')):
+                result['totalPrice'] = temp_result['totalPrice']
+                result['totalPriceInTax'] = temp_result['totalPriceInTax']
+
+    if all_sub_items:
+        result['subItemPrice'] = all_sub_items
+
+
+
 def _parse_docx_bid_table(section, result):
     """Parse a docx pipe-separated (|) pricing table.
-    Handles the 'text | text | number | number | ...' format from docx table extraction.
-    Also parses '科目 | 总价（元，不含税）\n总计 | 893000\n材料费 | 340000' cost summary format."""
+    Tries multiple header candidates; keeps the one producing most items."""
     lines = section.split('\n')
-
-    # -- Sub-item rows: detect rows with multiple | separators and numeric values --
-    sub_items = []
-    # Find the header row: contains column names like 序号|分项|数量|单价|总价|税率
-    # Handle multi-line headers by merging consecutive header candidate lines
-    header_idx = -1
     HEADER_KW = r'(?:序号|名称|分项|数量|单位|单价|总价|税率|型号|规格|厂家|备注|产品|服务)'
+    PRICE_KW = r'(?:单价|总价|税率|不含税|含税|金额)'
+
+    candidates = []
     for i, line in enumerate(lines):
-        if '|' not in line:
-            continue
+        if '|' not in line: continue
         parts = [p.strip() for p in line.split('|')]
-        col_hits = sum(1 for p in parts if re.search(HEADER_KW, p))
-        if col_hits >= 2:
-            header_idx = i
-            break
+        hits = sum(1 for p in parts if re.search(HEADER_KW, p))
+        if hits >= 2:
+            price_score = sum(1 for p in parts if re.search(PRICE_KW, p))
+            candidates.append((price_score, hits, i))
 
-    if header_idx >= 0:
-        # Merge multi-line header: scan next lines for header continuations
-        header_parts = [p.strip() for p in lines[header_idx].split('|')]
-        merged_header = lines[header_idx]
-        for j in range(header_idx + 1, min(header_idx + 4, len(lines))):
-            nxt = lines[j].strip()
-            if not nxt or '|' not in nxt:
-                continue
-            nxt_parts = [p.strip() for p in nxt.split('|')]
-            nxt_hits = sum(1 for p in nxt_parts if re.search(HEADER_KW, p))
-            # If this line has header keywords AND no large numbers, it's a continuation
-            has_large_num = any(re.search(r'\d{4,}', p) for p in nxt_parts)
-            if nxt_hits >= 1 and not has_large_num:
-                # Merge: append parts to header line
-                merged_header += ' | ' + nxt
-                header_idx = j  # advance past this line too
-            else:
-                break
+    if not candidates: return
+    candidates.sort(key=lambda x: (-x[0], -x[1]))
 
-        header_parts = [p.strip() for p in merged_header.split('|')]
-        # Infer column positions from merged header
-        col_map = {}
-        for ci, h in enumerate(header_parts):
-            h_clean = re.sub(r'\s+', '', h)
-            if re.search(r'序\s*号', h):
-                col_map['seq'] = ci
-            elif re.search(r'(?:分项\s*)?名\s*称|分项|产品|服务|项目|内容', h):
-                if 'name' not in col_map:
-                    col_map['name'] = ci
-            elif re.search(r'型号|规格|厂家|制造商|品牌', h):
-                col_map['model'] = ci
-            elif re.search(r'数\s*量', h):
-                col_map['count'] = ci
-            elif re.search(r'单\s*价.*?(?:不含|未含税)|不含税.*?单', h):
-                col_map['unit_price_ex'] = ci
-            elif re.search(r'单\s*价.*?(?:含税|含)|含税.*?单', h):
-                col_map['unit_price_in'] = ci
-            elif re.search(r'总\s*价.*?(?:不含|未含税)|不含税.*?总', h):
-                col_map['total_ex'] = ci
-            elif re.search(r'总\s*价.*?(?:含税|含)|含税.*?总', h):
-                col_map['total_in'] = ci
-            elif re.search(r'税\s*率', h):
-                col_map['tax_rate'] = ci
-            elif re.search(r'备\s*注', h):
-                col_map['remark'] = ci
-            elif re.search(r'单\s*位', h):
-                col_map['unit'] = ci
+    # Parse from ALL qualifying headers (multiple tables in one section)
+    all_items = []
+    seen = set()
+    for _, _, hdr_idx in candidates[:10]:
+        items = _parse_docx_rows(lines, hdr_idx, HEADER_KW)
+        for item in items:
+            key = (item['priceName'], item.get('totalPrice'))
+            if key not in seen:
+                seen.add(key)
+                all_items.append(item)
 
-        # If no explicit ex/in split found, use simple heuristics
-        if 'total_ex' not in col_map:
-            for ci, h in enumerate(header_parts):
-                if re.search(r'总\s*价|金\s*额', h) and ci not in col_map.values():
-                    col_map['total_ex'] = ci
-                    break
-        if 'unit_price_ex' not in col_map:
-            for ci, h in enumerate(header_parts):
-                if re.search(r'单\s*价', h) and ci not in col_map.values():
-                    col_map['unit_price_ex'] = ci
-                    break
-        # Total_in: if not found, assign to position after total_ex
-        if 'total_in' not in col_map and 'total_ex' in col_map:
-            total_ex_pos = col_map['total_ex']
-            for ci in range(total_ex_pos + 1, len(header_parts)):
-                if re.search(r'总\s*价|金\s*额', header_parts[ci]) and ci not in col_map.values():
-                    col_map['total_in'] = ci
-                    break
-            if 'total_in' not in col_map:
-                # Default: position after total_ex
-                col_map['total_in'] = total_ex_pos + 1 if total_ex_pos + 1 < len(header_parts) else total_ex_pos
-
-        # Parse data rows
-        prev_name = None
-        for i in range(header_idx + 1, len(lines)):
-            line = lines[i].strip()
-            if not line or '|' not in line:
-                continue
-            if any(line.startswith(kw) for kw in ['合计', '总价', '小计', '总计', '注：', '备注：']):
-                # Extract totals from 合计 row, but only if values are large (>= 50000)
-                # AND only overwrite if we have BOTH values, to avoid partial overwrites
-                parts = [p.strip() for p in line.split('|')]
-                nums = []
-                for p in parts:
-                    m = re.search(r'(\d{3,}(?:\.\d{2})?)', p.replace(',', ''))
-                    if m:
-                        nums.append(float(m.group(1)))
-                large_in_row = [n for n in nums if n >= 50000]
-                if len(large_in_row) >= 2:
-                    # Complete pair: set both with confidence
-                    result['totalPrice'] = large_in_row[-2]
-                    result['totalPriceInTax'] = large_in_row[-1]
-                # Single large value rows are sub-totals — DON'T overwrite
-                continue
-            if re.match(r'^[三四五六七八九十]、', line):
-                break
-
-            parts = [p.strip() for p in line.split('|')]
-
-            # Get name
-            name = parts[col_map['name']].strip() if 'name' in col_map and len(parts) > col_map['name'] else ''
-            # Try second column as name if 'name' column seems wrong
-            if not name or re.search(r'(?:有限公司|有限责任|公司|集团|大学|学院|中心)', name):
-                if len(parts) >= 2:
-                    alt_name = parts[1].strip() if len(parts) > 1 else ''
-                    if alt_name and not re.search(r'(?:有限公司|有限责任|公司|集团)', alt_name):
-                        name = alt_name
-            name = re.sub(r'^\d+(?:\.\d+)?\s*', '', name).strip()
-
-            # Skip company names and header-like rows
-            if re.search(r'(?:有限公司|有限责任|公司|集团|大学|学院)', name):
-                continue
-            # Skip rows where all cells have the same value (section-group headers like "硬件费用 | 硬件费用 | ...")
-            unique_parts = set(p.strip() for p in parts if p.strip())
-            if len(unique_parts) <= 2 and len(parts) >= 4:
-                if all(not re.search(r'\d{4,}', p) for p in parts):
-                    continue
-
-            if not name and prev_name:
-                name = prev_name
-            elif name and len(name) >= 2:
-                prev_name = name
-
-            if len(name) < 2:
-                continue
-
-            # ── Value-based extraction (more reliable than column mapping) ──
-            # Extract ALL numbers from all parts, preserving order
-            all_numbers = []
-            for pi, p in enumerate(parts):
-                # Check for percentage
-                pct_m = re.search(r'(\d{1,2})\s*[%％]', p)
-                if pct_m:
-                    all_numbers.append(('tax', float(pct_m.group(1)), pi))
-                # Check for numeric value
-                nm = re.search(r'([\d,]+\.?\d*)', p.replace(',', '').replace('，', ''))
-                if nm:
-                    val = float(nm.group(1))
-                    # Also check if the part has 元 suffix → price
-                    has_yuan = '元' in p
-                    all_numbers.append(('price' if (val >= 100 or has_yuan) else 'count', val, pi))
-
-            if len(all_numbers) < 2:
-                continue
-
-            # Categorize
-            counts = [(v, pi) for t, v, pi in all_numbers if t == 'count' and 1 <= v <= 999 and v == int(v)]
-            taxes = [(v, pi) for t, v, pi in all_numbers if t == 'tax']
-            prices = [(v, pi) for t, v, pi in all_numbers if t == 'price' and v >= 100]
-
-            if len(prices) < 2:
-                continue
-
-            item = {
-                'priceName': name,
-                'unit': '项',
-                'count': int(counts[0][0]) if counts else 1,
-                'unitPrice': None,
-                'tax': (str(int(taxes[0][0])) + '%') if taxes else None,
-                'totalPrice': None,
-                'totalPriceInTax': None,
-                'extras': {},
-                'details': []
-            }
-
-            # Price assignment: unit_price is smallest large number, totals are larger
-            sorted_prices = sorted(prices, key=lambda x: x[0])
-            if len(sorted_prices) >= 4:
-                # [unit_ex, unit_in, total_ex, total_in] or [unit_ex, count_small, total_ex, total_in]
-                item['unitPrice'] = sorted_prices[0][0]
-                item['totalPrice'] = sorted_prices[-2][0]
-                item['totalPriceInTax'] = sorted_prices[-1][0]
-            elif len(sorted_prices) == 3:
-                item['unitPrice'] = sorted_prices[0][0]
-                item['totalPrice'] = sorted_prices[1][0]
-                item['totalPriceInTax'] = sorted_prices[2][0]
-            elif len(sorted_prices) == 2:
-                item['unitPrice'] = sorted_prices[0][0]
-                item['totalPrice'] = sorted_prices[1][0]
-                item['totalPriceInTax'] = sorted_prices[1][0]
-
-            # Fix: when only 2 prices and they're the same (single-price item), use position order
-            if item['unitPrice'] == item['totalPrice'] and len(sorted_prices) == 2:
-                # Earlier position → unit price, later position → total price
-                if sorted_prices[0][1] < sorted_prices[1][1]:
-                    item['unitPrice'] = sorted_prices[0][0]
-                    item['totalPrice'] = sorted_prices[1][0]
-                    item['totalPriceInTax'] = sorted_prices[1][0]
-
-            if item['totalPrice'] and item['totalPrice'] >= 100:
-                sub_items.append(item)
-
-    if sub_items:
-        result['subItemPrice'] = sub_items
-
-    # -- Also check for 总计 line --
+    if all_items:
+        result['subItemPrice'] = _filter_price_items(all_items)
     _extract_summary_total(section, result)
 
+
+def _parse_docx_rows(lines, hdr_idx, HEADER_KW):
+    """Parse rows from a docx pipe table starting at hdr_idx. Returns item list."""
+    items = []
+
+    # Merge forward header continuations
+    hdr_end = hdr_idx
+    for j in range(hdr_idx + 1, min(hdr_idx + 4, len(lines))):
+        nxt = lines[j].strip()
+        if not nxt or '|' not in nxt: continue
+        nxt_p = [p.strip() for p in nxt.split('|')]
+        if sum(1 for p in nxt_p if re.search(HEADER_KW, p)) >= 1 and not any(re.search(r'\d{4,}', p) for p in nxt_p):
+            hdr_end = j
+        else: break
+
+    # Backward merge
+    hdr_start = hdr_idx
+    for j in range(hdr_idx - 1, max(hdr_idx - 3, -1), -1):
+        prev = lines[j].strip()
+        if not prev or '|' not in prev: continue
+        prev_p = [p.strip() for p in prev.split('|')]
+        if sum(1 for p in prev_p if re.search(HEADER_KW, p)) >= 1 and not any(re.search(r'\d{4,}', p) for p in prev_p):
+            hdr_start = j
+        else: break
+
+    # Build merged header for name column detection
+    merged = ' | '.join(lines[i] for i in range(hdr_start, hdr_end + 1))
+    merged_parts = [p.strip() for p in merged.split('|')]
+    name_col = 1
+    for ci, h in enumerate(merged_parts):
+        if re.search(r'(?:分项\s*)?名\s*称|分项|产品|服务|项目|内容|元器件', h):
+            name_col = ci; break
+
+    prev_name = None
+    for i in range(hdr_end + 1, len(lines)):
+        line = lines[i].strip()
+        if not line or '|' not in line: continue
+        if any(line.startswith(kw) for kw in ['合计', '总价', '小计', '总计', '注：']): continue
+        if re.match(r'^[三四五六七八九十]、', line): break
+
+        parts = [p.strip() for p in line.split('|')]
+        name = parts[name_col].strip() if len(parts) > name_col else ''
+        if not name or re.search(r'(?:有限公司|有限责任|公司|集团|大学|学院)', name):
+            if len(parts) >= 2:
+                alt = parts[1].strip()
+                if alt and not re.search(r'(?:有限公司|有限责任|公司|集团)', alt):
+                    name = alt
+        name = re.sub(r'^\d+(?:\.\d+)?\s*', '', name).strip()
+        if re.search(r'(?:有限公司|有限责任|公司|集团|大学|学院)', name): continue
+
+        # Skip all-same-value group headers
+        unique = set(p.strip() for p in parts if p.strip())
+        if len(unique) <= 2 and len(parts) >= 4 and all(not re.search(r'\d{4,}', p) for p in parts): continue
+
+        if not name and prev_name: name = prev_name
+        elif name and len(name) >= 2: prev_name = name
+        if len(name) < 2: continue
+
+        # Value extraction
+        all_nums = []
+        for pi, p in enumerate(parts):
+            pct = re.search(r'(\d{1,2})\s*[%％]', p)
+            if pct: all_nums.append(('tax', float(pct.group(1)), pi))
+            nm = re.search(r'([\d,]+\.?\d+)', p.replace(',','').replace('，',''))
+            if nm:
+                v = float(nm.group(1))
+                all_nums.append(('price' if (v >= 100 or '元' in p) else 'count', v, pi))
+
+        if len(all_nums) < 2: continue
+        counts = [(v, pi) for t, v, pi in all_nums if t == 'count' and 1 <= v <= 999 and v == int(v)]
+        taxes = [(v, pi) for t, v, pi in all_nums if t == 'tax']
+        prices = [(v, pi) for t, v, pi in all_nums if t == 'price' and v >= 100]
+        if len(prices) < 2: continue
+
+        sp = sorted(prices, key=lambda x: x[0])
+        n = len(sp)
+        item = {
+            'priceName': name, 'unit': '项',
+            'count': int(counts[0][0]) if counts else 1,
+            'tax': (str(int(taxes[0][0])) + '%') if taxes else None,
+            'unitPrice': sp[0][0],
+            'totalPrice': sp[-2][0] if n >= 4 else (sp[1][0] if n >= 3 else sp[1][0]),
+            'totalPriceInTax': sp[-1][0] if n >= 3 else sp[1][0],
+            'extras': {}, 'details': []
+        }
+        if item['totalPrice'] and item['totalPrice'] >= 100:
+            items.append(item)
+    return items
+
+
+def _filter_price_items(items):
+    """Remove non-price items (personnel, projects, tech specs)."""
+    BAD = re.compile(
+        r'(?:经理|工程师|工人|主任|主管|专员|总监|总裁|董事长|秘书|助理|'
+        r'合同|协议|订单|项目\s*名称|供应商|投标人|采购人|'
+        r'灵敏度|dB|MHz|GHz|指标\s*要求|功能\s*要求|'
+        r'验收测试|测试评审|联通测试|差旅|交通|住宿|会议内容|出差)')
+    valid = []
+    for item in items:
+        if BAD.search(item.get('priceName', '')): continue
+        up = item.get('unitPrice') or 0
+        tp = item.get('totalPrice') or 1
+        if up > tp * 1.5: continue
+        valid.append(item)
+    return valid
 
 # ── Text Similarity ─────────────────────────────────────────────
 def find_common_segments(text1, text2, min_len=15):
