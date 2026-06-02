@@ -305,6 +305,35 @@ def _find_personnel_sections(text):
     return found
 
 
+def _is_person_name(name):
+    """Validate that a string looks like a Chinese person name, not a company name fragment."""
+    if not name or len(name) < 2 or len(name) > 4:
+        return False
+    # Reject placeholder text that looks like a name label
+    if name in ('姓名', '职务', '签字', '盖章', '授权', '电话', '地址', '传真'):
+        return False
+    # Company name indicators — reject these
+    company_keywords = [
+        '公司', '集团', '有限', '责任', '股份', '进出口', '科技',
+        '技术', '工程', '实业', '贸易', '企业', '中心', '研究院',
+        '北京', '上海', '深圳', '广州', '成都', '武汉', '南京',
+        '西安', '杭州', '苏州', '东莞', '佛山', '无锡', '宁波',
+        '温州', '南通', '长沙', '郑州', '济南', '青岛', '大连',
+        '厦门', '合肥', '福州', '南宁', '昆明', '贵阳', '海口',
+        '哈尔滨', '长春', '沈阳', '太原', '石家庄', '兰州', '乌鲁木齐',
+        '呼和浩特', '银川', '西宁', '拉萨', '南昌', '珠海', '惠州',
+        '中山', '江门', '肇庆', '汕头', '天津', '重庆',
+    ]
+    name_lower = name.strip()
+    for kw in company_keywords:
+        if kw in name_lower:
+            return False
+    # Must consist of Chinese characters only
+    if not re.match(r'^[一-鿿]+$', name_lower):
+        return False
+    return True
+
+
 def _extract_from_auth_section(section_text, info):
     """Extract legal rep, authorized rep from authorization letter section."""
     # Pattern 0: "我张三（姓名）系四川某某电子科技有限公司（供应商名称）的法定代表人"
@@ -331,34 +360,62 @@ def _extract_from_auth_section(section_text, info):
             info['all_persons'].append({'name': info['legal_rep'], 'role': 'legal_rep', 'confidence': 0.85})
 
     # Pattern 3: "（王戈、董事长）代表本公司授权（赵凯、销售经理）"
+    # NOTE: Some documents insert company name between the auth clause and agent name:
+    #   "（王戈、董事长）代表本公司授权（北京东方中科...）的在下面签字的（赵凯、销售经理）"
     m = re.search(r'[（(]([一-鿿]{2,4})[、，].{0,6}?[）)]\s*代表本公司授权\s*[（(]([一-鿿]{2,4})', section_text)
     if m:
         if not info['legal_rep']:
             info['legal_rep'] = m.group(1).strip()
             info['all_persons'].append({'name': info['legal_rep'], 'role': 'legal_rep', 'confidence': 0.85})
-        info['authorized_rep'] = m.group(2).strip()
-        info['all_persons'].append({'name': info['authorized_rep'], 'role': 'authorized_rep', 'confidence': 0.85})
+        if not info['authorized_rep']:
+            name = m.group(2).strip()
+            if _is_person_name(name):
+                info['authorized_rep'] = name
+                info['all_persons'].append({'name': name, 'role': 'authorized_rep', 'confidence': 0.85})
+            else:
+                # Captured group is likely a company name fragment.
+                # Try to find the actual person name after the company: "（XXX、role）为本公司"
+                post_match = section_text[m.end():m.end() + 200]
+                m2 = re.search(r'[（(]([一-鿿]{2,4})[、，].{0,6}?[）)]\s*(?:为本公司的合法代理人|为代理人)', post_match)
+                if m2:
+                    name2 = m2.group(1).strip()
+                    if _is_person_name(name2):
+                        info['authorized_rep'] = name2
+                        info['all_persons'].append({'name': name2, 'role': 'authorized_rep', 'confidence': 0.85})
 
-    # Pattern 4: "现委托 XXX（姓名）为我方代理人"
+    # Pattern 4: "签字代表（赵凯、销售经理）" — common in bid letters
+    if not info['authorized_rep']:
+        m = re.search(r'签字代表[（(]([一-鿿]{2,4})[、，]', section_text)
+        if m:
+            name = m.group(1).strip()
+            if _is_person_name(name):
+                info['authorized_rep'] = name
+                info['all_persons'].append({'name': name, 'role': 'authorized_rep', 'confidence': 0.90})
+
+    # Pattern 5: "现委托 XXX（姓名）为我方代理人"
     if not info['authorized_rep']:
         m = re.search(r'(?:现委托|委托)\s*([一-鿿]{2,4})\s*[（(]姓名[）)]', section_text)
         if m:
             info['authorized_rep'] = m.group(1).strip()
             info['all_persons'].append({'name': info['authorized_rep'], 'role': 'authorized_rep', 'confidence': 0.90})
 
-    # Pattern 5: "代理人：XXX" or "授权代表：XXX"
+    # Pattern 6: "代理人：XXX" or "授权代表：XXX" — with person name validation
     if not info['authorized_rep']:
-        m = re.search(r'(?:代理人|授权代表|被授权人|受托人)[：:]\s*([一-鿿]{2,4})', section_text)
+        m = re.search(r'(?:代理人|授权代表|被授权人|受托人|签字代表)[：:]\s*([一-鿿]{2,4})', section_text)
         if m:
-            info['authorized_rep'] = m.group(1).strip()
-            info['all_persons'].append({'name': info['authorized_rep'], 'role': 'authorized_rep', 'confidence': 0.80})
+            name = m.group(1).strip()
+            if _is_person_name(name):
+                info['authorized_rep'] = name
+                info['all_persons'].append({'name': name, 'role': 'authorized_rep', 'confidence': 0.80})
 
-    # Pattern 6: "法定代表人：XXX"
+    # Pattern 7: "法定代表人：XXX"
     if not info['legal_rep']:
         m = re.search(r'(?:法定代表人|单位负责人|法人代表)[：:]\s*([一-鿿]{2,4})', section_text)
         if m:
-            info['legal_rep'] = m.group(1).strip()
-            info['all_persons'].append({'name': info['legal_rep'], 'role': 'legal_rep', 'confidence': 0.80})
+            name = m.group(1).strip()
+            if _is_person_name(name):
+                info['legal_rep'] = name
+                info['all_persons'].append({'name': name, 'role': 'legal_rep', 'confidence': 0.80})
 
 
 def _extract_from_personnel_table(section_text, info):
@@ -402,14 +459,31 @@ def _extract_from_signature_page(section_text, info):
 
 
 def _extract_from_cover(section_text, info):
-    """Extract company name from cover/bid letter."""
-    if info.get('company_name'):
-        return
-    m = re.search(r'(?:投标人|供应商|申请.?|报价.?)[：:]\s*(.{2,40}?)(?:\n|$)', section_text)
-    if m:
-        company = m.group(1).strip()
-        if len(company) >= 4:
-            info['company_name'] = _clean_company(company)
+    """Extract company name and authorized rep from cover/bid letter."""
+    if not info.get('company_name'):
+        m = re.search(r'(?:投标人|供应商|申请.?|报价.?)[：:]\s*(.{2,40}?)(?:\n|$)', section_text)
+        if m:
+            company = m.group(1).strip()
+            if len(company) >= 4:
+                info['company_name'] = _clean_company(company)
+
+    # Extract authorized rep from "签字代表（name、role）" in cover/bid letter
+    if not info.get('authorized_rep'):
+        m = re.search(r'签字代表[（(]([一-鿿]{2,4})[、，]', section_text)
+        if m:
+            name = m.group(1).strip()
+            if _is_person_name(name):
+                info['authorized_rep'] = name
+                info['all_persons'].append({'name': name, 'role': 'authorized_rep', 'confidence': 0.90})
+
+    # Also try "签字代表：XXX" format
+    if not info.get('authorized_rep'):
+        m = re.search(r'签字代表[：:]\s*([一-鿿]{2,4})', section_text)
+        if m:
+            name = m.group(1).strip()
+            if _is_person_name(name):
+                info['authorized_rep'] = name
+                info['all_persons'].append({'name': name, 'role': 'authorized_rep', 'confidence': 0.85})
 
 
 def _infer_role_label(role_str):
@@ -444,7 +518,7 @@ def _cleanup_name(info, key):
     val = re.sub(r'^我(?=[一-鿿])', '', val)
     val = re.sub(r'\s*[（(](?:姓名|签字|盖章|单位负责人|法定代表人)[）)]\s*$', '', val)
     val = re.sub(r'^\s*[（(](?:姓名|签字|盖章|单位负责人|法定代表人)[）)]\s*', '', val)
-    if len(val) < 2 or any(w in val for w in ['注册', '签字', '盖章', '地址', '电话', '投标人']):
+    if len(val) < 2 or any(w in val for w in ['注册', '签字', '盖章', '地址', '电话', '投标人', '姓名', '职务', '授权']):
         info[key] = None
     else:
         info[key] = val
@@ -609,32 +683,42 @@ def extract_prices(text):
         'costDetails': []
     }
 
+    # ── Channel 0: Bid summary section FIRST (开标一览表/投标报价表) ──
+    # This is the MOST RELIABLE source for total price. Run it before global
+    # text search to avoid matching bid bonds, deposits, or other small amounts.
+    bid_section = _find_bid_summary_section(text)
+
     # ── Channel 1: Symbol-based (￥/¥/CNY/RMB) ── confidence: 0.95
-    symbol_patterns = [
-        r'(?:CNY|RMB)\s*([\d,]+\.?\d*)',
-        r'[￥¥]\s*([\d,]+\.?\d*)',
-        r'USD\s*([\d,]+\.?\d*)',
-    ]
-    for pat in symbol_patterns:
-        m = re.search(pat, text)
-        if m:
-            val = _parse_amount(m.group(1))
-            if val >= 100:
-                result['totalPriceInTax'] = val
-                result['totalPrice'] = val
-                break
+    # Only run global search if bid_section didn't yield a price
+    if bid_section is None or result['totalPriceInTax'] is None:
+        symbol_patterns = [
+            r'(?:CNY|RMB)\s*([\d,]+\.?\d*)',
+            r'[￥¥]\s*([\d,]+\.?\d*)',
+            r'人民币\s+([\d,]+\.?\d*)',
+            r'USD\s*([\d,]+\.?\d*)',
+        ]
+        search_text = bid_section if bid_section else text
+        for pat in symbol_patterns:
+            m = re.search(pat, search_text)
+            if m:
+                val = _parse_amount(m.group(1))
+                if val >= 100:
+                    result['totalPriceInTax'] = val
+                    result['totalPrice'] = val
+                    break
 
     # ── Channel 2: Label-based (标签通道) ── confidence: 0.90
-    label_patterns = [
-        r'人民币[：:]\s*([\d,]+\.?\d*)',
-        r'小写[：:]\s*([\d,]+\.?\d*)',
-        r'(?:投标总价|投标总报价|总报价|报价金额|投标报价|项目总价)[：:]\s*([\d,]+\.?\d*)',
-        r'(?:总价|总计|合计)[：:]\s*([\d,]+\.?\d*)',
-        r'(?:金额|报价)[（(]元[）)][：:]\s*([\d,]+\.?\d*)',
-    ]
     if result['totalPriceInTax'] is None:
+        label_patterns = [
+            r'人民币[：:\s]+([\d,]+\.?\d*)',
+            r'小写[：:]\s*([\d,]+\.?\d*)',
+            r'(?:投标总价|投标总报价|总报价|报价金额|投标报价|项目总价)[：:\s]+([\d,]+\.?\d*)',
+            r'(?:总价|总计|合计)[：:]\s*([\d,]+\.?\d*)',
+            r'(?:金额|报价)[（(]元[）)][：:]\s*([\d,]+\.?\d*)',
+        ]
+        search_text = bid_section if bid_section else text
         for pat in label_patterns:
-            m = re.search(pat, text)
+            m = re.search(pat, search_text)
             if m:
                 val = _parse_amount(m.group(1))
                 if val >= 100:
@@ -644,19 +728,19 @@ def extract_prices(text):
 
     # ── Channel 3: 大写/小写 pair ── confidence: 0.88
     if result['totalPriceInTax'] is None:
-        m = re.search(r'大写[：:]\s*[壹贰叁肆伍陆柒捌玖拾佰仟万亿零一二三四五六七八九十百千元整角分]+[\s\S]{0,100}?小写[：:]\s*([\d,]+\.?\d*)', text)
+        search_text = bid_section if bid_section else text
+        m = re.search(r'大写[：:]\s*[壹贰叁肆伍陆柒捌玖拾佰仟万亿零一二三四五六七八九十百千元整角分]+[\s\S]{0,100}?小写[：:]\s*([\d,]+\.?\d*)', search_text)
         if m:
             val = _parse_amount(m.group(1))
             if val >= 100:
                 result['totalPriceInTax'] = val
                 result['totalPrice'] = val
 
-    # ── Channel 4: Table-based ── confidence: 0.85
-    bid_section = _find_bid_summary_section(text)
+    # ── Channel 4: Table-based (detailed search in bid section) ── confidence: 0.85
     if bid_section and result['totalPriceInTax'] is None:
         for pat in [
             r'(?:CNY|RMB|￥|¥)\s*([\d,]+\.?\d*)',
-            r'人民币[：:]\s*([\d,]+\.?\d*)',
+            r'人民币[：:\s]+([\d,]+\.?\d*)',
             r'小写[：:]\s*([\d,]+\.?\d*)',
             r'(?:总价|总计|合计|报价)[：:]?\s*([\d,]+\.?\d*)',
         ]:
@@ -726,22 +810,47 @@ def extract_prices(text):
 
 
 def _find_bid_summary_section(text):
-    """Find the bid summary / price overview section in text."""
+    """Find the bid summary / price overview section in text.
+    Returns a section that actually contains price data (currency + numbers)."""
     keywords = ['开标一览表', '开标一览', '投标报价表', '报价一览表', '报价总表', '投标总价']
     for kw in keywords:
         idx = text.find(kw)
         while idx >= 0:
-            # Skip TOC entries
+            # Skip TOC entries (preceded by dots)
             prefix = text[max(0, idx - 40):idx]
-            if not re.search(r'\.{3,}', prefix):
-                # Find end: next major section or 3000 chars
-                end = min(idx + 3000, len(text))
-                for end_kw in ['投标分项报价', '分项报价表', '法定代表人', '技术方案', '项目概况']:
-                    ep = text.find(end_kw, idx + 10)
-                    if ep > idx and ep < end:
-                        end = ep
-                return text[idx:end]
+            if re.search(r'\.{3,}', prefix):
+                idx = text.find(kw, idx + 1)
+                continue
+
+            # Skip if this occurrence is inside a compact inline list item
+            # like "l．开标一览表" or "1．开标一览表" (within a paragraph).
+            # Do NOT skip proper section headers like "二、 开标一览表".
+            line_start = text.rfind('\n', 0, idx)
+            if line_start < 0:
+                line_start = 0
+            line_prefix = text[line_start:idx].strip()
+            # Only skip if preceded by a single ASCII digit/letter + full-width dot
+            # (compact inline list), not a proper section header (Chinese number + 、)
+            if re.search(r'^(?:[a-zA-Z\d]|[一二三四五六七八九十]{1,2})[．.]\s*$', line_prefix):
+                idx = text.find(kw, idx + 1)
+                continue
+
+            # Find end: next major section or 3000 chars
+            end = min(idx + 3000, len(text))
+            for end_kw in ['投标分项报价表', '投标分项报价', '法定代表人身份证明',
+                           '技术方案', '项目概况', '资格证明文件']:
+                ep = text.find(end_kw, idx + 30)
+                if ep > idx and ep < end:
+                    end = ep
+
+            section = text[idx:end]
+            # Validate: section must contain a currency indicator with numbers
+            if re.search(r'(?:人民币|CNY|RMB|￥|¥)\s*[\d,]+\.?\d*', section):
+                return section
+
+            # Otherwise, skip this occurrence and try next
             idx = text.find(kw, idx + 1)
+
     return None
 
 
@@ -749,7 +858,7 @@ def _extract_tax_decomposition(text, section, result):
     """Extract pre-tax / tax / post-tax breakdown."""
     patterns = [
         r'(?:￥|¥)?(\d{5,10}(?:\.\d{2})?)\s+(\d{1,2})\s*[%％]\s*(?:￥|¥)?(\d{5,10}(?:\.\d{2})?)',
-        r'人民币[：:]\s*(\d{5,10}(?:\.\d{2})?)\s*元?\s+(\d{1,2})\s*[%％]?\s+人民币[：:]\s*(\d{5,10}(?:\.\d{2})?)',
+        r'人民币[：:\s]*(\d{5,10}(?:\.\d{2})?)\s*元?\s+(\d{1,2})\s*[%％]?\s+人民币[：:\s]*(\d{5,10}(?:\.\d{2})?)',
         r'([\d.]+)\s*万\s+([\d.]+)\s*万\s+(\d{1,2})',
         r'小写[：:]\s*(\d{5,10}(?:\.\d{2})?)\s*元[\s\S]{0,80}?(\d{1,2})\s*[%％][\s\S]{0,80}?小写[：:]\s*(\d{5,10}(?:\.\d{2})?)',
     ]
