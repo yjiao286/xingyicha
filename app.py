@@ -851,6 +851,12 @@ def _find_bid_summary_section(text):
                 idx = text.find(kw, idx + 1)
                 continue
 
+            # Skip references like "《开标一览表》" — the keyword is inside book-title
+            # marks, not a section header (e.g., "愿意以《开标一览表》中的投标报价").
+            if line_prefix.endswith('《') or line_prefix.endswith('〈'):
+                idx = text.find(kw, idx + 1)
+                continue
+
             # Find end: next major section or 3000 chars
             end = min(idx + 3000, len(text))
             for end_kw in ['投标分项报价表', '投标分项报价', '法定代表人身份证明',
@@ -860,8 +866,12 @@ def _find_bid_summary_section(text):
                     end = ep
 
             section = text[idx:end]
-            # Validate: section must contain a currency indicator with numbers
-            if re.search(r'(?:人民币|CNY|RMB|￥|¥)\s*[\d,]+\.?\d*', section):
+            # Validate: section must contain a currency indicator with numbers.
+            # Accept RMB/CNY/￥/¥ symbols, standalone 元, number+万 patterns,
+            # or large plain numbers (≥5 digits, typical for full-unit prices like "1228000").
+            if re.search(r'(?:人民币|CNY|RMB|￥|¥|元)\s*[\d,]+\.?\d*', section) or \
+               re.search(r'[\d,]+\.?\d*\s*万', section) or \
+               re.search(r'(?<!\d)[\d,]{5,}(?![\d,])', section):
                 return section
 
             # Otherwise, skip this occurrence and try next
@@ -872,21 +882,29 @@ def _find_bid_summary_section(text):
 
 def _extract_tax_decomposition(text, section, result):
     """Extract pre-tax / tax / post-tax breakdown."""
+    # Each pattern is (regex, p1_group, p2_group, tax_group) where:
+    #   p1 = 不含税总价, p2 = 含税总价, tax = 税率
+    # Patterns 0-3: profit format (price1, tax_rate, price2)
+    # Pattern 4:   万 format (price1+万, price2+万, tax_rate)
+    # Pattern 5:   plain-number format (price1, price2, tax_rate)
     patterns = [
-        r'(?:￥|¥)?(\d{5,10}(?:\.\d{2})?)\s+(\d{1,2})\s*[%％]\s*(?:￥|¥)?(\d{5,10}(?:\.\d{2})?)',
-        r'人民币[：:\s]*(\d{5,10}(?:\.\d{2})?)\s*元?\s+(\d{1,2})\s*[%％]?\s+人民币[：:\s]*(\d{5,10}(?:\.\d{2})?)',
-        r'([\d.]+)\s*万\s+([\d.]+)\s*万\s+(\d{1,2})',
-        r'小写[：:]\s*(\d{5,10}(?:\.\d{2})?)\s*元[\s\S]{0,80}?(\d{1,2})\s*[%％][\s\S]{0,80}?小写[：:]\s*(\d{5,10}(?:\.\d{2})?)',
+        (r'(?:￥|¥)?(\d{5,10}(?:\.\d{2})?)\s+(\d{1,2})\s*[%％]\s*(?:￥|¥)?(\d{5,10}(?:\.\d{2})?)', 1, 3, 2),
+        (r'人民币[：:\s]*(\d{5,10}(?:\.\d{2})?)\s*元?\s+(\d{1,2})\s*[%％]?\s+人民币[：:\s]*(\d{5,10}(?:\.\d{2})?)', 1, 3, 2),
+        (r'([\d.]+\s*万)\s+([\d.]+\s*万)\s+(\d{1,2})', 1, 2, 3),
+        (r'小写[：:]\s*(\d{5,10}(?:\.\d{2})?)\s*元[\s\S]{0,80}?(\d{1,2})\s*[%％][\s\S]{0,80}?小写[：:]\s*(\d{5,10}(?:\.\d{2})?)', 1, 3, 2),
+        # Plain numeric prices: two ≥5-digit numbers + 1-2 digit tax rate
+        # e.g. "1228000 1264840 3" (不含税 含税 税率)
+        (r'(?<!\d)(\d{5,10})\s+(\d{5,10})\s+(\d{1,2})(?!\d)', 1, 2, 3),
     ]
-    for pat in patterns:
+    for pat, pi1, pi2, pi_tax in patterns:
         m = re.search(pat, section)
         if m:
-            v1 = _parse_amount(m.group(1))
-            v2 = _parse_amount(m.group(3))
+            v1 = _parse_amount(m.group(pi1))
+            v2 = _parse_amount(m.group(pi2))
             if v1 >= 100 and v2 >= 100:
                 result['totalPrice'] = v1
                 result['totalPriceInTax'] = v2
-                result['taxRate'] = str(int(m.group(2))) + '%'
+                result['taxRate'] = str(int(m.group(pi_tax))) + '%'
                 return
 
 
