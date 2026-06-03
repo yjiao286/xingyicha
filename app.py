@@ -361,7 +361,16 @@ def _is_person_name(name):
         return False
     # Reject placeholder text that looks like a name label
     if name in ('姓名', '职务', '签字', '盖章', '授权', '电话', '地址', '传真',
-                '牵头', '负责', '联系', '经办', '复核', '审核', '批准', '执行'):
+                '牵头', '负责', '联系', '经办', '复核', '审核', '批准', '执行',
+                # CV/resume form field labels — never person names
+                '毕业学校', '毕业院校', '主要经历', '工作经历', '学习经历',
+                '所学专业', '修读专业', '教育背景', '出生年月', '出生日期',
+                '身份证号', '证件号码', '联系电话', '手机号码', '联系方式',
+                '电子邮箱', '邮箱地址', '通讯地址', '联系地址', '家庭住址',
+                '资格证书', '执业资格', '政治面貌', '婚姻状况', '健康状况',
+                '外语水平', '语言能力', '技术职称', '专业职称', '现任职务',
+                '担任职务', '相关工作', '相关年限', '工作年限', '从业时间',
+                '专业领域', '研究方向', '计算机', '外语语种', '熟练程度'):
         return False
     # Company name indicators — reject these
     company_keywords = [
@@ -501,14 +510,20 @@ def _extract_from_personnel_table(section_text, info):
         r'姓名[：:]\s*([一-鿿]{2,4})\s*.*?(?:职务|岗位|角色|职称)[：:]\s*([一-鿿]{2,10})',
         r'([一-鿿]{2,4})\s{2,}(项目经理|项目负责人|技术负责人|技术总监|总工程师|安全员|质量员|施工员|材料员|资料员|造价员|预算员)',
         r'(项目经理|项目负责人|技术负责人|技术总监|总工程师)[：:]\s*([一-鿿]{2,4})(?![一-鿿])',
-        r'(?:项目经理|项目负责人|技术负责人|安全负责人)\s+([一-鿿]{2,4})(?![一-鿿])',
+        r'(项目经理|项目负责人|技术负责人|安全负责人)\s+([一-鿿]{2,4})(?![一-鿿])',
     ]
     for pat in patterns:
         for m in re.finditer(pat, section_text):
             groups = m.groups()
             if len(groups) == 2:
-                # Determine which is name (2-4 chars) and which is role
-                if len(groups[0]) <= 4 and re.match(r'^[一-鿿]+$', groups[0]):
+                # Determine which is name and which is role.
+                # Priority 1: known role keywords
+                if groups[0] in _ROLE_KEYWORDS:
+                    role_str, name = groups[0], groups[1]
+                elif groups[1] in _ROLE_KEYWORDS:
+                    name, role_str = groups[0], groups[1]
+                # Priority 2: length heuristic (name 2-4 chars, role can be longer)
+                elif len(groups[0]) <= 4 and re.match(r'^[一-鿿]+$', groups[0]):
                     name, role_str = groups[0], groups[1]
                 else:
                     name, role_str = groups[1], groups[0]
@@ -859,6 +874,26 @@ def extract_prices(text):
                 result['totalPriceInTax'] = large_nums[0]
                 break
 
+        # Fallback: "合计 NNN" space-separated (common in PDF tables without colons)
+        if result['totalPriceInTax'] is None:
+            for m in re.finditer(r'^合\s*计\s+(\d{5,12}(?:\.\d{2})?)(?:\s+(\d{1,2}))?(?:\s|$)', text, re.MULTILINE):
+                val = _parse_amount(m.group(1))
+                if val >= 50000:
+                    result['totalPriceInTax'] = val
+                    result['totalPrice'] = val
+                    if m.group(2) and 1 <= int(m.group(2)) <= 30:
+                        result['taxRate'] = m.group(2) + '%'
+                    break
+
+        # Fallback: simple "合计 NNN" anywhere (no colons, just space)
+        if result['totalPriceInTax'] is None:
+            m = re.search(r'(?:合计|总计)\s+(\d{5,12}(?:\.\d{2})?)', text)
+            if m:
+                val = _parse_amount(m.group(1))
+                if val >= 50000:
+                    result['totalPriceInTax'] = val
+                    result['totalPrice'] = val
+
         # Fallback: simple "总计 | number" pattern
         if result['totalPrice'] is None:
             m = re.search(r'总计\s*\|\s*(\d{4,10}(?:\.\d{2})?)', text)
@@ -885,8 +920,24 @@ def extract_prices(text):
     # ── Tax rate decomposition ──
     _extract_tax_decomposition(text, bid_section if bid_section else text, result)
 
+    # ── Derive 不含税 from 含税 + 税率 when tax-exclusive is missing ──
+    tp_val = result.get('totalPrice')
+    tpit_val = result.get('totalPriceInTax')
+    tax_str = result.get('taxRate')
+    if tpit_val is not None and tax_str is not None:
+        m = re.search(r'(\d+(?:\.\d+)?)', tax_str)
+        if m:
+            rate = float(m.group(1)) / 100.0
+            if rate > 0:
+                derived_tp = round(tpit_val / (1 + rate), 2)
+                if tp_val is None or tp_val == tpit_val:
+                    result['totalPrice'] = derived_tp
+
     # ── Always try to extract subItemPrice and costDetails ──
     _extract_structured_items(text, result)
+
+    # ── Post-extraction validation: sanity-check and clean up ──
+    _validate_price_extraction(text, result, bid_section)
 
     return result
 
@@ -923,6 +974,17 @@ def _find_bid_summary_section(text):
                 idx = text.find(kw, idx + 1)
                 continue
 
+            # Skip inline list items like "（2）开标一览表；" or "1）开标一览表；"
+            # These are bid-letter content listings, not actual section headers.
+            if re.search(r'[（(]\d+[）)]\s*$', line_prefix):
+                idx = text.find(kw, idx + 1)
+                continue
+            # Also skip when the keyword is followed by "；" or "。" (still in a list)
+            after_kw = text[idx + len(kw):idx + len(kw) + 5].strip()
+            if after_kw.startswith('；') or after_kw.startswith('。'):
+                idx = text.find(kw, idx + 1)
+                continue
+
             # Find end: next major section or 3000 chars
             end = min(idx + 3000, len(text))
             for end_kw in ['投标分项报价表', '投标分项报价', '法定代表人身份证明',
@@ -948,6 +1010,13 @@ def _find_bid_summary_section(text):
 
 def _extract_tax_decomposition(text, section, result):
     """Extract pre-tax / tax / post-tax breakdown."""
+    # Skip if both prices AND tax rate are already set from a reliable channel
+    # (prevents overwriting good data with random number triplets from full text)
+    tp = result.get('totalPrice')
+    tpit = result.get('totalPriceInTax')
+    if tp is not None and tpit is not None and tp >= 50000 and tpit >= 50000 \
+            and result.get('taxRate') is not None:
+        return  # Already complete, don't risk overwriting
     # Each pattern is (regex, p1_group, p2_group, tax_group) where:
     #   p1 = 不含税总价, p2 = 含税总价, tax = 税率
     # Patterns 0-3: profit format (price1, tax_rate, price2)
@@ -972,6 +1041,27 @@ def _extract_tax_decomposition(text, section, result):
                 result['totalPriceInTax'] = v2
                 result['taxRate'] = str(int(m.group(pi_tax))) + '%'
                 return
+
+    # ── Standalone tax rate extraction (table formats without % sign) ──
+    # Only search for tax rate if at least one price is already extracted.
+    # A standalone tax rate without a price is useless and likely a false positive.
+    if result.get('taxRate') is None and (result.get('totalPrice') or result.get('totalPriceInTax')):
+        # Pattern A: "税率（%） ... N" in table header followed by data row
+        m = re.search(r'税率\s*[（(]\s*%[）)]?\s*.{0,100}?(\d{1,2})(?:\s|$)', section)
+        if m and 1 <= int(m.group(1)) <= 30:
+            result['taxRate'] = m.group(1) + '%'
+    if result.get('taxRate') is None:
+        # Pattern B: "小写：price ... N 增值税" — tax rate before 增值税 in table
+        if result.get('totalPriceInTax'):
+            price_val = int(result['totalPriceInTax'])
+            m = re.search(rf'{re.escape(str(price_val))}[\s\S]{{0,100}}?(\d{{1,2}})\s*(?:增值税|专用|普通|发票)', section)
+            if m and 1 <= int(m.group(1)) <= 30:
+                result['taxRate'] = m.group(1) + '%'
+    if result.get('taxRate') is None and (result.get('totalPrice') or result.get('totalPriceInTax')):
+        # Pattern C: standalone "6 %" or "6%" in table cell
+        m = re.search(r'(?<!\d)(\d{1,2})\s*[%％](?!\d)', section)
+        if m and 1 <= int(m.group(1)) <= 30:
+            result['taxRate'] = m.group(1) + '%'
 
 
 def _extract_structured_items(text, result):
@@ -1118,6 +1208,31 @@ def _extract_structured_items(text, result):
         if val == 0:
             seen_names.add(name)
             continue
+        # ── Additional filtering for Pattern C (global text search) ──
+        # Reject numbers that look like years (1990-2030)
+        if 1990 <= val <= 2030 or (500 <= val <= 999 and val == int(val)):
+            seen_names.add(name)
+            continue
+        # Reject names that look like organization/regulatory bodies
+        if re.search(r'(?:委员会|协会|公司|有限|集团|事务所|证监会|财政部)', name):
+            seen_names.add(name)
+            continue
+        # Reject names ending with person/professional indicators
+        if re.search(r'(?:师|人|员|专家)$', name):
+            seen_names.add(name)
+            continue
+        # Reject names that are clearly not cost items
+        if re.search(r'(?:成立于|于$|成为|自$|见后附|次会议|授权)', name):
+            seen_names.add(name)
+            continue
+        # Validate the number appears near a currency indicator (元/万) within 20 chars
+        match_end = m.end()
+        post_context = text[match_end:match_end + 30]
+        if not re.search(r'(?:元|万|万元|CNY|RMB|￥|¥)', post_context):
+            seen_names.add(name)
+            continue
+            seen_names.add(name)
+            continue
         if val >= 100:
             seen_names.add(name)
             if '收益' in name or '利润' in name:
@@ -1136,6 +1251,135 @@ def _extract_structured_items(text, result):
     if result['costDetails'] and result['cost'] is None:
         result['cost'] = sum(item['totalPrice'] for item in result['costDetails'])
 
+
+def _validate_price_extraction(text, result, bid_section):
+    """Post-extraction sanity checks. Clears values that fail validation to prevent
+    showing garbage data (e.g. project history amounts) as bid prices."""
+    tp = result.get('totalPrice')
+    tpit = result.get('totalPriceInTax')
+    tax_str = result.get('taxRate')
+    cost = result.get('cost')
+
+    # ── Helper: check if a numeric value appears near price-indicator keywords ──
+    def _near_price_context(value, window=120):
+        if value is None:
+            return True  # nothing to validate
+        # Find the value in text (as int, to avoid matching substrings)
+        val_int = int(value)
+        # Search for the value in various formats
+        for fmt in [str(val_int), f'{val_int:,}', f'{val_int:.2f}', f'{val_int:.1f}']:
+            idx = text.find(fmt)
+            if idx >= 0:
+                ctx_start = max(0, idx - window)
+                ctx_end = min(len(text), idx + len(fmt) + window)
+                ctx = text[ctx_start:ctx_end]
+                # Exclude non-price contexts BEFORE checking for price indicators
+                # "出资额为人民币XXX" or "注册资金XXX万元人民币" → NOT a price
+                prefix = text[max(0, idx - 30):idx]
+                if re.search(r'(?:出资|注册[资]*金|保证金|投标保证)\s*[额为]?\s*$', prefix):
+                    continue
+                if re.search(r'(?:万元|万)\s*$', prefix):
+                    continue
+                # Must contain a price-indicator keyword nearby
+                if re.search(r'(?:元|人民币|CNY|RMB|￥|¥|报价[总金]|投标[总报]|'
+                             r'金额|总价|开标|一览表)', ctx):
+                    return True
+        return False
+
+    # ── Validate totalPrice vs totalPriceInTax consistency ──
+    if tp is not None and tpit is not None:
+        # Extract tax rate as float for calculation
+        tax_rate = None
+        if tax_str:
+            m = re.search(r'(\d+(?:\.\d+)?)', tax_str)
+            if m:
+                tax_rate = float(m.group(1)) / 100.0
+
+        # Rule 1: Both prices must be in similar magnitude (ratio between 0.1 and 10)
+        ratio = tpit / tp if tp > 0 else float('inf')
+        if ratio < 0.05 or ratio > 20:
+            # Wildly different magnitudes — likely from different sources
+            # Check which one is near price context; keep only that one
+            tp_ok = _near_price_context(tp)
+            tpit_ok = _near_price_context(tpit)
+            if tp_ok and not tpit_ok:
+                result['totalPriceInTax'] = None
+            elif tpit_ok and not tp_ok:
+                result['totalPrice'] = None
+            else:
+                # Neither or both near context — clear both to be safe
+                result['totalPrice'] = None
+                result['totalPriceInTax'] = None
+                result['taxRate'] = None
+        elif tax_rate is not None:
+            # Rule 2: If tax rate is present, verify price relationship
+            expected_tpit = tp * (1 + tax_rate)
+            if abs(tpit - expected_tpit) / expected_tpit > 0.15:
+                # Prices don't match the stated tax rate
+                result['totalPrice'] = None
+                result['totalPriceInTax'] = None
+                result['taxRate'] = None
+
+    # ── Validate individual prices against text context ──
+    # (only when NOT found via bid_section — global search needs extra scrutiny)
+    if bid_section is None:
+        # Higher threshold for global search: real bid prices are >= 5000
+        if tpit is not None and tpit < 5000:
+            result['totalPriceInTax'] = None
+        if tp is not None and tp < 5000:
+            result['totalPrice'] = None
+        # If both prices were cleared, tax rate alone is meaningless
+        if result['totalPrice'] is None and result['totalPriceInTax'] is None:
+            result['taxRate'] = None
+
+        if tpit is not None and not _near_price_context(tpit, window=200):
+            tp_val = result['totalPrice']
+            if tp_val is None or not _near_price_context(tp_val, window=200):
+                result['totalPriceInTax'] = None
+        if tp is not None and not _near_price_context(tp, window=200):
+            tpit_val = result['totalPriceInTax']
+            if tpit_val is None or not _near_price_context(tpit_val, window=200):
+                result['totalPrice'] = None
+
+    # If one price was cleared but the other remains, ensure tax rate is consistent
+    if (result['totalPrice'] is None) != (result['totalPriceInTax'] is None):
+        # Only one price remains — tax rate is meaningless
+        result['taxRate'] = None
+
+    # ── Validate cost against total price ──
+    cost_val = result.get('cost')
+    tp_val = result.get('totalPrice') or result.get('totalPriceInTax')
+    if cost_val is not None and tp_val is not None:
+        if cost_val > tp_val * 5 or cost_val < 100:
+            # Cost far exceeds price or is trivially small
+            result['cost'] = None
+
+    # ── Filter suspicious cost details ──
+    if result.get('costDetails'):
+        filtered = []
+        for item in result['costDetails']:
+            name = item.get('priceName', '')
+            val = item.get('totalPrice', 0)
+            # Reject items that look like certificate/reference numbers
+            if re.search(r'(?:证书|编号|注册|登记|代码|序列)', name):
+                continue
+            # Reject items that are trivially small
+            if val < 100:
+                continue
+            # Reject items with suspicious names (too long, contains date patterns)
+            if len(name) > 15 or re.search(r'\d{4}', name):
+                continue
+            # Reject items with names that look like project titles
+            if re.search(r'(?:项目|公司|有限|集团|评估项目)', name):
+                continue
+            filtered.append(item)
+        if filtered != result['costDetails']:
+            result['costDetails'] = filtered
+            # Recalculate cost from filtered details
+            if filtered:
+                result['cost'] = sum(item['totalPrice'] for item in filtered)
+            else:
+                result['cost'] = None
 
 
 def _parse_pdf_bid_table(section, result):
