@@ -360,7 +360,8 @@ def _is_person_name(name):
     if not name or len(name) < 2 or len(name) > 4:
         return False
     # Reject placeholder text that looks like a name label
-    if name in ('姓名', '职务', '签字', '盖章', '授权', '电话', '地址', '传真'):
+    if name in ('姓名', '职务', '签字', '盖章', '授权', '电话', '地址', '传真',
+                '牵头', '负责', '联系', '经办', '复核', '审核', '批准', '执行'):
         return False
     # Company name indicators — reject these
     company_keywords = [
@@ -373,6 +374,12 @@ def _is_person_name(name):
         '哈尔滨', '长春', '沈阳', '太原', '石家庄', '兰州', '乌鲁木齐',
         '呼和浩特', '银川', '西宁', '拉萨', '南昌', '珠海', '惠州',
         '中山', '江门', '肇庆', '汕头', '天津', '重庆',
+        # SOE/industry indicators commonly found in company names
+        '航天', '星网', '移动', '联通', '电信', '石油', '石化',
+        '电力', '核电', '钢铁', '中核', '中铁', '中建', '中交',
+        '中化', '中粮', '中船', '中车', '中航',
+        # Professional/status terms not found in person names
+        '执业', '评估师',
     ]
     name_lower = name.strip()
     for kw in company_keywords:
@@ -380,6 +387,11 @@ def _is_person_name(name):
             return False
     # Must consist of Chinese characters only
     if not re.match(r'^[一-鿿]+$', name_lower):
+        return False
+    # Reject names starting with function/grammar characters
+    # (these are prepositions, particles, etc. — never start a Chinese person name)
+    _FUNCTION_CHARS = set('对的了是为在与和就被就以从把向由因所给')
+    if name_lower[0] in _FUNCTION_CHARS:
         return False
     return True
 
@@ -479,13 +491,17 @@ def _extract_from_personnel_table(section_text, info):
         '测试负责人', '运维负责人', '集成负责人', '实施负责人',
         '法定代表人', '授权代表', '代理人', '被授权人', '受托人',
         '团队成员', '项目成员', '组员', '组长',
+        # Additional role/title keywords that appear as table cell values
+        '核心人员', '核心团队成员', '项目核心人员',
+        '总协调人', '总负责人', '总协调助理',
+        '工作组组长', '小组组长', '评估助理',
     ]
 
     patterns = [
         r'姓名[：:]\s*([一-鿿]{2,4})\s*.*?(?:职务|岗位|角色|职称)[：:]\s*([一-鿿]{2,10})',
         r'([一-鿿]{2,4})\s{2,}(项目经理|项目负责人|技术负责人|技术总监|总工程师|安全员|质量员|施工员|材料员|资料员|造价员|预算员)',
-        r'(项目经理|项目负责人|技术负责人|技术总监|总工程师)[：:]\s*([一-鿿]{2,4})',
-        r'(?:项目经理|项目负责人|技术负责人|安全负责人)\s+([一-鿿]{2,4})',
+        r'(项目经理|项目负责人|技术负责人|技术总监|总工程师)[：:]\s*([一-鿿]{2,4})(?![一-鿿])',
+        r'(?:项目经理|项目负责人|技术负责人|安全负责人)\s+([一-鿿]{2,4})(?![一-鿿])',
     ]
     for pat in patterns:
         for m in re.finditer(pat, section_text):
