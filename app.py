@@ -25,6 +25,12 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 HISTORY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'history')
 os.makedirs(HISTORY_DIR, exist_ok=True)
 
+# ── Config constants ──────────────────────────────────────────────
+MAX_FILE_SIZE_MB = 100        # warn if any single file exceeds this
+MAX_TOTAL_SIZE_MB = 200       # warn if all files combined exceed this
+MAX_PDF_PAGES = 300           # max pages to process per PDF (0=unlimited)
+MAX_EMPTY_PAGE_STREAK = 50    # consecutive empty pages → early stop
+
 # ── Helpers ─────────────────────────────────────────────────────
 def sanitize_text(text):
     """Remove control characters that break JSON serialization"""
@@ -218,17 +224,61 @@ def extract_text(filepath):
             paragraphs.append(text)
     return '\n'.join(paragraphs)
 
-def extract_text_with_tables(filepath):
-    """Extract text including tables from .docx, .doc, or .pdf"""
+def extract_text_with_tables(filepath, max_pages=300, on_progress=None):
+    """Extract text including tables from .docx, .doc, or .pdf.
+
+    max_pages: max PDF pages to process (0 = unlimited, default 300).
+    on_progress: optional callback(phase, current, total, has_text, detail).
+                 phase values: 'pdf_page', 'pdf_done', 'pdf_early_stop'.
+    """
     ftype = get_file_type(filepath)
 
     if ftype == 'pdf':
         reader = PdfReader(filepath)
+        total_pages = len(reader.pages)
+        fname = os.path.basename(filepath)
         lines = []
-        for page in reader.pages:
+        pages_with_text = 0
+        empty_streak = 0
+
+        for i, page in enumerate(reader.pages):
+            # Page limit check
+            if max_pages > 0 and i >= max_pages:
+                if on_progress:
+                    on_progress('pdf_early_stop', i, total_pages, bool(lines),
+                              f'"{fname}" 页数过多，已截断处理前{max_pages}页（共{total_pages}页），建议压缩或使用文字版PDF')
+                break
+
             text = page.extract_text()
-            if text:
+            has_text = bool(text and text.strip())
+
+            if has_text:
                 lines.append(text)
+                pages_with_text += 1
+                empty_streak = 0
+            else:
+                empty_streak += 1
+
+            # Early termination: after sampling enough pages with zero text
+            if i >= 50 and empty_streak >= MAX_EMPTY_PAGE_STREAK:
+                if on_progress:
+                    on_progress('pdf_early_stop', i + 1, total_pages, bool(lines),
+                              f'"{fname}" 连续{MAX_EMPTY_PAGE_STREAK}页无文字，疑似全图片扫描件，跳过剩余{total_pages - i - 1}页')
+                break
+
+            # Progress callback every 20 pages or on last page
+            if on_progress and (i % 20 == 0 or i == total_pages - 1):
+                on_progress('pdf_page', i + 1, total_pages, True, None)
+
+        # Final callback
+        if on_progress:
+            if not lines and total_pages > 0:
+                on_progress('pdf_done', total_pages, total_pages, False,
+                          f'"{fname}" 未提取到任何文字，可能为全图片扫描件。请上传可复制文字版PDF或Word文件。')
+            elif pages_with_text > 0:
+                on_progress('pdf_done', total_pages, total_pages, True,
+                          f'"{fname}" 提取完成：{pages_with_text}页有文字')
+
         return '\n'.join(lines)
 
     if ftype == 'doc':
@@ -1952,7 +2002,7 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
         display_names = filenames
         file_to_group = {fn: fn for fn in filenames}
         group_map = {fn: [fp] for fn, fp in zip(filenames, filepaths)}
-        group_texts = {fn: extract_text_with_tables(fp) for fn, fp in zip(filenames, filepaths)}
+        group_texts = {fn: extract_text_with_tables(fp, max_pages=300) for fn, fp in zip(filenames, filepaths)}
 
     # 1. Metadata — per original file
     all_meta = {}
@@ -1972,7 +2022,7 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
     if ref_filepaths:
         for rfp in ref_filepaths:
             try:
-                rt = extract_text_with_tables(rfp)
+                rt = extract_text_with_tables(rfp, max_pages=300)
                 if rt:
                     ref_texts.append(rt)
                     ref_filenames.append(os.path.basename(rfp))
@@ -2577,21 +2627,27 @@ def analyze_stream():
             f.save(fpath)
             saved_refs.append(fpath)
 
+    # ── File size warnings ──
+    size_warnings = []
+    for fp in saved + saved_refs:
+        fsize_mb = os.path.getsize(fp) / (1024 * 1024)
+        if fsize_mb > MAX_FILE_SIZE_MB:
+            size_warnings.append(
+                f'"{os.path.basename(fp)}" 文件较大（{fsize_mb:.0f}MB），建议压缩后上传。'
+                f'大文件处理可能较慢，请耐心等待。'
+            )
+    total_size = sum(os.path.getsize(fp) for fp in saved) / (1024 * 1024)
+    if total_size > MAX_TOTAL_SIZE_MB:
+        size_warnings.append(
+            f'所有标书文件合计 {total_size:.0f}MB，处理可能需要较长时间。'
+            f'建议上传可复制文字版PDF或Word文件以加速分析。'
+        )
+
     file_groups = request.form.getlist('file_groups')
     group_map = {}
     for fp, group in zip(saved, file_groups):
         group = group.strip() or os.path.basename(fp)
         group_map.setdefault(group, []).append(fp)
-
-    group_texts = {}
-    for group, paths in group_map.items():
-        combined = ''
-        for p in paths:
-            try:
-                combined += extract_text_with_tables(p) + '\n'
-            except Exception:
-                pass
-        group_texts[group] = combined
 
     import queue
     progress_queue = queue.Queue()
@@ -2600,9 +2656,57 @@ def analyze_stream():
         progress_queue.put({'type': 'progress', 'step': step, 'label': label,
                            'percent': percent, 'detail': detail})
 
+    # Collect extraction warnings to send as a separate event
+    extraction_warnings = []
+
+    def _on_extract_progress(phase, current, total, has_text, detail):
+        """Callback for text extraction progress → sent as streaming events."""
+        # Only collect "no text" final events as warnings (not every progress detail)
+        if detail and phase == 'pdf_done' and not has_text:
+            extraction_warnings.append(detail)
+        progress_queue.put({
+            'type': 'extract',
+            'phase': phase,
+            'current': current,
+            'total': total,
+            'hasText': has_text,
+            'detail': detail or ''
+        })
+
     def generate():
         import threading
 
+        # ── Send size warnings first ──
+        for w in size_warnings:
+            yield json.dumps({'type': 'warning', 'code': 'large_file', 'message': w},
+                           ensure_ascii=False) + '\n'
+
+        # ── Phase 0: Text extraction with progress ──
+        group_texts = {}
+        for group, paths in group_map.items():
+            combined = ''
+            for p in paths:
+                base = os.path.basename(p)
+                try:
+                    progress_queue.put({
+                        'type': 'extract', 'phase': 'start',
+                        'file': base, 'group': group
+                    })
+                    combined += extract_text_with_tables(
+                        p, max_pages=300, on_progress=_on_extract_progress
+                    ) + '\n'
+                except Exception:
+                    pass
+            group_texts[group] = combined
+
+        if extraction_warnings:
+            progress_queue.put({
+                'type': 'warning',
+                'code': 'no_text_or_truncated',
+                'messages': extraction_warnings[:10]
+            })
+
+        # ── Phase 1: Full analysis ──
         results_holder = []
         error_holder = []
 
@@ -2732,6 +2836,21 @@ def single_upload_and_analyze():
             f.save(fpath)
             saved_refs.append(fpath)
 
+    # ── File size warnings ──
+    size_warnings = []
+    for fp in saved + saved_refs:
+        fsize_mb = os.path.getsize(fp) / (1024 * 1024)
+        if fsize_mb > MAX_FILE_SIZE_MB:
+            size_warnings.append(
+                f'"{os.path.basename(fp)}" 文件较大（{fsize_mb:.0f}MB），处理可能较慢。'
+                f'建议上传可复制文字版PDF或Word文件。'
+            )
+    total_size = sum(os.path.getsize(fp) for fp in saved) / (1024 * 1024)
+    if total_size > MAX_TOTAL_SIZE_MB:
+        size_warnings.append(
+            f'所有标书文件合计 {total_size:.0f}MB，处理可能需要较长时间。'
+        )
+
     try:
         # Get file groups — merge multi-volume files into single bidder
         file_groups = request.form.getlist('file_groups')
@@ -2743,14 +2862,21 @@ def single_upload_and_analyze():
         # Merge files by group: create combined filepaths for analysis
         # Use the first file of each group as the primary, merge text internally
         group_texts = {}  # group_name -> combined_text
+        extraction_warnings = []
         for group, paths in group_map.items():
             combined = ''
             for p in paths:
                 try:
-                    combined += extract_text_with_tables(p) + '\n'
+                    combined += extract_text_with_tables(p, max_pages=MAX_PDF_PAGES) + '\n'
                 except Exception:
                     pass
             group_texts[group] = combined
+            # Check if combined text is empty (possible all-image PDF)
+            if not combined.strip():
+                extraction_warnings.append(
+                    f'"{group}"未提取到任何文字内容，可能为全图片扫描件/图形文件，'
+                    f'建议上传可复制文字版PDF或Word文件'
+                )
 
         results = run_full_analysis(saved, saved_refs if saved_refs else None,
                                     group_map=group_map, group_texts=group_texts)
@@ -2758,6 +2884,10 @@ def single_upload_and_analyze():
         results['_ref_filenames'] = [os.path.basename(s) for s in saved_refs]
         results['_groups'] = {g: [os.path.basename(p) for p in paths] for g, paths in group_map.items()}
         results['_group_order'] = list(group_map.keys())
+        if extraction_warnings:
+            results['_warnings'] = extraction_warnings
+        if size_warnings:
+            results.setdefault('_warnings', []).extend(size_warnings)
 
         # Save to history — strip heavy data, keep only counts & indices
         history_results = json.loads(json.dumps(results, ensure_ascii=False))

@@ -88,6 +88,45 @@ function updateProgress(event) {
   }
 }
 
+function updateExtractProgress(event) {
+  progressFill.style.width = '5%';  // extraction is early phase
+  if (event.phase === 'start') {
+    progressText.textContent = '正在提取文字: ' + (event.file || '');
+  } else if (event.phase === 'pdf_page') {
+    var pct = event.total > 0 ? Math.round((event.current / event.total) * 10) : 5;
+    progressFill.style.width = Math.min(pct, 10) + '%';
+    progressText.textContent = '提取文字中 ' + event.current + '/' + event.total + ' 页';
+  } else if (event.phase === 'pdf_early_stop' || event.phase === 'pdf_done') {
+    if (event.detail) {
+      progressText.textContent = event.detail;
+    }
+    // Warnings are sent separately via 'warning' events — don't duplicate here
+  }
+}
+
+function showWarning(event) {
+  var panel = document.getElementById('warningPanel');
+  if (!panel) {
+    panel = document.createElement('div');
+    panel.id = 'warningPanel';
+    panel.style.cssText = 'margin:10px 0;padding:10px 16px;background:#fff3cd;border:1px solid #ffc107;border-radius:6px;font-size:13px;color:#856404;';
+    var resultsSection = document.getElementById('resultsSection');
+    if (resultsSection) {
+      resultsSection.parentNode.insertBefore(panel, resultsSection);
+    }
+  }
+  // Avoid duplicate messages
+  var existing = panel.querySelectorAll('.warning-msg');
+  for (var i = 0; i < existing.length; i++) {
+    if (existing[i].textContent === event.message) return;
+  }
+  var msg = document.createElement('div');
+  msg.className = 'warning-msg';
+  msg.textContent = '⚠ ' + event.message;
+  msg.style.cssText = 'margin-bottom:4px;';
+  panel.appendChild(msg);
+}
+
 function finishProgress() {
   progressFill.style.width = '100%';
   progressText.textContent = '分析完成';
@@ -187,6 +226,9 @@ btnClear.addEventListener('click', () => {
   analysisResult = null;
   fileInput.value = '';
   refFileInput.value = '';
+  // Clear all warnings
+  var warnPanel = document.getElementById('warningPanel');
+  if (warnPanel) warnPanel.remove();
 });
 
 function updateButtons() {
@@ -210,6 +252,9 @@ btnAnalyze.addEventListener('click', async () => {
 
   btnAnalyze.disabled = true;
   btnAnalyze.innerHTML = '<span class="btn-icon">&#9881;</span> 分析中...';
+  // Clear previous warnings before new analysis
+  var prevWarn = document.getElementById('warningPanel');
+  if (prevWarn) prevWarn.remove();
   startProgress();
 
   try {
@@ -252,8 +297,25 @@ btnAnalyze.addEventListener('click', async () => {
           const event = JSON.parse(line);
           if (event.type === 'progress') {
             updateProgress(event);
+          } else if (event.type === 'extract') {
+            updateExtractProgress(event);
+          } else if (event.type === 'warning') {
+            // Backend sends {messages: [...]} array (plural) — show one by one
+            if (event.messages && event.messages.length > 0) {
+              event.messages.forEach(function(msg) {
+                if (msg) showWarning({ code: event.code || 'warning', message: msg });
+              });
+            } else if (event.message) {
+              showWarning(event);
+            }
           } else if (event.type === 'result') {
             analysisResult = event.data;
+            // Show warnings from result if any
+            if (event.data._warnings && event.data._warnings.length > 0) {
+              event.data._warnings.forEach(function(w) {
+                showWarning({ code: 'no_text', message: w });
+              });
+            }
             resultsSection.style.display = 'block';
             renderAllTabs();
             resultsSection.scrollIntoView({ behavior: 'smooth' });
