@@ -420,6 +420,17 @@ def _extract_from_auth_section(section_text, info):
 
 def _extract_from_personnel_table(section_text, info):
     """Extract project members from personnel/team tables."""
+    # Known role/title strings that should NOT be treated as person names
+    _ROLE_KEYWORDS = [
+        '项目经理', '项目负责人', '技术负责人', '技术总监', '总工程师',
+        '安全员', '质量员', '施工员', '材料员', '资料员', '造价员', '预算员',
+        '安全负责人', '项目副经理', '商务经理', '财务负责人', '设计负责人',
+        '质量负责人', '现场负责人', '合同经理', '采购经理', '施工经理',
+        '测试负责人', '运维负责人', '集成负责人', '实施负责人',
+        '法定代表人', '授权代表', '代理人', '被授权人', '受托人',
+        '团队成员', '项目成员', '组员', '组长',
+    ]
+
     patterns = [
         r'姓名[：:]\s*([一-鿿]{2,4})\s*.*?(?:职务|岗位|角色|职称)[：:]\s*([一-鿿]{2,10})',
         r'([一-鿿]{2,4})\s{2,}(项目经理|项目负责人|技术负责人|技术总监|总工程师|安全员|质量员|施工员|材料员|资料员|造价员|预算员)',
@@ -441,8 +452,13 @@ def _extract_from_personnel_table(section_text, info):
                 role = 'team_member'
 
             name = name.strip()
-            if len(name) >= 2:
-                info['all_persons'].append({'name': name, 'role': role, 'confidence': 0.80})
+            # Reject if the "name" is actually a known role/title string
+            if name in _ROLE_KEYWORDS:
+                continue
+            # Validate the name looks like an actual person name (not column label, company name, etc.)
+            if not _is_person_name(name):
+                continue
+            info['all_persons'].append({'name': name, 'role': role, 'confidence': 0.80})
 
 
 def _extract_from_signature_page(section_text, info):
