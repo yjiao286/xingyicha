@@ -2663,6 +2663,41 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
 
     _progress('metadata', '元数据比对', 25, f'交叉比对 {len(out_names)} 份标书的创建者、修改者、编辑程序等')
 
+    # ── Helper: filter out software/application names from metadata matching ──
+    def _is_software_name(val):
+        """Check if a metadata value is a software/application name, not a person."""
+        if not val:
+            return False
+        v = str(val).strip()
+        # Known software vendor/product patterns
+        software_patterns = [
+            r'Microsoft[®\s]*\b(Word|Office|Excel|PowerPoint|Windows)',  # Microsoft products
+            r'\bWPS\b', r'Kingsoft', r'金山',
+            r'Adobe[®\s]', r'Adobe\s+(Acrobat|PDF|Photoshop|Illustrator)',
+            r'LibreOffice', r'OpenOffice', r'Apache\s+OpenOffice',
+            r'Apple\s+(Pages|Numbers|Keynote)',
+            r'iText', r'pdf\s*kit', r'wkhtmltopdf', r'FPDF', r'TCPDF',
+            r'Aspose\.', r'Spire\.',
+            r'打印机', r'Printer', r'Scanner',
+            r'Foxit', r'Nitro\s+PDF',
+            r'Ghostscript',
+            r'®', r'™',  # Trademark symbols strongly suggest software
+        ]
+        for pat in software_patterns:
+            if re.search(pat, v, re.IGNORECASE):
+                return True
+        # Common generic application values
+        generic_apps = [
+            'Microsoft Word', 'Microsoft Office', 'Microsoft Excel',
+            'WPS Office', 'WPS 文字', 'WPS 表格',
+            'Adobe Acrobat', 'Adobe PDF',
+        ]
+        v_lower = v.lower()
+        for ga in generic_apps:
+            if ga.lower() in v_lower:
+                return True
+        return False
+
     # ── Compile metadata cross-comparison (all group pairs) ──
     meta_matches = []
     if len(out_names) >= 2:
@@ -2685,6 +2720,7 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
                     vi = mi.get(key, '')
                     vj = mj.get(key, '')
                     if vi and vj and vi == vj:
+                        is_soft = _is_software_name(vi) if key in ('application', 'last_modified_by', 'creator') else False
                         dedup_key = f'{label}|{vi}'
                         if dedup_key not in all_pairs_done:
                             all_pairs_done.add(dedup_key)
@@ -2692,8 +2728,10 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
                                 'field': label,
                                 'value': str(vi)[:200],
                                 'pair': pair_label,
-                                'verdict': '完全一致',
-                                'severity': 'high' if key in ('KSOTemplateDocerSaveRecord', 'last_modified_by') else 'medium'
+                                'verdict': '软件名称一致（不计分）' if is_soft else '完全一致',
+                                'severity': 'info' if is_soft else (
+                                    'high' if key in ('KSOTemplateDocerSaveRecord', 'last_modified_by') else 'medium'
+                                )
                             })
 
     # Time analysis
@@ -2804,10 +2842,11 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
                         key = f'same_modifier|{mi["last_modified_by"]}'
                         if key not in personnel_dedup:
                             personnel_dedup.add(key)
+                            is_soft = _is_software_name(mi['last_modified_by'])
                             personnel_matches.append({
-                                'type': '最后修改人为同一人',
+                                'type': '最后修改人为同一人（软件名，不计分）' if is_soft else '最后修改人为同一人',
                                 'detail': f'"{mi["last_modified_by"]}"同时为 {gi} 和 {gj} 的最后修改人',
-                                'severity': 'high'
+                                'severity': 'info' if is_soft else 'high'
                             })
 
                 # ── Layer 6: Personnel overlap rate ──
@@ -2932,8 +2971,8 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
         {
             'clause': '第（三）项',
             'description': '不同投标人的投标文件载明的项目管理成员为同一人',
-            'satisfied': None,
-            'evidence': ['标书中未明确列出项目团队成员信息，无法判断']
+            'satisfied': any(m['type'] == '人员高度重叠' for m in personnel_matches),
+            'evidence': []
         },
         {
             'clause': '第（四）项-a',
@@ -2958,11 +2997,37 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
                 c['evidence'].append('两份标书最后修改人为同一人')
             if any('创建者' in m.get('type', '') for m in personnel_matches):
                 c['evidence'].append('一方授权代表为另一方标书创建者')
-            c['evidence_level'] = '强' if c['satisfied'] else '无'
+            if c['satisfied']:
+                c['evidence_level'] = '强'
+            else:
+                # 检查间接证据：模板/编辑程序/ICV/WPS版本等非软件名元数据一致项
+                circumstantial = [m for m in meta_matches if m.get('severity') != 'info']
+                if len(circumstantial) >= 2:
+                    c['evidence_level'] = '中'
+                    c['evidence'].append(f'存在 {len(circumstantial)} 项元数据一致（模板/程序/版本等间接证据）')
+                elif len(circumstantial) == 1:
+                    c['evidence_level'] = '中'
+                    c['evidence'].append(f'存在 1 项元数据一致（{circumstantial[0]["field"]}），间接证据较弱')
+                else:
+                    c['evidence_level'] = '无'
         elif c['clause'] == '第（二）项':
-            c['evidence_level'] = '中' if c['satisfied'] else '无'
+            if c['satisfied']:
+                c['evidence_level'] = '强'
+                # 收集授权代表相关证据
+                for m in personnel_matches:
+                    if '授权代表' in m.get('type', ''):
+                        c['evidence'].append(m.get('detail', ''))
+            else:
+                c['evidence_level'] = '无'
         elif c['clause'] == '第（三）项':
-            c['evidence_level'] = '无法判断'
+            if c['satisfied']:
+                c['evidence_level'] = '强'
+                for m in personnel_matches:
+                    if m.get('type') == '人员高度重叠':
+                        c['evidence'].append(m.get('detail', ''))
+            else:
+                c['evidence_level'] = '无法判断'
+                c['evidence'].append('标书中未明确列出项目团队成员信息，无法判断')
         elif c['clause'] == '第（四）项-a':
             substantial_count = len(similarity.get('substantial_abnormal', []))
             suspicious_count = len(similarity.get('suspicious_template', []))
@@ -2993,20 +3058,19 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
     bid_word = num_word.get(num_bids, f'{num_bids}份')
 
     # ── Weighted scoring ──
-    # "死证据"策略：人员交叉、元数据一致等硬证据高权重
-    # 权重总和允许超过100，最终得分 min(raw_score, 100)
-    # 第（一）项命中即为实锤，多项硬证据叠加推向满分
+    # 权重分布避免两极分化，中间分数段（25-50）由多项硬证据叠加产生
+    # 第（一）项命中即达高度嫌疑线，其他硬证据叠加推高置信度
     clause_weights = {
-        '第（一）项': 80,       # 硬证据: WPS ID、授权代表=创建者交叉、最后修改人同一
-        '第（二）项': 30,       # 硬证据: 授权代表重叠，同一人办理投标
-        '第（三）项': 20,       # 硬证据: 项目管理人员姓名重叠
+        '第（一）项': 50,       # 硬证据: WPS ID、授权代表=创建者交叉、最后修改人同一
+        '第（二）项': 25,       # 硬证据: 授权代表重叠，同一人办理投标
+        '第（三）项': 15,       # 硬证据: 项目管理人员姓名重叠
         '第（四）项-a': 5,      # 软证据: 文本相似度
-        '第（四）项-b': 5,      # 软证据: 报价规律
+        '第（四）项-b': 4,      # 软证据: 报价规律
     }
-    level_score_map = {'强': 1.0, '中': 0.4, '无法判断': 0, '无': 0}
+    level_score_map = {'强': 1.0, '中': 0.3, '无法判断': 0, '无': 0}
 
     total_score = 0
-    max_score = 100  # 固定满分100，原始权重总和可能超过100
+    max_score = 100
     all_uncertain = True
     for c in clauses:
         weight = clause_weights.get(c['clause'], 0)
@@ -3018,7 +3082,15 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
         if level != '无法判断':
             all_uncertain = False
 
-    total_score = min(round(total_score, 1), max_score)
+    # 软证据协同加分：文本异常一致 + 报价规律差异同时出现时额外+1
+    clause_4a = next((c for c in clauses if c['clause'] == '第（四）项-a'), None)
+    clause_4b = next((c for c in clauses if c['clause'] == '第（四）项-b'), None)
+    synergy_bonus = 0
+    if clause_4a and clause_4b and clause_4a.get('evidence_level') == '强' and clause_4b.get('evidence_level') == '强':
+        synergy_bonus = 1
+        total_score += synergy_bonus
+
+    total_score = round(total_score, 1)
 
     # ── Three-tier conclusion ──
     if all_uncertain:
@@ -3047,7 +3119,7 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
             'matches': meta_matches,
             'findings': time_findings + [
                 f'KSOProductBuildVer一致: 同一WPS版本',
-                f'最后保存者一致: lzkj' if any(m['field'] == '最后保存者' for m in meta_matches) else '',
+                f'最后保存者一致' if any(m['field'] == '最后保存者' for m in meta_matches) else '',
                 f'文档修改时间相隔很近，存在连续编辑特征',
             ]
         },
@@ -3071,9 +3143,11 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
             'conclusion_level': conclusion_level,
             'score': total_score,
             'max_score': max_score,
+            'synergy_bonus': synergy_bonus,
             'scoring_rule': {
                 'weights': clause_weights,
                 'level_multipliers': level_score_map,
+                'synergy_bonus': 1,
                 'thresholds': {'high': 50, 'medium': 15, 'low': 0}
             }
         }

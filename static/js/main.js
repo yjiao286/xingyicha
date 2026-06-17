@@ -337,13 +337,16 @@ btnAnalyze.addEventListener('click', async () => {
 });
 
 // ── Tab Switching ──
+function switchToTab(tabId) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+  var btn = document.querySelector('[data-tab="' + tabId + '"]');
+  if (btn) btn.classList.add('active');
+  var content = document.getElementById(tabId);
+  if (content) content.classList.add('active');
+}
 document.querySelectorAll('.tab-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-    btn.classList.add('active');
-    document.getElementById(btn.dataset.tab).classList.add('active');
-  });
+  btn.addEventListener('click', () => switchToTab(btn.dataset.tab));
 });
 
 // ── Render All ──
@@ -378,30 +381,41 @@ function renderVerdict() {
     banner.textContent += ' (已扣除' + refDocs.length + '份模板文档)';
   }
 
-  // ── Score bar ──
+  // ── Score overview cards ──
   const score = v.score || 0;
   const maxScore = v.max_score || 100;
   const pct = Math.min(100, Math.round(score / maxScore * 100));
-  let scoreColor = '#16a34a';
-  if (level === 'high') scoreColor = '#dc2626';
-  else if (level === 'medium') scoreColor = '#d97706';
-  else if (level === 'uncertain') scoreColor = '#9ca3af';
+  let scoreColor = '#16a34a', scoreBg = '#dcfce7';
+  if (level === 'high') { scoreColor = '#dc2626'; scoreBg = '#fef2f2'; }
+  else if (level === 'medium') { scoreColor = '#d97706'; scoreBg = '#fff7ed'; }
+  else if (level === 'uncertain') { scoreColor = '#9ca3af'; scoreBg = '#f3f4f6'; }
+
+  // Count clause stats
+  var satisfiedCount = 0, uncertainCount = 0, notCount = 0;
+  v.clauses.forEach(c => {
+    if (c.satisfied === true) satisfiedCount++;
+    else if (c.satisfied === false) notCount++;
+    else uncertainCount++;
+  });
 
   document.getElementById('verdictSummary').innerHTML = `
-    <div style="margin-top:12px;background:#f8f9fb;border-radius:8px;padding:10px 14px;">
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
-        <span style="font-size:13px;font-weight:600;">综合风险评分:</span>
-        <span style="font-size:18px;font-weight:700;color:${scoreColor};">${score}</span>
-        <span style="font-size:12px;color:var(--text-muted);">/ ${maxScore}</span>
+    <div style="background:var(--bg-surface);border:1px solid var(--border-light);border-radius:var(--radius);padding:16px 20px;margin-bottom:14px;">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">
+        <span style="font-size:13px;font-weight:600;color:var(--text-secondary);">综合风险评分</span>
+        <span style="font-size:32px;font-weight:800;color:${scoreColor};line-height:1;">${score}</span>
+        <span style="font-size:13px;color:var(--text-muted);">/ ${maxScore}</span>
+        ${v.synergy_bonus > 0 ? '<span style="font-size:10px;color:#d97706;background:#fff7ed;padding:1px 6px;border-radius:4px;">含协同+5</span>' : ''}
+        <span style="flex:1;"></span>
+        <span style="font-size:12px;color:var(--text-muted);">满足 <b style="color:#dc2626;">${satisfiedCount}</b> · 无法判断 <b style="color:#d97706;">${uncertainCount}</b> · 不满足 <b style="color:#16a34a;">${notCount}</b></span>
       </div>
-      <div style="background:#e5e7eb;border-radius:4px;height:8px;overflow:hidden;">
-        <div style="background:${scoreColor};height:100%;width:${pct}%;border-radius:4px;transition:width .3s;"></div>
+      <div class="score-bar-wrap">
+        <div class="score-bar-fill" style="width:${pct}%;background:${scoreColor};"></div>
       </div>
-      <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-muted);margin-top:3px;">
-        <span>未发现(0)</span><span>可疑(15)</span><span>高度嫌疑(50)</span><span>满分(${maxScore})</span>
+      <div class="score-ticks">
+        <span>0</span><span style="font-weight:600;color:#d97706;">15 可疑</span><span style="font-weight:600;color:#dc2626;">50 高度嫌疑</span><span>${maxScore}</span>
       </div>
     </div>
-    <details class="scoring-rules" style="margin-top:8px;font-size:12px;color:var(--text-muted);background:#f8f9fb;border-radius:8px;padding:10px 14px;">
+    <details class="rules-panel">
       <summary style="cursor:pointer;font-weight:600;color:var(--text-secondary);">📋 综合判定评分规则</summary>
       <div style="margin-top:8px;line-height:1.8;">
         <p style="margin:0 0 6px;font-weight:600;">评分依据：《招标投标法实施条例》第四十条</p>
@@ -411,17 +425,18 @@ function renderVerdict() {
             <td style="padding:4px 8px;border:1px solid #ddd;">权重</td>
             <td style="padding:4px 8px;border:1px solid #ddd;">说明</td>
           </tr>
-          <tr><td style="padding:4px 8px;border:1px solid #ddd;">第（一）项</td><td style="padding:4px 8px;border:1px solid #ddd;">80分</td><td style="padding:4px 8px;border:1px solid #ddd;">同一单位或个人编制 — 🔒 死证据：WPS ID、授权代表=创建者、最后修改人同一</td></tr>
-          <tr><td style="padding:4px 8px;border:1px solid #ddd;">第（二）项</td><td style="padding:4px 8px;border:1px solid #ddd;">30分</td><td style="padding:4px 8px;border:1px solid #ddd;">同一人办理投标 — 🔒 死证据：授权代表重叠</td></tr>
-          <tr><td style="padding:4px 8px;border:1px solid #ddd;">第（三）项</td><td style="padding:4px 8px;border:1px solid #ddd;">20分</td><td style="padding:4px 8px;border:1px solid #ddd;">项目管理人员相同 — 🔒 死证据：人员姓名重叠</td></tr>
-          <tr><td style="padding:4px 8px;border:1px solid #ddd;">第（四）项-a</td><td style="padding:4px 8px;border:1px solid #ddd;">5分</td><td style="padding:4px 8px;border:1px solid #ddd;">投标文件异常一致 — 辅助参考</td></tr>
-          <tr><td style="padding:4px 8px;border:1px solid #ddd;">第（四）项-b</td><td style="padding:4px 8px;border:1px solid #ddd;">5分</td><td style="padding:4px 8px;border:1px solid #ddd;">报价呈规律性差异 — 辅助参考</td></tr>
+          <tr><td style="padding:4px 8px;border:1px solid #ddd;">第（一）项</td><td style="padding:4px 8px;border:1px solid #ddd;">50分</td><td style="padding:4px 8px;border:1px solid #ddd;">同一单位或个人编制 — 硬证据：WPS ID、授权代表=创建者、最后修改人同一</td></tr>
+          <tr><td style="padding:4px 8px;border:1px solid #ddd;">第（二）项</td><td style="padding:4px 8px;border:1px solid #ddd;">25分</td><td style="padding:4px 8px;border:1px solid #ddd;">同一人办理投标 — 硬证据：授权代表重叠（命中即强）</td></tr>
+          <tr><td style="padding:4px 8px;border:1px solid #ddd;">第（三）项</td><td style="padding:4px 8px;border:1px solid #ddd;">15分</td><td style="padding:4px 8px;border:1px solid #ddd;">项目管理人员相同 — 硬证据：人员高度重叠（≥50%）</td></tr>
+          <tr><td style="padding:4px 8px;border:1px solid #ddd;">第（四）项-a</td><td style="padding:4px 8px;border:1px solid #ddd;">5分</td><td style="padding:4px 8px;border:1px solid #ddd;">投标文件异常一致 — 软证据：辅助参考</td></tr>
+          <tr><td style="padding:4px 8px;border:1px solid #ddd;">第（四）项-b</td><td style="padding:4px 8px;border:1px solid #ddd;">4分</td><td style="padding:4px 8px;border:1px solid #ddd;">报价呈规律性差异 — 软证据：辅助参考</td></tr>
         </table>
         <p style="margin:0 0 6px;font-weight:600;">证据强度系数：</p>
         <ul style="margin:0 0 10px;padding-left:18px;">
           <li>强 = 权重 × 1.0（满分）</li>
-          <li>中 = 权重 × 0.4</li>
+          <li>中 = 权重 × 0.3</li>
           <li>无法判断 / 无 = 0</li>
+          <li>协同加分：第（四）项-a 和 -b 同时为"强" → +1分</li>
         </ul>
         <p style="margin:0 0 6px;font-weight:600;">综合结论阈值：</p>
         <ul style="margin:0;padding-left:18px;">
@@ -434,6 +449,15 @@ function renderVerdict() {
     </details>
   `;
 
+  // Clause → detail tab mapping
+  var clauseTabs = {
+    '第（一）项': 'tab-metadata',
+    '第（二）项': 'tab-personnel',
+    '第（三）项': 'tab-personnel',
+    '第（四）项-a': 'tab-similarity',
+    '第（四）项-b': 'tab-pricing',
+  };
+
   let html = '';
   v.clauses.forEach(c => {
     const satisfied = c.satisfied;
@@ -441,13 +465,17 @@ function renderVerdict() {
     if (satisfied === true) { cardCls = 'satisfied'; tagCls = 'tag-satisfied'; tagText = '满足'; }
     else if (satisfied === false) { cardCls = 'not-satisfied'; tagCls = 'tag-not'; tagText = '不满足'; }
 
-    html += `<div class="clause-card ${cardCls}">
+    // Clause number from string: "第（一）项" → "一"
+    var clauseNum = c.clause.replace('第（', '').replace('）项', '').replace('项-', '').replace('项', '');
+    var targetTab = clauseTabs[c.clause] || '';
+    html += `<div class="clause-card ${cardCls}"${targetTab ? ` onclick="switchToTab('${targetTab}')" style="cursor:pointer;"` : ''}>
       <div class="clause-header">
-        <strong>${c.clause}</strong>
+        <span class="clause-index">${escapeHtml(clauseNum)}</span>
+        <strong style="font-size:14px;">${escapeHtml(c.description)}</strong>
         <span class="clause-tag ${tagCls}">${tagText}</span>
-        ${c._weight !== undefined ? `<span style="font-size:10px;color:var(--text-muted);margin-left:4px;">权重:${c._weight}分</span>` : ''}
-      </div>
-      <p style="font-size:14px;margin-bottom:6px;">${escapeHtml(c.description)}</p>`;
+        ${c._score !== undefined ? `<span class="clause-score-badge">+${c._score}分</span>` : ''}
+        ${targetTab ? `<span style="font-size:10px;color:var(--accent-text);margin-left:4px;">详情 →</span>` : ''}
+      </div>`;
 
     if (c.evidence && c.evidence.length > 0) {
       html += '<ul class="clause-evidence">';
@@ -456,11 +484,7 @@ function renderVerdict() {
     }
     if (c.evidence_level) {
       const lvlCls = c.evidence_level === '强' ? 'level-strong' : c.evidence_level === '中' ? 'level-medium' : 'level-none';
-      html += `<span class="evidence-level ${lvlCls}">证据强度: ${c.evidence_level}`;
-      if (c._score !== undefined) {
-        html += ` <span style="font-size:10px;color:var(--text-muted);">(+${c._score}分)</span>`;
-      }
-      html += `</span>`;
+      html += `<span class="evidence-level ${lvlCls}">证据强度: ${c.evidence_level}</span>`;
     }
     html += '</div>';
   });
@@ -477,8 +501,10 @@ function renderMetadata() {
     mhtml += '<div class="section-title">🔍 元数据一致项</div>';
     mhtml += '<div class="meta-match-grid">';
     meta.matches.forEach(m => {
-      const icon = m.severity === 'high' ? '⚠️' : '📋';
-      const cls = m.severity === 'high' ? 'meta-critical' : 'meta-normal';
+      const isInfo = m.severity === 'info';
+      const icon = isInfo ? 'ℹ️' : (m.severity === 'high' ? '⚠️' : '📋');
+      const cls = isInfo ? 'meta-info' : (m.severity === 'high' ? 'meta-critical' : 'meta-normal');
+      const badgeCls = isInfo ? 'badge-info' : (m.severity === 'high' ? 'badge-high' : 'badge-medium');
       mhtml += `<div class="meta-match-card ${cls}">
         <div class="meta-match-icon">${icon}</div>
         <div class="meta-match-body">
@@ -486,7 +512,7 @@ function renderMetadata() {
           <div class="meta-match-value">${escapeHtml(String(m.value).substring(0, 200))}</div>
           ${m.pair ? `<div class="meta-match-pair">📄 ${escapeHtml(m.pair)}</div>` : ''}
         </div>
-        <span class="meta-match-badge ${m.severity === 'high' ? 'badge-high' : 'badge-medium'}">${m.verdict}</span>
+        <span class="meta-match-badge ${badgeCls}">${m.verdict}</span>
       </div>`;
     });
     mhtml += '</div>';
@@ -602,6 +628,7 @@ function renderPersonnel() {
       var sevLabel = '一般';
       if (m.severity === 'high') { sevClass = 'badge-high'; sevLabel = '严重'; }
       if (m.severity === 'critical') { sevClass = 'badge-critical'; sevLabel = '致命'; }
+      if (m.severity === 'info') { sevClass = 'badge-info'; sevLabel = '信息'; }
       mhtml += '<div class="match-card">';
       mhtml += '<span class="match-badge ' + sevClass + '">' + sevLabel + '</span>';
       mhtml += '<strong>' + escapeHtml(m.type) + '</strong>';

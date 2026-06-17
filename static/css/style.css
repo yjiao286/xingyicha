@@ -257,26 +257,59 @@ body {
 
 /* ── Verdict ── */
 .verdict-banner {
-  padding: 20px 28px; border-radius: var(--radius); margin-bottom: 20px;
-  font-size: 16px; font-weight: 700; text-align: center; letter-spacing: .3px;
+  padding: 24px 32px; border-radius: var(--radius); margin-bottom: 16px;
+  font-size: 18px; font-weight: 700; text-align: center; letter-spacing: .5px;
+  display: flex; align-items: center; justify-content: center; gap: 10px;
 }
-.verdict-banner.suspect { background: #fef2f2; color: var(--danger); border: 1px solid #fecaca; }
-.verdict-banner.suspicious { background: #fff7ed; color: #c2410c; border: 1px solid #fed7aa; }
-.verdict-banner.clean { background: #f0fdf4; color: var(--success); border: 1px solid #bbf7d0; }
-.verdict-banner.warning { background: #fffbeb; color: var(--warn); border: 1px solid #fde68a; }
-.verdict-banner.uncertain { background: #f3f4f6; color: #6b7280; border: 1px solid #d1d5db; }
+.verdict-banner.suspect { background: #fef2f2; color: var(--danger); border: 2px solid #fecaca; }
+.verdict-banner.suspicious { background: #fff7ed; color: #c2410c; border: 2px solid #fed7aa; }
+.verdict-banner.clean { background: #f0fdf4; color: var(--success); border: 2px solid #bbf7d0; }
+.verdict-banner.warning { background: #fffbeb; color: var(--warn); border: 2px solid #fde68a; }
+.verdict-banner.uncertain { background: #f3f4f6; color: #6b7280; border: 2px solid #d1d5db; }
 
+/* ── Score Overview Card ── */
+.score-overview {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 16px;
+}
+.score-card {
+  background: var(--bg-surface); border: 1px solid var(--border-light);
+  border-radius: var(--radius); padding: 18px 20px;
+}
+.score-card-header {
+  font-size: 12px; font-weight: 600; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: .8px; margin-bottom: 10px;
+}
+.score-big {
+  display: flex; align-items: baseline; gap: 4px; margin-bottom: 10px;
+}
+.score-num { font-size: 40px; font-weight: 800; line-height: 1; }
+.score-unit { font-size: 14px; color: var(--text-muted); }
+.score-bar-wrap { background: #e5e7eb; border-radius: 4px; height: 10px; overflow: hidden; margin-bottom: 6px; }
+.score-bar-fill { height: 100%; border-radius: 4px; transition: width .5s ease; }
+.score-ticks { display: flex; justify-content: space-between; font-size: 10px; color: var(--text-muted); }
+.score-ticks span { text-align: center; }
+
+/* ── Clauses ── */
 .clauses-grid { display: grid; gap: 10px; }
 .clause-card {
   padding: 16px 20px; border-radius: var(--radius);
   border: 1px solid var(--border-light); background: var(--bg-surface);
-  transition: box-shadow .15s;
+  transition: all .15s;
 }
-.clause-card:hover { box-shadow: var(--shadow-md); }
-.clause-card.satisfied { border-left: 3px solid var(--danger); }
-.clause-card.not-satisfied { border-left: 3px solid var(--success); }
-.clause-card.uncertain { border-left: 3px solid var(--warn); }
-.clause-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.clause-card:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); }
+.clause-card[style*="cursor:pointer"]:hover { border-color: var(--accent); }
+.clause-card.satisfied { border-left: 4px solid var(--danger); }
+.clause-card.not-satisfied { border-left: 4px solid var(--success); }
+.clause-card.uncertain { border-left: 4px solid var(--warn); }
+.clause-header { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; flex-wrap: wrap; }
+.clause-index {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 26px; height: 24px; padding: 0 5px; border-radius: 6px;
+  font-size: 11px; font-weight: 700; color: #fff; flex-shrink: 0; white-space: nowrap;
+}
+.clause-card.satisfied .clause-index { background: var(--danger); }
+.clause-card.not-satisfied .clause-index { background: var(--success); }
+.clause-card.uncertain .clause-index { background: var(--warn); color: #92400e; }
 .clause-tag {
   font-size: 10px; font-weight: 700; padding: 2px 10px; border-radius: 10px; letter-spacing: .5px;
 }
@@ -286,6 +319,18 @@ body {
 .clause-evidence { font-size: 12px; color: var(--text-secondary); padding-left: 14px; list-style: disc; }
 .clause-evidence li { margin-bottom: 2px; }
 .evidence-level { font-size: 11px; font-weight: 600; }
+.clause-score-badge {
+  font-size: 10px; font-weight: 700; padding: 1px 8px; border-radius: 10px;
+  background: #eff3fe; color: var(--accent-text); margin-left: auto; white-space: nowrap;
+}
+
+/* ── Rules Panel ── */
+.rules-panel {
+  margin-bottom: 16px;
+  font-size: 12px; color: var(--text-muted);
+  background: #f8f9fb; border: 1px solid var(--border-light);
+  border-radius: var(--radius); padding: 10px 14px;
+}
 .level-strong { color: var(--danger); }
 .level-medium { color: var(--warn); }
 .level-none { color: var(--success); }
@@ -318,6 +363,7 @@ body {
 .meta-match-card:hover { box-shadow: var(--shadow-md); }
 .meta-match-card.meta-critical { background: #fef2f2; border-color: #fecaca; }
 .meta-match-card.meta-normal { background: var(--bg-surface); border-color: var(--border-light); }
+.meta-match-card.meta-info { background: #f8f9fb; border-color: #d1d5db; opacity: 0.75; }
 .meta-match-icon { font-size: 20px; flex-shrink: 0; }
 .meta-match-body { flex: 1; min-width: 0; }
 .meta-match-field { font-size: 14px; font-weight: 700; color: var(--text); margin-bottom: 4px; }
@@ -334,6 +380,7 @@ body {
 .badge-high { background: #fee2e2; color: var(--danger); }
 .badge-critical { background: #fce7f3; color: #9d174d; font-weight: 800; }
 .badge-medium { background: #eef0f4; color: var(--text-muted); }
+.badge-info { background: #f3f4f6; color: #9ca3af; }
 .meta-empty { text-align: center; padding: 36px; font-size: 14px; color: var(--text-muted); }
 
 /* ── Match cards ── */
