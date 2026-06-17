@@ -441,7 +441,23 @@ body {
 .stat-card:hover { border-color: var(--accent); box-shadow: var(--shadow-md); }
 .stat-num { font-size: 28px; font-weight: 800; color: var(--accent); font-family: var(--font-mono); }
 .stat-num.danger { color: var(--danger); }
+.stat-num.warn { color: #d97706; }
+.stat-num.success { color: #16a34a; }
 .stat-label { font-size: 10px; color: var(--text-muted); margin-top: 2px; font-weight: 500; letter-spacing: .5px; }
+.stat-card.active { border-color: var(--accent); background: #eff3fe; box-shadow: 0 0 0 2px rgba(37,99,235,.12); }
+.stat-card.active .stat-label { color: var(--accent-text); font-weight: 600; }
+
+/* ── Smart toggle button ── */
+.smart-toggle-row {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 12px;
+}
+.smart-toggle-btn {
+  font-size: 12px; font-weight: 500; color: var(--accent-text);
+  background: #eff3fe; border: 1px solid transparent; border-radius: 6px;
+  padding: 5px 14px; cursor: pointer; transition: all .15s;
+}
+.smart-toggle-btn:hover { background: #dbe4ff; }
 
 /* ── Pair overview ── */
 .pair-overview-grid {

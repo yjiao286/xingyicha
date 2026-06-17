@@ -655,13 +655,12 @@ function renderPersonnel() {
 
 // ── Similarity Tab ──
 let _allMatchRefs = []; // flat list of all matches for modal navigation
+let _currentSimFilter = 'all'; // chip-selector filter state
 
 function renderSimilarity() {
   if (!analysisResult) return;
   const s = analysisResult.text_similarity;
-
-  const filterEl = document.querySelector('input[name="simFilter"]:checked');
-  const filter = filterEl ? filterEl.value : 'all';
+  const filter = _currentSimFilter;
 
   let totalMatches = 0, totalSubstantial = 0, totalSuspicious = 0, totalTemplate = s.template_matches || 0;
   s.pair_results.forEach(p => {
@@ -670,30 +669,22 @@ function renderSimilarity() {
     totalSuspicious += (p.suspicious_count || 0);
   });
 
+  // Chip-selector cards (click = set filter + re-render)
+  const chip = (value, num, cls, label) =>
+    `<div class="stat-card${filter===value?' active':''}" onclick="_currentSimFilter='${value}';renderSimilarity();">
+      <div class="stat-num${cls?' '+cls:''}">${num}</div>
+      <div class="stat-label">${label}</div>
+    </div>`;
+
   document.getElementById('similaritySummary').innerHTML = `
-    <div class="summary-stat">
-      <div class="stat-card" style="cursor:pointer" onclick="document.querySelector('input[value=all]').click();renderSimilarity();">
-        <div class="stat-num">${totalMatches}</div>
-        <div class="stat-label">总匹配段落数</div>
+    <div class="smart-toggle-row">
+      <div class="summary-stat" style="margin:0;">
+        ${chip('all', totalMatches, '', '总匹配段落数')}
+        ${chip('substantial', totalSubstantial, 'danger', '🔴 可能高风险异常')}
+        ${chip('suspicious', totalSuspicious, 'warn', '🟡 疑似模板')}
+        ${chip('template', totalTemplate, 'success', '⚪ 已过滤模板')}
       </div>
-      <div class="stat-card" style="cursor:pointer" onclick="document.querySelector('input[value=substantial]').click();renderSimilarity();">
-        <div class="stat-num danger">${totalSubstantial}</div>
-        <div class="stat-label">🔴 可能高风险异常</div>
-      </div>
-      <div class="stat-card" style="cursor:pointer" onclick="document.querySelector('input[value=suspicious]').click();renderSimilarity();">
-        <div class="stat-num" style="color:#d97706;">${totalSuspicious}</div>
-        <div class="stat-label">🟡 疑似模板</div>
-      </div>
-      <div class="stat-card" style="cursor:pointer" onclick="document.querySelector('input[value=template]').click();renderSimilarity();">
-        <div class="stat-num" style="color:#16a34a;">${totalTemplate}</div>
-        <div class="stat-label">⚪ 已过滤模板</div>
-      </div>
-    </div>
-    <div class="filter-bar" style="margin:8px 0;">
-      <label style="margin-right:12px;font-size:13px;cursor:pointer;"><input type="radio" name="simFilter" value="all"${filter==='all'?' checked':''} onchange="renderSimilarity()"> 全部</label>
-      <label style="margin-right:12px;font-size:13px;cursor:pointer;"><input type="radio" name="simFilter" value="substantial"${filter==='substantial'?' checked':''} onchange="renderSimilarity()"> 🔴 可能高风险异常</label>
-      <label style="margin-right:12px;font-size:13px;cursor:pointer;"><input type="radio" name="simFilter" value="suspicious"${filter==='suspicious'?' checked':''} onchange="renderSimilarity()"> 🟡 疑似模板</label>
-      <label style="font-size:13px;cursor:pointer;"><input type="radio" name="simFilter" value="template"${filter==='template'?' checked':''} onchange="renderSimilarity()"> ⚪ 已过滤</label>
+      <button class="smart-toggle-btn" onclick="toggleAllPairs()" id="btnSmartToggle">▸ 展开全部</button>
     </div>
     <ul class="finding-list">${s.findings.map(f => `<li>${escapeHtml(f)}</li>`).join('')}</ul>
     <details class="scoring-rules" style="margin-top:10px;font-size:12px;color:var(--text-muted);background:#f8f9fb;border-radius:8px;padding:10px 14px;">
@@ -732,7 +723,7 @@ function renderSimilarity() {
     const subCnt = pr.substantial_count || 0;
     const susCnt = pr.suspicious_count || 0;
     const tplCnt = pr.template_count || 0;
-    overview += `<div class="pair-overview-card" onclick="scrollToPair(${pi})" style="cursor:pointer;">
+    overview += `<div class="pair-overview-card" onclick="scrollToPair(${pi})">
       <div class="pair-overview-header">对比 ${pi + 1}</div>
       <div style="font-size:12px;color:#666;margin:4px 0;">${shortenName(pr.file1)} ↔ ${shortenName(pr.file2)}</div>
       <div style="display:flex;gap:8px;font-size:12px;">
@@ -745,25 +736,30 @@ function renderSimilarity() {
   });
   overview += '</div>';
   document.getElementById('similaritySummary').innerHTML += `
-    <div id="pairOverview">${overview}</div>
-    <div style="margin-top:8px;">
-      <button class="btn btn-sm btn-outline" onclick="expandAllPairs()">展开全部</button>
-      <button class="btn btn-sm btn-outline" onclick="collapseAllPairs()" style="margin-left:4px;">折叠全部</button>
-    </div>`;
+    <div id="pairOverview">${overview}</div>`;
 
-  const PAGE_SIZE = 5;
+  const PAGE_SIZE = 10;
 
-  // ── Per-pair detail sections (collapsed by default, paginated) ──
+  // ── Per-pair detail sections ──
   let dhtml = '';
   s.pair_results.forEach((pr, pairIdx) => {
     const pairId = `pair-${pairIdx}`;
 
-    // Three-level classification based on risk_level field
     const substantialMatches = pr.matches.filter(m => m.risk_level === 'substantial');
     const suspiciousMatches = pr.matches.filter(m => m.risk_level === 'suspicious');
     const templateMatches = pr.matches.filter(m => m.risk_level === 'template');
 
     // Backward compat: if risk_level not present, fall back to abnormal flag
+    if (substantialMatches.length === 0 && suspiciousMatches.length === 0 && templateMatches.length === 0) {
+      pr.matches.forEach(m => {
+        if (m.abnormal) {
+          substantialMatches.push(m);
+        } else {
+          templateMatches.push(m);
+        }
+      });
+    }
+
     const hasSubstantial = substantialMatches.length > 0;
     const hasSuspicious = suspiciousMatches.length > 0;
     const hasTemplate = templateMatches.length > 0;
@@ -776,9 +772,16 @@ function renderSimilarity() {
     const susCnt = pr.suspicious_count || 0;
     const tplCnt = pr.template_count || 0;
 
+    // Auto-expand: open pair if there's any visible content
+    const hasVisibleContent = (showSubstantial && hasSubstantial) ||
+                              (showSuspicious && hasSuspicious) ||
+                              (showTemplate && hasTemplate);
+    const openByDefault = hasVisibleContent ? 'block' : 'none';
+    const toggleIcon = hasVisibleContent ? '▼' : '▶';
+
     dhtml += `<div class="pair-section" id="${pairId}">
       <div class="pair-header" onclick="togglePair('${pairId}')">
-        <span class="pair-toggle" id="${pairId}-toggle">▶</span>
+        <span class="pair-toggle" id="${pairId}-toggle">${toggleIcon}</span>
         <span class="pair-title">对比 ${pairIdx + 1}: ${shortenName(pr.file1, 15)} ↔ ${shortenName(pr.file2, 15)}</span>
         <span class="pair-stats">
           ${subCnt > 0 ? `<span style="color:#dc2626;">${subCnt}可能高风险</span>` : ''}
@@ -787,71 +790,84 @@ function renderSimilarity() {
           <span style="color:#888;margin-left:8px;">${pr.total_matches}总计</span>
         </span>
       </div>
-      <div class="pair-body" id="${pairId}-body" style="display:none;">`;
+      <div class="pair-body" id="${pairId}-body" style="display:${openByDefault};">`;
 
-    // Render helper: show first N items + "show more" button
-    const renderPaginated = (matches, label, colorClass, bgStyle) => {
+    // Render helper
+    const renderPaginated = (matches, label, colorClass, bgStyle, wrapInDetails) => {
       if (matches.length === 0) return '';
-      let html = `<p style="font-weight:600;color:${colorClass};margin:8px 0 4px;">${label} (${matches.length}处):</p>`;
-      const visible = matches.slice(0, PAGE_SIZE);
-      const hidden = matches.slice(PAGE_SIZE);
-
-      visible.forEach(m => {
-        const refIdx = _allMatchRefs.length;
-        const rl = m.risk_level || (m.abnormal ? 'abnormal' : 'template');
-        _allMatchRefs.push({ match: m, file1: pr.file1, file2: pr.file2, type: rl });
-        html += `<div class="text-match-item" style="border-left:3px solid ${colorClass};">
-          <div class="text-match-header">
-            <span class="text-match-num" style="${bgStyle}">#${m.index}</span>
-            <span class="text-match-length">${m.length}字</span>
-            ${(m.reasons||[]).map(r => `<span class="text-match-reason">${escapeHtml(r)}</span>`).join('')}
-            ${m.score !== undefined ? `<span class="text-match-score" style="font-size:11px;color:#888;">[评分:${m.score}]</span>` : ''}
-            <button class="match-locate-btn" onclick="openMatchModal(${refIdx})">📍 定位</button>
-          </div>
-          <div class="text-match-content">${escapeHtml(m.text.substring(0, 200))}${m.text.length > 200 ? '...' : ''}</div>
-        </div>`;
-      });
-
-      if (hidden.length > 0) {
-        const labelId = label.replace(/[^a-z0-9一-鿿]/g,'');
-        html += `<div id="${pairId}-more-${labelId}" style="display:none;">`;
-        hidden.forEach(m => {
+      const bodyHtml = (matchList) => {
+        let h = '';
+        const visible = matchList.slice(0, PAGE_SIZE);
+        const hidden = matchList.slice(PAGE_SIZE);
+        visible.forEach(m => {
           const refIdx = _allMatchRefs.length;
           const rl = m.risk_level || (m.abnormal ? 'abnormal' : 'template');
           _allMatchRefs.push({ match: m, file1: pr.file1, file2: pr.file2, type: rl });
-          html += `<div class="text-match-item" style="border-left:3px solid ${colorClass};">
+          h += `<div class="text-match-item" style="border-left:3px solid ${colorClass};">
             <div class="text-match-header">
               <span class="text-match-num" style="${bgStyle}">#${m.index}</span>
               <span class="text-match-length">${m.length}字</span>
+              ${(m.reasons||[]).map(r => `<span class="text-match-reason">${escapeHtml(r)}</span>`).join('')}
               ${m.score !== undefined ? `<span class="text-match-score" style="font-size:11px;color:#888;">[评分:${m.score}]</span>` : ''}
               <button class="match-locate-btn" onclick="openMatchModal(${refIdx})">📍 定位</button>
             </div>
             <div class="text-match-content">${escapeHtml(m.text.substring(0, 200))}${m.text.length > 200 ? '...' : ''}</div>
           </div>`;
         });
-        html += '</div>';
-        html += `<button class="btn btn-sm btn-outline" style="margin-top:4px;"
-          onclick="toggleMore('${pairId}-more-${labelId}', this)">显示全部 ${hidden.length} 项</button>`;
+        if (hidden.length > 0) {
+          const labelId = label.replace(/[^a-z0-9一-鿿]/g,'');
+          h += `<div id="${pairId}-more-${labelId}" style="display:none;">`;
+          hidden.forEach(m => {
+            const refIdx = _allMatchRefs.length;
+            const rl = m.risk_level || (m.abnormal ? 'abnormal' : 'template');
+            _allMatchRefs.push({ match: m, file1: pr.file1, file2: pr.file2, type: rl });
+            h += `<div class="text-match-item" style="border-left:3px solid ${colorClass};">
+              <div class="text-match-header">
+                <span class="text-match-num" style="${bgStyle}">#${m.index}</span>
+                <span class="text-match-length">${m.length}字</span>
+                ${m.score !== undefined ? `<span class="text-match-score" style="font-size:11px;color:#888;">[评分:${m.score}]</span>` : ''}
+                <button class="match-locate-btn" onclick="openMatchModal(${refIdx})">📍 定位</button>
+              </div>
+              <div class="text-match-content">${escapeHtml(m.text.substring(0, 200))}${m.text.length > 200 ? '...' : ''}</div>
+            </div>`;
+          });
+          h += '</div>';
+          h += `<button class="btn btn-sm btn-outline" style="margin-top:4px;"
+            onclick="toggleMore('${pairId}-more-${labelId}', this)">显示全部 ${hidden.length} 项</button>`;
+        }
+        return h;
+      };
+
+      if (wrapInDetails) {
+        return `<details style="margin-top:6px;" open>
+          <summary style="font-weight:600;color:${colorClass};cursor:pointer;padding:4px 0;">${label} (${matches.length}处)</summary>
+          <div style="margin-top:4px;">${bodyHtml(matches)}</div>
+        </details>`;
       }
-      return html;
+      return `<p style="font-weight:600;color:${colorClass};margin:8px 0 4px;">${label} (${matches.length}处):</p>` + bodyHtml(matches);
     };
 
     if (showSubstantial) {
-      dhtml += renderPaginated(substantialMatches, '🔴 可能高风险异常段落（高风险）', '#dc2626', '');
+      dhtml += renderPaginated(substantialMatches, '🔴 可能高风险异常段落（高风险）', '#dc2626', '', false);
     }
     if (showSuspicious) {
-      dhtml += renderPaginated(suspiciousMatches, '🟡 疑似模板段落（已降级）', '#d97706', 'background:#fffbeb;color:#92400e;');
+      dhtml += renderPaginated(suspiciousMatches, '🟡 疑似模板段落（已降级）', '#d97706', 'background:#fffbeb;color:#92400e;', false);
     }
     if (showTemplate) {
-      dhtml += renderPaginated(templateMatches, '⚪ 已过滤模板内容', '#16a34a', 'background:#f0fdf4;color:#16a34a;');
+      // Wrap template in collapsible <details> when filter is 'all', normal otherwise
+      const wrapTpl = filter === 'all';
+      dhtml += renderPaginated(templateMatches, '⚪ 已过滤模板内容', '#16a34a', 'background:#f0fdf4;color:#16a34a;', wrapTpl);
     }
-    if (filter === 'substantial' && !hasSubstantial) dhtml += '<p style="color:#888;">无可能高风险异常段落</p>';
-    if (filter === 'suspicious' && !hasSuspicious) dhtml += '<p style="color:#888;">无疑似模板段落</p>';
-    if (filter === 'template' && !hasTemplate) dhtml += '<p style="color:#888;">无已过滤模板段落</p>';
+    if (filter === 'substantial' && !hasSubstantial) dhtml += '<p style="color:#888;padding:8px 0;">无可能高风险异常段落</p>';
+    if (filter === 'suspicious' && !hasSuspicious) dhtml += '<p style="color:#888;padding:8px 0;">无疑似模板段落</p>';
+    if (filter === 'template' && !hasTemplate) dhtml += '<p style="color:#888;padding:8px 0;">无已过滤模板段落</p>';
 
     dhtml += '</div></div>';
   });
   document.getElementById('similarityDetails').innerHTML = dhtml;
+
+  // Update smart toggle button text based on current state
+  updateSmartToggleBtn();
 }
 
 // ── Pricing Tab ──
@@ -964,13 +980,29 @@ function renderPricing() {
   document.getElementById('pricingFindings').innerHTML = fhtml;
 }
 
-function expandAllPairs() {
-  document.querySelectorAll('.pair-body').forEach(el => el.style.display = 'block');
-  document.querySelectorAll('.pair-toggle').forEach(el => el.textContent = '▼');
+function toggleAllPairs() {
+  // Smart toggle: if all are collapsed, expand all; otherwise collapse all
+  const bodies = document.querySelectorAll('.pair-body');
+  const allExpanded = Array.from(bodies).every(el => el.style.display === 'block');
+  const target = allExpanded ? 'none' : 'block';
+  const icon = allExpanded ? '▶' : '▼';
+  bodies.forEach(el => el.style.display = target);
+  document.querySelectorAll('.pair-toggle').forEach(el => el.textContent = icon);
+  updateSmartToggleBtn();
 }
-function collapseAllPairs() {
-  document.querySelectorAll('.pair-body').forEach(el => el.style.display = 'none');
-  document.querySelectorAll('.pair-toggle').forEach(el => el.textContent = '▶');
+
+function updateSmartToggleBtn() {
+  const btn = document.getElementById('btnSmartToggle');
+  if (!btn) return;
+  const bodies = document.querySelectorAll('.pair-body');
+  if (bodies.length === 0) { btn.textContent = '▸ 展开全部'; return; }
+  const allExpanded = Array.from(bodies).every(el => el.style.display === 'block');
+  const allCollapsed = Array.from(bodies).every(el => el.style.display === 'none');
+  if (allExpanded) {
+    btn.textContent = '▴ 折叠全部';
+  } else {
+    btn.textContent = '▸ 展开全部';
+  }
 }
 function toggleMore(id, btn) {
   const el = document.getElementById(id);
@@ -1002,6 +1034,7 @@ function scrollToPair(idx) {
       body.style.display = 'block';
       if (toggle) toggle.textContent = '▼';
     }
+    updateSmartToggleBtn();
   }
 }
 
@@ -1016,6 +1049,7 @@ function togglePair(pairId) {
     body.style.display = 'none';
     if (toggle) toggle.textContent = '▶';
   }
+  updateSmartToggleBtn();
 }
 
 // ── Match Modal ──

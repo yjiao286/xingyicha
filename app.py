@@ -3499,7 +3499,9 @@ def analyze_stream():
                         'index': m.get('index'), 'length': m.get('length'),
                         'text': m.get('text', '')[:200],
                         'abnormal': m.get('abnormal'),
-                        'reasons': m.get('reasons', [])[:2],
+                        'risk_level': m.get('risk_level'),
+                        'score': m.get('score'),
+                        'reasons': m.get('reasons', []),
                         'ctx1': m.get('ctx1', '')[:400],
                         'ctx2': m.get('ctx2', '')[:400],
                     })
@@ -3523,9 +3525,7 @@ def analyze_stream():
                     for k in list(f.keys()):
                         if k not in keep and not k.startswith('_'):
                             f[k] = '' if isinstance(f[k], str) else None
-            history_results.get('text_similarity', {}).pop('all_abnormal', None)
-            history_results.get('text_similarity', {}).pop('substantial_abnormal', None)
-            history_results.get('text_similarity', {}).pop('suspicious_template', None)
+            # Keep all_abnormal / substantial_abnormal / suspicious_template for report regeneration
             history_id = datetime.now().strftime('%Y%m%d_%H%M%S_') + hashlib.md5(
                 str(saved).encode()).hexdigest()[:8]
             history_entry = {
@@ -3646,7 +3646,9 @@ def single_upload_and_analyze():
                     'length': m.get('length'),
                     'text': m.get('text', '')[:200],
                     'abnormal': m.get('abnormal'),
-                    'reasons': m.get('reasons', [])[:2],
+                    'risk_level': m.get('risk_level'),
+                    'score': m.get('score'),
+                    'reasons': m.get('reasons', []),
                     'ctx1': m.get('ctx1', '')[:400],
                     'ctx2': m.get('ctx2', '')[:400],
                 })
@@ -3672,10 +3674,7 @@ def single_upload_and_analyze():
                 for k in list(f.keys()):
                     if k not in keep and not k.startswith('_'):
                         f[k] = '' if isinstance(f[k], str) else None
-        # Strip large detail fields from text_similarity for history storage
-        history_results.get('text_similarity', {}).pop('all_abnormal', None)
-        history_results.get('text_similarity', {}).pop('substantial_abnormal', None)
-        history_results.get('text_similarity', {}).pop('suspicious_template', None)
+        # Keep all_abnormal / substantial_abnormal / suspicious_template for report regeneration
         history_id = datetime.now().strftime('%Y%m%d_%H%M%S_') + hashlib.md5(
             str(saved).encode()).hexdigest()[:8]
         history_entry = {
