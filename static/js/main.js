@@ -361,9 +361,14 @@ function renderVerdict() {
   const v = analysisResult.verdict;
   const banner = document.getElementById('verdictBanner');
   const conclusion = v.conclusion;
+  const level = v.conclusion_level || 'warning';
   let cls = 'warning', icon = '';
-  if (conclusion.includes('高度嫌疑')) { cls = 'suspect'; icon = '⚠️ '; }
-  else if (conclusion.includes('未发现')) { cls = 'clean'; icon = '✅ '; }
+
+  if (level === 'high') { cls = 'suspect'; icon = '⚠️ '; }
+  else if (level === 'medium') { cls = 'suspicious'; icon = '🔍 '; }
+  else if (level === 'low') { cls = 'clean'; icon = '✅ '; }
+  else if (level === 'uncertain') { cls = 'uncertain'; icon = '❓ '; }
+
   banner.className = 'verdict-banner ' + cls;
   banner.textContent = icon + '判定结论: ' + conclusion;
 
@@ -372,6 +377,62 @@ function renderVerdict() {
   if (refDocs.length > 0) {
     banner.textContent += ' (已扣除' + refDocs.length + '份模板文档)';
   }
+
+  // ── Score bar ──
+  const score = v.score || 0;
+  const maxScore = v.max_score || 100;
+  const pct = Math.min(100, Math.round(score / maxScore * 100));
+  let scoreColor = '#16a34a';
+  if (level === 'high') scoreColor = '#dc2626';
+  else if (level === 'medium') scoreColor = '#d97706';
+  else if (level === 'uncertain') scoreColor = '#9ca3af';
+
+  document.getElementById('verdictSummary').innerHTML = `
+    <div style="margin-top:12px;background:#f8f9fb;border-radius:8px;padding:10px 14px;">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+        <span style="font-size:13px;font-weight:600;">综合风险评分:</span>
+        <span style="font-size:18px;font-weight:700;color:${scoreColor};">${score}</span>
+        <span style="font-size:12px;color:var(--text-muted);">/ ${maxScore}</span>
+      </div>
+      <div style="background:#e5e7eb;border-radius:4px;height:8px;overflow:hidden;">
+        <div style="background:${scoreColor};height:100%;width:${pct}%;border-radius:4px;transition:width .3s;"></div>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-muted);margin-top:3px;">
+        <span>未发现(0)</span><span>可疑(15)</span><span>高度嫌疑(50)</span><span>满分(${maxScore})</span>
+      </div>
+    </div>
+    <details class="scoring-rules" style="margin-top:8px;font-size:12px;color:var(--text-muted);background:#f8f9fb;border-radius:8px;padding:10px 14px;">
+      <summary style="cursor:pointer;font-weight:600;color:var(--text-secondary);">📋 综合判定评分规则</summary>
+      <div style="margin-top:8px;line-height:1.8;">
+        <p style="margin:0 0 6px;font-weight:600;">评分依据：《招标投标法实施条例》第四十条</p>
+        <table style="width:100%;border-collapse:collapse;font-size:11px;margin-bottom:8px;">
+          <tr style="background:#eef1f5;">
+            <td style="padding:4px 8px;border:1px solid #ddd;">条款</td>
+            <td style="padding:4px 8px;border:1px solid #ddd;">权重</td>
+            <td style="padding:4px 8px;border:1px solid #ddd;">说明</td>
+          </tr>
+          <tr><td style="padding:4px 8px;border:1px solid #ddd;">第（一）项</td><td style="padding:4px 8px;border:1px solid #ddd;">80分</td><td style="padding:4px 8px;border:1px solid #ddd;">同一单位或个人编制 — 🔒 死证据：WPS ID、授权代表=创建者、最后修改人同一</td></tr>
+          <tr><td style="padding:4px 8px;border:1px solid #ddd;">第（二）项</td><td style="padding:4px 8px;border:1px solid #ddd;">30分</td><td style="padding:4px 8px;border:1px solid #ddd;">同一人办理投标 — 🔒 死证据：授权代表重叠</td></tr>
+          <tr><td style="padding:4px 8px;border:1px solid #ddd;">第（三）项</td><td style="padding:4px 8px;border:1px solid #ddd;">20分</td><td style="padding:4px 8px;border:1px solid #ddd;">项目管理人员相同 — 🔒 死证据：人员姓名重叠</td></tr>
+          <tr><td style="padding:4px 8px;border:1px solid #ddd;">第（四）项-a</td><td style="padding:4px 8px;border:1px solid #ddd;">5分</td><td style="padding:4px 8px;border:1px solid #ddd;">投标文件异常一致 — 辅助参考</td></tr>
+          <tr><td style="padding:4px 8px;border:1px solid #ddd;">第（四）项-b</td><td style="padding:4px 8px;border:1px solid #ddd;">5分</td><td style="padding:4px 8px;border:1px solid #ddd;">报价呈规律性差异 — 辅助参考</td></tr>
+        </table>
+        <p style="margin:0 0 6px;font-weight:600;">证据强度系数：</p>
+        <ul style="margin:0 0 10px;padding-left:18px;">
+          <li>强 = 权重 × 1.0（满分）</li>
+          <li>中 = 权重 × 0.4</li>
+          <li>无法判断 / 无 = 0</li>
+        </ul>
+        <p style="margin:0 0 6px;font-weight:600;">综合结论阈值：</p>
+        <ul style="margin:0;padding-left:18px;">
+          <li>≥ 50分 → <span style="color:#dc2626;font-weight:600;">⚠️ 存在围标串标高度嫌疑</span></li>
+          <li>15–49分 → <span style="color:#d97706;font-weight:600;">🔍 存在可疑情形，建议进一步核查</span></li>
+          <li>&lt; 10分 → <span style="color:#16a34a;font-weight:600;">✅ 未发现明显围标串标异常</span></li>
+          <li>全维度无法判断 → <span style="color:#9ca3af;font-weight:600;">❓ 数据不足，无法做出完整判定</span></li>
+        </ul>
+      </div>
+    </details>
+  `;
 
   let html = '';
   v.clauses.forEach(c => {
@@ -384,6 +445,7 @@ function renderVerdict() {
       <div class="clause-header">
         <strong>${c.clause}</strong>
         <span class="clause-tag ${tagCls}">${tagText}</span>
+        ${c._weight !== undefined ? `<span style="font-size:10px;color:var(--text-muted);margin-left:4px;">权重:${c._weight}分</span>` : ''}
       </div>
       <p style="font-size:14px;margin-bottom:6px;">${escapeHtml(c.description)}</p>`;
 
@@ -394,7 +456,11 @@ function renderVerdict() {
     }
     if (c.evidence_level) {
       const lvlCls = c.evidence_level === '强' ? 'level-strong' : c.evidence_level === '中' ? 'level-medium' : 'level-none';
-      html += `<span class="evidence-level ${lvlCls}">证据强度: ${c.evidence_level}</span>`;
+      html += `<span class="evidence-level ${lvlCls}">证据强度: ${c.evidence_level}`;
+      if (c._score !== undefined) {
+        html += ` <span style="font-size:10px;color:var(--text-muted);">(+${c._score}分)</span>`;
+      }
+      html += `</span>`;
     }
     html += '</div>';
   });
@@ -1025,7 +1091,11 @@ async function openHistory() {
 
     let html = '<div style="display:flex;flex-direction:column;gap:8px;">';
     entries.forEach(e => {
-      const verdictCls = (e.verdict || '').includes('高度嫌疑') ? 'danger' : 'success';
+      const vText = e.verdict || '';
+      let verdictCls = 'success';
+      if (vText.includes('高度嫌疑')) verdictCls = 'danger';
+      else if (vText.includes('可疑') || vText.includes('核查')) verdictCls = 'warning';
+      else if (vText.includes('数据不足') || vText.includes('无法')) verdictCls = 'muted';
       let filesStr = (e.bid_files || []).slice(0, 3).map(f => (f || '').substring(0, 20) + (f.length > 20 ? '...' : '')).join(', ');
       if (e.bid_files.length > 3) filesStr += ` 等${e.bid_files.length}份`;
 

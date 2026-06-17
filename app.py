@@ -2919,7 +2919,8 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
             'clause': '第（一）项',
             'description': '不同投标人的投标文件由同一单位或者个人编制',
             'satisfied': any(m['field'] == 'WPS保存记录(硬件ID+用户ID)' for m in meta_matches) or
-                         any(m['type'] == '最后修改人为同一人' for m in personnel_matches),
+                         any(m['type'] == '最后修改人为同一人' for m in personnel_matches) or
+                         any(m['type'] == '授权代表与创建者交叉' for m in personnel_matches),
             'evidence': []
         },
         {
@@ -2990,9 +2991,48 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
     num_bids = len(out_names)
     num_word = {2: '两份', 3: '三份', 4: '四份', 5: '五份', 6: '六份', 7: '七份', 8: '八份', 9: '九份', 10: '十份'}
     bid_word = num_word.get(num_bids, f'{num_bids}份')
-    conclusion = f'{bid_word}标书存在围标串标高度嫌疑' if any(
-        c.get('evidence_level') == '强' for c in clauses
-    ) else '需要进一步核查'
+
+    # ── Weighted scoring ──
+    # "死证据"策略：人员交叉、元数据一致等硬证据高权重
+    # 权重总和允许超过100，最终得分 min(raw_score, 100)
+    # 第（一）项命中即为实锤，多项硬证据叠加推向满分
+    clause_weights = {
+        '第（一）项': 80,       # 硬证据: WPS ID、授权代表=创建者交叉、最后修改人同一
+        '第（二）项': 30,       # 硬证据: 授权代表重叠，同一人办理投标
+        '第（三）项': 20,       # 硬证据: 项目管理人员姓名重叠
+        '第（四）项-a': 5,      # 软证据: 文本相似度
+        '第（四）项-b': 5,      # 软证据: 报价规律
+    }
+    level_score_map = {'强': 1.0, '中': 0.4, '无法判断': 0, '无': 0}
+
+    total_score = 0
+    max_score = 100  # 固定满分100，原始权重总和可能超过100
+    all_uncertain = True
+    for c in clauses:
+        weight = clause_weights.get(c['clause'], 0)
+        level = c.get('evidence_level', '无')
+        multiplier = level_score_map.get(level, 0)
+        c['_weight'] = weight
+        c['_score'] = round(weight * multiplier, 1)
+        total_score += c['_score']
+        if level != '无法判断':
+            all_uncertain = False
+
+    total_score = min(round(total_score, 1), max_score)
+
+    # ── Three-tier conclusion ──
+    if all_uncertain:
+        conclusion = '数据不足，无法做出完整判定'
+        conclusion_level = 'uncertain'
+    elif total_score >= 50:
+        conclusion = f'{bid_word}标书存在围标串标高度嫌疑'
+        conclusion_level = 'high'
+    elif total_score >= 15:
+        conclusion = f'{bid_word}标书存在可疑情形，建议进一步核查'
+        conclusion_level = 'medium'
+    else:
+        conclusion = '未发现明显围标串标异常'
+        conclusion_level = 'low'
 
     # Also fix old hardcoded "两份" in findings
     for i, f_text in enumerate(time_findings):
@@ -3027,7 +3067,15 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
         'ref_docs': ref_filenames,
         'verdict': {
             'clauses': clauses,
-            'conclusion': conclusion
+            'conclusion': conclusion,
+            'conclusion_level': conclusion_level,
+            'score': total_score,
+            'max_score': max_score,
+            'scoring_rule': {
+                'weights': clause_weights,
+                'level_multipliers': level_score_map,
+                'thresholds': {'high': 50, 'medium': 15, 'low': 0}
+            }
         }
     }
 
