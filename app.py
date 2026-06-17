@@ -1941,18 +1941,263 @@ def find_common_segments(text1, text2, min_len=15):
     return results
 
 def is_template_content(text):
-    """Check if text is likely a standard template/bid instruction phrase"""
-    template_markers = [
-        '供应商名称', '法定代表人或授权代表签字', '项目编号', '项目名称',
-        '注：', '公章', '供应商全称', '盖单位章', '签字或盖章',
+    """Check if text is likely a standard template/bid instruction phrase.
+    Expanded to cover all lengths and common bid document boilerplate patterns."""
+    text_stripped = text.strip()
+
+    # ── Category 1: Signature / seal / date boilerplate (any length) ──
+    signature_markers = [
+        '供应商名称', '法定代表人或授权代表签字', '法定代表人签字',
+        '授权代表签字', '法定代表人（签字）', '授权委托人（签字）',
+        '法定代表人或其委托代理人', '法定代表人或委托代理人',
+        '项目编号', '项目名称', '注：',
+        '公章', '供应商全称', '盖单位章', '签字或盖章',
         '（单位公章）', '（盖章）', '签字或印章',
+        '法定代表人盖章', '委托代理人签字',
+        '日期：', '年 月 日', '年月日',
+        '供应商（公章）', '供应商：（盖章）',
+        '投标人名称', '投标人（盖章）', '投标人全称',
+        '投标人地址', '投标人电话', '投标人传真',
+        '联系人：', '联系电话：', '传真：',
+        '开户银行：', '账号：', '银行账号：',
+        '纳税人识别号：', '统一社会信用代码：',
     ]
-    # Short segments that are just template boilerplate
-    if len(text) < 30:
-        for marker in template_markers:
-            if marker in text:
-                return True
+    for marker in signature_markers:
+        if marker in text_stripped:
+            return True
+
+    # ── Category 2: Bid announcement fixed phrases ──
+    announcement_phrases = [
+        '投标人须知', '投标人须知前附表', '投标人须知正文',
+        '招标文件的获取', '招标文件获取方式', '招标文件获取时间',
+        '投标文件的递交', '投标文件递交截止', '投标文件递交地点',
+        '投标截止时间', '开标时间', '开标地点',
+        '发布公告的媒介', '本招标公告在', '本次招标公告在',
+        '投标保证金', '投标保证金的金额', '投标保证金的形式',
+        '评标办法', '评标委员会', '评标办法前附表',
+        '资格审查办法', '资格审查方式', '资格后审', '资格预审',
+        '踏勘现场', '不组织踏勘现场', '招标代理机构',
+        '电子投标文件', '电子招标投标', '电子招标文件',
+        '招标条件', '项目概况与招标范围',
+        '投标人资格要求', '投标人应具备', '本次招标不接受联合体',
+        '本次招标接受联合体', '联合体投标',
+    ]
+    for phrase in announcement_phrases:
+        if phrase in text_stripped:
+            return True
+
+    # ── Category 3: Legal / standard clause phrases ──
+    legal_phrases = [
+        '根据《中华人民共和国招标投标法》',
+        '依据《中华人民共和国招标投标法》',
+        '根据《中华人民共和国政府采购法》',
+        '符合《政府采购法》',
+        '根据《中华人民共和国招标投标法实施条例》',
+        '依据《招标投标法实施条例》',
+        '信用中国', '中国政府采购网', '失信被执行人',
+        '重大税收违法案件当事人', '政府采购严重违法失信行为记录名单',
+        '信用信息查询', '信用记录查询',
+        '行贿犯罪档案查询', '无行贿犯罪记录',
+        '本招标项目', '招标项目', '招标编号',
+    ]
+    for phrase in legal_phrases:
+        if phrase in text_stripped:
+            return True
+
+    # ── Category 4: Standard declaration / formal language ──
+    declaration_phrases = [
+        '我公司郑重承诺', '我单位郑重承诺', '本公司郑重声明',
+        '具有独立承担民事责任的能力',
+        '具有良好的商业信誉和健全的财务会计制度',
+        '具有履行合同所必需的设备和专业技术能力',
+        '有依法缴纳税收和社会保障资金的良好记录',
+        '近三年内在经营活动中没有重大违法记录',
+        '在参加政府采购活动前三年内',
+        '法律、行政法规规定的其他条件',
+        '具有独立法人资格', '独立承担民事责任',
+        '不是联合体投标', '非联合体投标',
+        '单位负责人为同一人或者存在直接控股',
+        '管理关系的不同供应商',
+        '为本项目提供整体设计、规范编制',
+        '不得同时参加本项目',
+        '中小企业声明函', '残疾人福利性单位声明函',
+        '监狱企业证明文件',
+    ]
+    for phrase in declaration_phrases:
+        if phrase in text_stripped:
+            return True
+
+    # ── Category 5: Generic numbering / project info (regex) ──
+    if re.search(r'(项目|采购|招标|工程|标段)\s*(编号|代码|名称)[：:]', text_stripped):
+        return True
+    if re.search(r'(包号|标段|包件|分包)\s*[：:]\s*', text_stripped):
+        return True
+    if re.search(r'^[第].{1,4}[章节条款]', text_stripped):
+        return True
+
+    # ── Category 6: TOC / separator / page number ──
+    if re.match(r'^\s*(目\s*录|目录|TOC|Table of Contents)\s*$', text_stripped, re.IGNORECASE):
+        return True
+    if re.match(r'^\s*[0-9IVX]+\s*$', text_stripped):  # Pure page number / roman numeral
+        return True
+    if re.match(r'^[-=＿.]{5,}$', text_stripped):  # Separator line
+        return True
+
+    # ── Category 7: Pure boilerplate density check ──
+    # If text is long enough but dominated by boilerplate language patterns
+    if len(text_stripped) >= 40:
+        boilerplate_keywords = [
+            '应当', '必须', '不得', '严禁', '应具备', '须具备',
+            '承诺', '保证', '保证其', '确保', '遵守',
+            '递交', '送达', '提交', '受理', '备案',
+            '规定', '要求', '条件', '资格',
+        ]
+        bp_count = sum(text_stripped.count(kw) for kw in boilerplate_keywords)
+        bp_density = bp_count / max(len(text_stripped), 1)
+        # Very high boilerplate density with no concrete data → template
+        if bp_density > 0.06 and not re.search(r'\d{2,}', text_stripped):
+            return True
+
     return False
+
+
+def _build_global_template_index(texts_dict):
+    """Build a global index of text segments that appear across many bid files.
+    Segments appearing in >= max(3, ceil(N*50%)) files are considered template.
+
+    Uses sliding window to discover common segments without relying on pre-defined rules.
+
+    Returns:
+        set of normalized segment strings that are global templates
+    """
+    N = len(texts_dict)
+    if N < 2:
+        return set()
+
+    threshold = max(3, int(N * 0.5 + 0.999))  # ceil(N * 50%)
+    if threshold > N:
+        threshold = N
+
+    window_size = 100
+    step = 50
+
+    # {normalized_segment: set of filenames containing it}
+    segment_files = {}
+
+    for fname, text in texts_dict.items():
+        if not text:
+            continue
+        # Track what we've already indexed from this file to avoid duplicates
+        seen_in_file = set()
+        for start in range(0, max(0, len(text) - window_size + 1), step):
+            segment = text[start:start + window_size]
+            # Normalize: collapse whitespace, unify punctuation
+            norm = _normalize_for_match(segment)
+            if len(norm) < 30:  # Too short to be meaningful
+                continue
+            if norm in seen_in_file:
+                continue
+            seen_in_file.add(norm)
+            if norm not in segment_files:
+                segment_files[norm] = set()
+            segment_files[norm].add(fname)
+
+    # Collect segments that appear in >= threshold files
+    global_templates = set()
+    for norm_seg, files in segment_files.items():
+        if len(files) >= threshold:
+            global_templates.add(norm_seg)
+
+    return global_templates
+
+
+def _is_in_global_template(segment, global_templates):
+    """Check if a segment (or any substantial part) matches a global template."""
+    if not global_templates or not segment:
+        return False
+    seg_norm = _normalize_for_match(segment)
+    if len(seg_norm) < 12:
+        return False
+    # Direct match
+    if seg_norm in global_templates:
+        return True
+    # Check if segment is contained within any global template
+    for tmpl in global_templates:
+        if len(seg_norm) >= 20 and (seg_norm in tmpl or tmpl in seg_norm):
+            return True
+    return False
+
+
+def _score_substantiality(text):
+    """Score how 'substantial' a text segment is (0-1).
+    High score = likely real collusion content (technical, specific, concrete).
+    Low score = likely template/boilerplate even if not caught by rule filters.
+
+    Dimensions:
+        - Length (30%): longer segments are more likely substantial
+        - Technical term density (30%): model numbers, tech jargon
+        - Numeric specificity (25%): amounts, percentages, dates, version numbers
+        - Boilerplate language penalty (15%): inverse score for formal phrasing
+    """
+    if not text or len(text) < 15:
+        return 0.0
+
+    score = 0.0
+
+    # ── Dimension 1: Length (30%) ──
+    len_score = min(1.0, len(text) / 200.0)
+    score += len_score * 0.30
+
+    # ── Dimension 2: Technical / business term density (30%) ──
+    tech_patterns = [
+        r'[A-Z]{2,}[-–][0-9]{2,}',        # ISO-9001, GB-2020
+        r'[A-Z][A-Z0-9\-]{3,}',             # Technical model numbers
+        r'[0-9]+[×xX][0-9]+',              # Dimensions: 100x200
+        r'[0-9]+(\.[0-9]+)?[mMkK]?[WwVvAaHhZz]',  # Units: 220V, 5kW
+        r'(毫米|厘米|米|千米|克|千克|吨|升|毫升|平方米|立方米|公顷)',  # Chinese units
+        r'(台|套|件|个|组|批|项|次|人|天|月|年)',  # Counting units
+    ]
+    tech_chars = 0
+    for pat in tech_patterns:
+        for m in re.finditer(pat, text):
+            tech_chars += m.end() - m.start()
+    tech_density = min(1.0, tech_chars / max(len(text), 1) / 0.15)
+    score += tech_density * 0.30
+
+    # ── Dimension 3: Numeric specificity (25%) ──
+    numeric_patterns = [
+        r'\d{2,}\.\d{2,}',                   # Decimal amounts
+        r'\d{1,3}(,\d{3})+(\.\d+)?',         # Formatted numbers
+        r'[¥￥]\s*\d[\d,.]*',                # Currency amounts
+        r'\d+\.\d+%',                         # Percentages
+        r'20\d{2}[-/年]\d{1,2}[-/月]\d{1,2}', # Dates
+        r'[0-9]{4,}',                         # Large numbers (amounts, codes)
+    ]
+    numeric_hits = 0
+    for pat in numeric_patterns:
+        numeric_hits += len(re.findall(pat, text))
+    numeric_score = min(1.0, numeric_hits / max(len(text) / 50, 1))
+    score += numeric_score * 0.25
+
+    # ── Dimension 4: Boilerplate language penalty (15%) ──
+    boilerplate_kw = [
+        '应当', '必须', '不得', '严禁', '遵守', '执行',
+        '保证', '承诺', '确保', '承担', '履行', '提供',
+        '规定', '要求', '条件', '标准', '规范',
+        '递交', '送达', '提交',
+    ]
+    bp_count = sum(text.count(kw) for kw in boilerplate_kw)
+    bp_density = bp_count / max(len(text), 1)
+    # High BP density + low specificity → penalty
+    has_concrete = bool(re.search(r'\d{2,}', text)) or bool(re.search(r'[A-Z]{2,}', text))
+    if has_concrete:
+        bp_penalty = min(1.0, bp_density / 0.10) * 0.4  # Reduced penalty if has concrete data
+    else:
+        bp_penalty = min(1.0, bp_density / 0.06)  # Full penalty
+    score += (1.0 - bp_penalty) * 0.15
+
+    return round(score, 3)
+
 
 def classify_abnormal_reason(text):
     """Classify why a text match is abnormal"""
@@ -1987,14 +2232,29 @@ def _is_in_reference(segment, ref_texts):
 def text_similarity_analysis(texts_dict, ref_texts_list=None):
     """Full text similarity analysis across all uploaded files.
     ref_texts_list: list of text strings from reference/template documents to exclude.
+
+    Three-level classification:
+      - substantial_abnormal: score >= 0.6, real collusion content (affects conclusion)
+      - suspicious_template: score 0.3-0.6, ambiguous (shown but demoted)
+      - template: score < 0.3 or caught by filters (fully excluded)
     """
     filenames = list(texts_dict.keys())
+
+    # ── Step 0: Build global template index ──
+    global_templates = _build_global_template_index(texts_dict)
+    global_template_count = 0
+    rule_template_count = 0
+
     results = {
         'total_pairs': 0,
         'pair_results': [],
         'findings': [],
-        'all_abnormal': [],
-        'template_matches': 0
+        'all_abnormal': [],            # Retained for backward compatibility
+        'substantial_abnormal': [],    # NEW: score >= 0.6, affects conclusion
+        'suspicious_template': [],     # NEW: score 0.3-0.6, shown but demoted
+        'template_matches': 0,
+        'global_template_count': 0,
+        'rule_template_count': 0,
     }
 
     ref_texts = ref_texts_list or []
@@ -2011,23 +2271,21 @@ def text_similarity_analysis(texts_dict, ref_texts_list=None):
                 'total_matches': len(segments),
                 'matches': [],
                 'abnormal_count': 0,
-                'template_count': 0
+                'template_count': 0,
+                'substantial_count': 0,
+                'suspicious_count': 0,
             }
 
             for idx, (pos1, pos2, length, seg_text, ctx1, ctx2) in enumerate(segments):
-                # Check if this segment is from reference/template docs
+                # ── Filter 1: Reference document match ──
                 in_ref = _is_in_reference(seg_text, ref_texts)
-
                 if in_ref:
-                    # This is a template match — expected, not suspicious
                     pair_result['template_count'] += 1
                     results['template_matches'] += 1
-                    # Still record it but mark as template
                     pair_result['matches'].append({
-                        'index': idx + 1,
-                        'length': length,
+                        'index': idx + 1, 'length': length,
                         'text': sanitize_text(seg_text[:300]),
-                        'abnormal': False,
+                        'abnormal': False, 'risk_level': 'template',
                         'reasons': ['招标文件/模板内容 — 非异常一致'],
                         'pos1': pos1, 'pos2': pos2,
                         'ctx1': sanitize_text(ctx1[:400]),
@@ -2035,14 +2293,15 @@ def text_similarity_analysis(texts_dict, ref_texts_list=None):
                     })
                     continue
 
+                # ── Filter 2: Rule-based template detection ──
                 if is_template_content(seg_text):
                     pair_result['template_count'] += 1
                     results['template_matches'] += 1
+                    results['rule_template_count'] += 1
                     pair_result['matches'].append({
-                        'index': idx + 1,
-                        'length': length,
+                        'index': idx + 1, 'length': length,
                         'text': sanitize_text(seg_text[:300]),
-                        'abnormal': False,
+                        'abnormal': False, 'risk_level': 'template',
                         'reasons': ['格式模板内容'],
                         'pos1': pos1, 'pos2': pos2,
                         'ctx1': sanitize_text(ctx1[:400]),
@@ -2050,50 +2309,135 @@ def text_similarity_analysis(texts_dict, ref_texts_list=None):
                     })
                     continue
 
+                # ── Filter 3: Global cross-file concurrence (Type A) ──
+                if _is_in_global_template(seg_text, global_templates):
+                    pair_result['template_count'] += 1
+                    results['template_matches'] += 1
+                    global_template_count += 1
+                    pair_result['matches'].append({
+                        'index': idx + 1, 'length': length,
+                        'text': sanitize_text(seg_text[:300]),
+                        'abnormal': False, 'risk_level': 'template',
+                        'reasons': ['全局模板内容 — 多份文件共现'],
+                        'pos1': pos1, 'pos2': pos2,
+                        'ctx1': sanitize_text(ctx1[:400]),
+                        'ctx2': sanitize_text(ctx2[:400])
+                    })
+                    continue
+
+                # ── Step: Substantiality scoring ──
+                score = _score_substantiality(seg_text)
                 reasons = classify_abnormal_reason(seg_text)
-                is_abnormal = len(reasons) > 0 and not (
-                    len(seg_text) < 30 and '注：' in seg_text
-                )
 
-                match_entry = {
-                    'index': idx + 1,
-                    'length': length,
-                    'text': sanitize_text(seg_text[:300]),
-                    'abnormal': True,
-                    'reasons': reasons,
-                    'pos1': pos1, 'pos2': pos2,
-                    'ctx1': sanitize_text(ctx1[:400]),
-                    'ctx2': sanitize_text(ctx2[:400])
-                }
-
-                pair_result['matches'].append(match_entry)
-                if is_abnormal:
+                if score >= 0.6:
+                    # Real collusion-level content
+                    risk_level = 'substantial'
+                    is_abnormal = True
+                    pair_result['substantial_count'] += 1
+                    match_entry = {
+                        'index': idx + 1, 'length': length,
+                        'text': sanitize_text(seg_text[:300]),
+                        'abnormal': True, 'risk_level': 'substantial',
+                        'score': score, 'reasons': reasons,
+                        'pos1': pos1, 'pos2': pos2,
+                        'ctx1': sanitize_text(ctx1[:400]),
+                        'ctx2': sanitize_text(ctx2[:400])
+                    }
+                    pair_result['matches'].append(match_entry)
                     pair_result['abnormal_count'] += 1
                     results['all_abnormal'].append({
                         'pair': f'{filenames[i]} vs {filenames[j]}',
-                        'index': idx + 1,
-                        'length': length,
+                        'index': idx + 1, 'length': length,
                         'text': sanitize_text(seg_text[:300]),
-                        'reasons': reasons,
+                        'reasons': reasons, 'risk_level': 'substantial',
+                        'score': score,
+                        'pos1': pos1, 'pos2': pos2,
+                        'ctx1': sanitize_text(ctx1[:400]),
+                        'ctx2': sanitize_text(ctx2[:400])
+                    })
+                    results['substantial_abnormal'].append({
+                        'pair': f'{filenames[i]} vs {filenames[j]}',
+                        'index': idx + 1, 'length': length,
+                        'text': sanitize_text(seg_text[:300]),
+                        'reasons': reasons, 'score': score,
                         'pos1': pos1, 'pos2': pos2,
                         'ctx1': sanitize_text(ctx1[:400]),
                         'ctx2': sanitize_text(ctx2[:400])
                     })
 
+                elif score >= 0.3:
+                    # Ambiguous — suspicious but not conclusive
+                    risk_level = 'suspicious'
+                    pair_result['suspicious_count'] += 1
+                    match_entry = {
+                        'index': idx + 1, 'length': length,
+                        'text': sanitize_text(seg_text[:300]),
+                        'abnormal': False, 'risk_level': 'suspicious',
+                        'score': score, 'reasons': reasons + ['[已降级] 段落实质性评分偏低，可能为模板套话'],
+                        'pos1': pos1, 'pos2': pos2,
+                        'ctx1': sanitize_text(ctx1[:400]),
+                        'ctx2': sanitize_text(ctx2[:400])
+                    }
+                    pair_result['matches'].append(match_entry)
+                    results['suspicious_template'].append({
+                        'pair': f'{filenames[i]} vs {filenames[j]}',
+                        'index': idx + 1, 'length': length,
+                        'text': sanitize_text(seg_text[:300]),
+                        'reasons': reasons, 'score': score,
+                        'pos1': pos1, 'pos2': pos2,
+                        'ctx1': sanitize_text(ctx1[:400]),
+                        'ctx2': sanitize_text(ctx2[:400])
+                    })
+
+                else:
+                    # Low score — treat as template
+                    risk_level = 'template'
+                    pair_result['template_count'] += 1
+                    results['template_matches'] += 1
+                    match_entry = {
+                        'index': idx + 1, 'length': length,
+                        'text': sanitize_text(seg_text[:300]),
+                        'abnormal': False, 'risk_level': 'template',
+                        'score': score,
+                        'reasons': ['[自动过滤] 实质性评分过低，判定为模板内容'],
+                        'pos1': pos1, 'pos2': pos2,
+                        'ctx1': sanitize_text(ctx1[:400]),
+                        'ctx2': sanitize_text(ctx2[:400])
+                    }
+                    pair_result['matches'].append(match_entry)
+
             results['pair_results'].append(pair_result)
 
-    # Generate findings
+    results['global_template_count'] = global_template_count
+
+    # ── Generate findings ──
     total_abnormal = sum(p['abnormal_count'] for p in results['pair_results'])
     total_template = results['template_matches']
+    total_substantial = len(results['substantial_abnormal'])
+    total_suspicious = len(results['suspicious_template'])
+    total_global = results['global_template_count']
+    total_rule = results['rule_template_count']
+
+    filter_parts = []
+    if total_global > 0:
+        filter_parts.append(f'{total_global} 处全局共现模板')
+    if total_rule > 0:
+        filter_parts.append(f'{total_rule} 处规则库模板')
     if total_template > 0:
-        results['findings'].append(f'扣除招标文件/模板内容后: 共 {total_template} 处模板匹配已排除')
-    if total_abnormal > 0:
-        results['findings'].append(f'共发现 {total_abnormal} 处异常一致的文本段落（已排除模板内容）')
-    else:
-        results['findings'].append('未发现异常一致的文本段落（扣除模板内容后）')
-    if any('机器翻译' in str(r.get('reasons', [])) for r in results['all_abnormal']):
+        filter_parts.append(f'{total_template - total_global - total_rule} 处其他模板')
+    if filter_parts:
+        results['findings'].append(f'模板过滤: {"、".join(filter_parts)} 已排除')
+
+    if total_substantial > 0:
+        results['findings'].append(f'共发现 {total_substantial} 处可能高风险异常文本段落（高风险）')
+    if total_suspicious > 0:
+        results['findings'].append(f'共 {total_suspicious} 处疑似模板段落（已降级，不参与判定）')
+    if total_substantial == 0 and total_suspicious == 0:
+        results['findings'].append('未发现可能高风险异常文本段落（所有匹配均为模板内容）')
+
+    if any('机器翻译' in str(r.get('reasons', [])) for r in results['substantial_abnormal']):
         results['findings'].append('存在相同的不规范翻译表述（机器翻译痕迹），排除独立编制可能')
-    if any('技术型号' in str(r.get('reasons', [])) for r in results['all_abnormal']):
+    if any('技术型号' in str(r.get('reasons', [])) for r in results['substantial_abnormal']):
         results['findings'].append('技术方案中具体型号/参数选择一致，不属于通用技术规范')
 
     return results
@@ -2499,7 +2843,8 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
 
     # ── Compile pricing comparison (structured format) ──
     price_compare = {}
-    price_findings = []
+    price_risk_findings = []
+    price_no_data_findings = []
 
     # Top-level comparison fields (scalar values)
     scalar_fields = [
@@ -2554,17 +2899,17 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
                 pj = all_prices[out_names[j]]
                 # Compare totals
                 if pi.get('totalPrice') and pj.get('totalPrice') and pi['totalPrice'] == pj['totalPrice']:
-                    price_findings.append(f'{out_names[i]} 和 {out_names[j]} 不含税总价一致: {pi["totalPrice"]:,.0f}元')
+                    price_risk_findings.append(f'{out_names[i]} 和 {out_names[j]} 不含税总价一致: {pi["totalPrice"]:,.0f}元')
                 if pi.get('totalPriceInTax') and pj.get('totalPriceInTax') and pi['totalPriceInTax'] == pj['totalPriceInTax']:
-                    price_findings.append(f'{out_names[i]} 和 {out_names[j]} 含税总价一致: {pi["totalPriceInTax"]:,.0f}元')
+                    price_risk_findings.append(f'{out_names[i]} 和 {out_names[j]} 含税总价一致: {pi["totalPriceInTax"]:,.0f}元')
 
         for gn, prices in all_prices.items():
             has_total = prices.get('totalPrice') is not None or prices.get('totalPriceInTax') is not None
             has_details = prices.get('costDetails') or prices.get('subItemPrice')
             if not has_total and not has_details:
-                price_findings.append(f'{gn}未提取到任何报价/成本信息')
+                price_no_data_findings.append(f'{gn}未提取到任何报价/成本信息')
             elif not has_total and has_details:
-                price_findings.append(f'{gn}仅提取到成本明细，未提取到总价')
+                price_no_data_findings.append(f'{gn}仅提取到成本明细，未提取到总价')
 
     _progress('pricing', '报价分析', 75, f'比较含税总价、不含税总价、分项单价等')
 
@@ -2592,13 +2937,13 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
         {
             'clause': '第（四）项-a',
             'description': '投标文件异常一致',
-            'satisfied': similarity['all_abnormal'] and len(similarity['all_abnormal']) > 0,
+            'satisfied': len(similarity.get('substantial_abnormal', [])) > 0,
             'evidence': []
         },
         {
             'clause': '第（四）项-b',
             'description': '投标报价呈规律性差异',
-            'satisfied': len(price_findings) > 0,
+            'satisfied': True if len(price_risk_findings) > 0 else (None if len(price_no_data_findings) > 0 else False),
             'evidence': []
         },
     ]
@@ -2618,11 +2963,29 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
         elif c['clause'] == '第（三）项':
             c['evidence_level'] = '无法判断'
         elif c['clause'] == '第（四）项-a':
-            c['evidence'].append(f'共发现 {len(similarity["all_abnormal"])} 处异常一致文本段落')
-            c['evidence_level'] = '强' if c['satisfied'] else '无'
+            substantial_count = len(similarity.get('substantial_abnormal', []))
+            suspicious_count = len(similarity.get('suspicious_template', []))
+            template_count = similarity.get('template_matches', 0)
+            if substantial_count > 0:
+                c['evidence'].append(f'共发现 {substantial_count} 处可能高风险异常文本段落（高风险）')
+            if suspicious_count > 0:
+                c['evidence'].append(f'共 {suspicious_count} 处疑似模板段落（已降级，不参与判定）')
+            if template_count > 0:
+                c['evidence'].append(f'共 {template_count} 处模板内容已过滤排除')
+            if c['satisfied']:
+                c['evidence_level'] = '强'
+            elif suspicious_count > 0:
+                c['evidence_level'] = '中'
+            else:
+                c['evidence_level'] = '无'
         elif c['clause'] == '第（四）项-b':
-            c['evidence'] = price_findings
-            c['evidence_level'] = '中' if c['satisfied'] else '无'
+            c['evidence'] = price_risk_findings + price_no_data_findings
+            if c['satisfied'] is True:
+                c['evidence_level'] = '中'
+            elif c['satisfied'] is None:
+                c['evidence_level'] = '无法判断'
+            else:
+                c['evidence_level'] = '无'
 
     num_bids = len(out_names)
     num_word = {2: '两份', 3: '三份', 4: '四份', 5: '五份', 6: '六份', 7: '七份', 8: '八份', 9: '九份', 10: '十份'}
@@ -2658,7 +3021,7 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
             'files': [{'name': gn, **all_prices[gn]} for gn in out_names],
             'comparison': price_compare,
             'subItemCompare': _build_sub_item_comparison(all_prices, out_names),
-            'findings': price_findings
+            'findings': price_risk_findings + price_no_data_findings
         },
         'structure': {gn: all_structure.get(gn, [])[:60] for gn in out_names},
         'ref_docs': ref_filenames,
@@ -3039,6 +3402,8 @@ def analyze_stream():
                         if k not in keep and not k.startswith('_'):
                             f[k] = '' if isinstance(f[k], str) else None
             history_results.get('text_similarity', {}).pop('all_abnormal', None)
+            history_results.get('text_similarity', {}).pop('substantial_abnormal', None)
+            history_results.get('text_similarity', {}).pop('suspicious_template', None)
             history_id = datetime.now().strftime('%Y%m%d_%H%M%S_') + hashlib.md5(
                 str(saved).encode()).hexdigest()[:8]
             history_entry = {
@@ -3185,8 +3550,10 @@ def single_upload_and_analyze():
                 for k in list(f.keys()):
                     if k not in keep and not k.startswith('_'):
                         f[k] = '' if isinstance(f[k], str) else None
-        # Strip all_abnormal from text_similarity
+        # Strip large detail fields from text_similarity for history storage
         history_results.get('text_similarity', {}).pop('all_abnormal', None)
+        history_results.get('text_similarity', {}).pop('substantial_abnormal', None)
+        history_results.get('text_similarity', {}).pop('suspicious_template', None)
         history_id = datetime.now().strftime('%Y%m%d_%H%M%S_') + hashlib.md5(
             str(saved).encode()).hexdigest()[:8]
         history_entry = {

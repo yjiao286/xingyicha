@@ -374,6 +374,13 @@ body {
   padding: 2px 8px; margin-left: auto; white-space: nowrap;
 }
 .match-locate-btn:hover { background: #dbe4ff; }
+.text-match-score {
+  font-size: 10px; color: var(--text-muted); margin-left: 2px;
+}
+/* Risk level border tints */
+.text-match-item.substantial { border-left-color: #dc2626; }
+.text-match-item.suspicious { border-left-color: #d97706; }
+.text-match-item.template { border-left-color: #16a34a; }
 
 /* ── Summary stats ── */
 .summary-stat { display: flex; gap: 10px; margin-bottom: 14px; }

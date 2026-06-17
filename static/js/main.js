@@ -570,10 +570,11 @@ function renderSimilarity() {
   const filterEl = document.querySelector('input[name="simFilter"]:checked');
   const filter = filterEl ? filterEl.value : 'all';
 
-  let totalMatches = 0, totalAbnormal = 0, totalTemplate = s.template_matches || 0;
+  let totalMatches = 0, totalSubstantial = 0, totalSuspicious = 0, totalTemplate = s.template_matches || 0;
   s.pair_results.forEach(p => {
     totalMatches += p.total_matches;
-    totalAbnormal += p.abnormal_count;
+    totalSubstantial += (p.substantial_count || 0);
+    totalSuspicious += (p.suspicious_count || 0);
   });
 
   document.getElementById('similaritySummary').innerHTML = `
@@ -582,16 +583,51 @@ function renderSimilarity() {
         <div class="stat-num">${totalMatches}</div>
         <div class="stat-label">总匹配段落数</div>
       </div>
-      <div class="stat-card" style="cursor:pointer" onclick="document.querySelector('input[value=abnormal]').click();renderSimilarity();">
-        <div class="stat-num danger">${totalAbnormal}</div>
-        <div class="stat-label">异常一致段落数</div>
+      <div class="stat-card" style="cursor:pointer" onclick="document.querySelector('input[value=substantial]').click();renderSimilarity();">
+        <div class="stat-num danger">${totalSubstantial}</div>
+        <div class="stat-label">🔴 可能高风险异常</div>
+      </div>
+      <div class="stat-card" style="cursor:pointer" onclick="document.querySelector('input[value=suspicious]').click();renderSimilarity();">
+        <div class="stat-num" style="color:#d97706;">${totalSuspicious}</div>
+        <div class="stat-label">🟡 疑似模板</div>
       </div>
       <div class="stat-card" style="cursor:pointer" onclick="document.querySelector('input[value=template]').click();renderSimilarity();">
         <div class="stat-num" style="color:#16a34a;">${totalTemplate}</div>
-        <div class="stat-label">模板匹配(已扣除)</div>
+        <div class="stat-label">⚪ 已过滤模板</div>
       </div>
     </div>
+    <div class="filter-bar" style="margin:8px 0;">
+      <label style="margin-right:12px;font-size:13px;cursor:pointer;"><input type="radio" name="simFilter" value="all"${filter==='all'?' checked':''} onchange="renderSimilarity()"> 全部</label>
+      <label style="margin-right:12px;font-size:13px;cursor:pointer;"><input type="radio" name="simFilter" value="substantial"${filter==='substantial'?' checked':''} onchange="renderSimilarity()"> 🔴 可能高风险异常</label>
+      <label style="margin-right:12px;font-size:13px;cursor:pointer;"><input type="radio" name="simFilter" value="suspicious"${filter==='suspicious'?' checked':''} onchange="renderSimilarity()"> 🟡 疑似模板</label>
+      <label style="font-size:13px;cursor:pointer;"><input type="radio" name="simFilter" value="template"${filter==='template'?' checked':''} onchange="renderSimilarity()"> ⚪ 已过滤</label>
+    </div>
     <ul class="finding-list">${s.findings.map(f => `<li>${escapeHtml(f)}</li>`).join('')}</ul>
+    <details class="scoring-rules" style="margin-top:10px;font-size:12px;color:var(--text-muted);background:#f8f9fb;border-radius:8px;padding:10px 14px;">
+      <summary style="cursor:pointer;font-weight:600;color:var(--text-secondary);">📋 风险分级评分规则</summary>
+      <div style="margin-top:8px;line-height:1.8;">
+        <p style="margin:0 0 6px;font-weight:600;">过滤链（依次执行）：</p>
+        <ol style="margin:0 0 10px;padding-left:18px;">
+          <li>参照文件匹配 — 用户上传的招标文件中出现过的段落 → <span style="color:#16a34a;">⚪ 已过滤</span></li>
+          <li>规则库匹配 — 签字/盖章/日期、公告措辞、法律条款、格式声明、编号等 → <span style="color:#16a34a;">⚪ 已过滤</span></li>
+          <li>全局共现检测 — 同一段落在 ≥ max(3, 50%文件数) 份标书中出现 → <span style="color:#16a34a;">⚪ 已过滤</span></li>
+        </ol>
+        <p style="margin:0 0 6px;font-weight:600;">实质性评分（4维度加权，满分1.0）：</p>
+        <table style="width:100%;border-collapse:collapse;font-size:11px;margin-bottom:8px;">
+          <tr style="background:#eef1f5;"><td style="padding:4px 8px;border:1px solid #ddd;">维度</td><td style="padding:4px 8px;border:1px solid #ddd;">权重</td><td style="padding:4px 8px;border:1px solid #ddd;">说明</td></tr>
+          <tr><td style="padding:4px 8px;border:1px solid #ddd;">段落长度</td><td style="padding:4px 8px;border:1px solid #ddd;">30%</td><td style="padding:4px 8px;border:1px solid #ddd;">越长越可能为独立编制内容（200字满分）</td></tr>
+          <tr><td style="padding:4px 8px;border:1px solid #ddd;">技术/业务术语密度</td><td style="padding:4px 8px;border:1px solid #ddd;">30%</td><td style="padding:4px 8px;border:1px solid #ddd;">含型号、参数、专业术语等具体信息</td></tr>
+          <tr><td style="padding:4px 8px;border:1px solid #ddd;">数值/编号特异性</td><td style="padding:4px 8px;border:1px solid #ddd;">25%</td><td style="padding:4px 8px;border:1px solid #ddd;">含具体金额、百分比、日期、版本号等</td></tr>
+          <tr><td style="padding:4px 8px;border:1px solid #ddd;">句式模板化程度（反向）</td><td style="padding:4px 8px;border:1px solid #ddd;">15%</td><td style="padding:4px 8px;border:1px solid #ddd;">"应当/必须/不得"密度高且无具体信息则扣分</td></tr>
+        </table>
+        <p style="margin:0 0 6px;font-weight:600;">评分阈值：</p>
+        <ul style="margin:0;padding-left:18px;">
+          <li>≥ 0.6 → <span style="color:#dc2626;font-weight:600;">🔴 可能高风险异常</span> — 参与围串标结论判定</li>
+          <li>0.3–0.6 → <span style="color:#d97706;font-weight:600;">🟡 疑似模板</span> — 展示但降级，不参与判定</li>
+          <li>&lt; 0.3 → <span style="color:#16a34a;font-weight:600;">⚪ 已过滤模板</span> — 自动扣除</li>
+        </ul>
+      </div>
+    </details>
   `;
 
   // Build flat list for modal nav
@@ -600,12 +636,16 @@ function renderSimilarity() {
   // ── Pair overview cards ──
   let overview = '<div class="pair-overview-grid">';
   s.pair_results.forEach((pr, pi) => {
+    const subCnt = pr.substantial_count || 0;
+    const susCnt = pr.suspicious_count || 0;
+    const tplCnt = pr.template_count || 0;
     overview += `<div class="pair-overview-card" onclick="scrollToPair(${pi})" style="cursor:pointer;">
       <div class="pair-overview-header">对比 ${pi + 1}</div>
       <div style="font-size:12px;color:#666;margin:4px 0;">${shortenName(pr.file1)} ↔ ${shortenName(pr.file2)}</div>
       <div style="display:flex;gap:8px;font-size:12px;">
-        <span style="color:#dc2626;font-weight:600;">${pr.abnormal_count}异常</span>
-        <span style="color:#16a34a;">${pr.template_count || 0}模板</span>
+        ${subCnt > 0 ? `<span style="color:#dc2626;font-weight:600;">${subCnt}可能高风险</span>` : ''}
+        ${susCnt > 0 ? `<span style="color:#d97706;font-weight:600;">${susCnt}疑似</span>` : ''}
+        <span style="color:#16a34a;">${tplCnt}模板</span>
         <span style="color:#888;">${pr.total_matches}总计</span>
       </div>
     </div>`;
@@ -624,18 +664,33 @@ function renderSimilarity() {
   let dhtml = '';
   s.pair_results.forEach((pr, pairIdx) => {
     const pairId = `pair-${pairIdx}`;
-    const abnormalMatches = pr.matches.filter(m => m.abnormal);
-    const templateMatches = pr.matches.filter(m => !m.abnormal);
-    const showAbnormal = filter === 'all' || filter === 'abnormal';
+
+    // Three-level classification based on risk_level field
+    const substantialMatches = pr.matches.filter(m => m.risk_level === 'substantial');
+    const suspiciousMatches = pr.matches.filter(m => m.risk_level === 'suspicious');
+    const templateMatches = pr.matches.filter(m => m.risk_level === 'template');
+
+    // Backward compat: if risk_level not present, fall back to abnormal flag
+    const hasSubstantial = substantialMatches.length > 0;
+    const hasSuspicious = suspiciousMatches.length > 0;
+    const hasTemplate = templateMatches.length > 0;
+
+    const showSubstantial = filter === 'all' || filter === 'substantial' || filter === 'abnormal';
+    const showSuspicious = filter === 'all' || filter === 'suspicious';
     const showTemplate = filter === 'all' || filter === 'template';
+
+    const subCnt = pr.substantial_count || 0;
+    const susCnt = pr.suspicious_count || 0;
+    const tplCnt = pr.template_count || 0;
 
     dhtml += `<div class="pair-section" id="${pairId}">
       <div class="pair-header" onclick="togglePair('${pairId}')">
         <span class="pair-toggle" id="${pairId}-toggle">▶</span>
         <span class="pair-title">对比 ${pairIdx + 1}: ${shortenName(pr.file1, 15)} ↔ ${shortenName(pr.file2, 15)}</span>
         <span class="pair-stats">
-          <span style="color:#dc2626;">${pr.abnormal_count}异常</span>
-          <span style="color:#16a34a;margin-left:8px;">${pr.template_count || 0}模板</span>
+          ${subCnt > 0 ? `<span style="color:#dc2626;">${subCnt}可能高风险</span>` : ''}
+          ${susCnt > 0 ? `<span style="color:#d97706;margin-left:8px;">${susCnt}疑似</span>` : ''}
+          <span style="color:#16a34a;margin-left:8px;">${tplCnt}模板</span>
           <span style="color:#888;margin-left:8px;">${pr.total_matches}总计</span>
         </span>
       </div>
@@ -650,12 +705,14 @@ function renderSimilarity() {
 
       visible.forEach(m => {
         const refIdx = _allMatchRefs.length;
-        _allMatchRefs.push({ match: m, file1: pr.file1, file2: pr.file2, type: m.abnormal ? 'abnormal' : 'template' });
+        const rl = m.risk_level || (m.abnormal ? 'abnormal' : 'template');
+        _allMatchRefs.push({ match: m, file1: pr.file1, file2: pr.file2, type: rl });
         html += `<div class="text-match-item" style="border-left:3px solid ${colorClass};">
           <div class="text-match-header">
             <span class="text-match-num" style="${bgStyle}">#${m.index}</span>
             <span class="text-match-length">${m.length}字</span>
             ${(m.reasons||[]).map(r => `<span class="text-match-reason">${escapeHtml(r)}</span>`).join('')}
+            ${m.score !== undefined ? `<span class="text-match-score" style="font-size:11px;color:#888;">[评分:${m.score}]</span>` : ''}
             <button class="match-locate-btn" onclick="openMatchModal(${refIdx})">📍 定位</button>
           </div>
           <div class="text-match-content">${escapeHtml(m.text.substring(0, 200))}${m.text.length > 200 ? '...' : ''}</div>
@@ -663,14 +720,17 @@ function renderSimilarity() {
       });
 
       if (hidden.length > 0) {
-        html += `<div id="${pairId}-more-${label.replace(/[^a-z]/g,'')}" style="display:none;">`;
+        const labelId = label.replace(/[^a-z0-9一-鿿]/g,'');
+        html += `<div id="${pairId}-more-${labelId}" style="display:none;">`;
         hidden.forEach(m => {
           const refIdx = _allMatchRefs.length;
-          _allMatchRefs.push({ match: m, file1: pr.file1, file2: pr.file2, type: m.abnormal ? 'abnormal' : 'template' });
+          const rl = m.risk_level || (m.abnormal ? 'abnormal' : 'template');
+          _allMatchRefs.push({ match: m, file1: pr.file1, file2: pr.file2, type: rl });
           html += `<div class="text-match-item" style="border-left:3px solid ${colorClass};">
             <div class="text-match-header">
               <span class="text-match-num" style="${bgStyle}">#${m.index}</span>
               <span class="text-match-length">${m.length}字</span>
+              ${m.score !== undefined ? `<span class="text-match-score" style="font-size:11px;color:#888;">[评分:${m.score}]</span>` : ''}
               <button class="match-locate-btn" onclick="openMatchModal(${refIdx})">📍 定位</button>
             </div>
             <div class="text-match-content">${escapeHtml(m.text.substring(0, 200))}${m.text.length > 200 ? '...' : ''}</div>
@@ -678,19 +738,23 @@ function renderSimilarity() {
         });
         html += '</div>';
         html += `<button class="btn btn-sm btn-outline" style="margin-top:4px;"
-          onclick="toggleMore('${pairId}-more-${label.replace(/[^a-z]/g,'')}', this)">显示全部 ${hidden.length} 项</button>`;
+          onclick="toggleMore('${pairId}-more-${labelId}', this)">显示全部 ${hidden.length} 项</button>`;
       }
       return html;
     };
 
-    if (showAbnormal) {
-      dhtml += renderPaginated(abnormalMatches, '异常一致段落', '#dc2626', '');
+    if (showSubstantial) {
+      dhtml += renderPaginated(substantialMatches, '🔴 可能高风险异常段落（高风险）', '#dc2626', '');
+    }
+    if (showSuspicious) {
+      dhtml += renderPaginated(suspiciousMatches, '🟡 疑似模板段落（已降级）', '#d97706', 'background:#fffbeb;color:#92400e;');
     }
     if (showTemplate) {
-      dhtml += renderPaginated(templateMatches, '模板匹配段落', '#16a34a', 'background:#f0fdf4;color:#16a34a;');
+      dhtml += renderPaginated(templateMatches, '⚪ 已过滤模板内容', '#16a34a', 'background:#f0fdf4;color:#16a34a;');
     }
-    if (filter === 'abnormal' && abnormalMatches.length === 0) dhtml += '<p style="color:#888;">无异常一致段落</p>';
-    if (filter === 'template' && templateMatches.length === 0) dhtml += '<p style="color:#888;">无模板匹配段落</p>';
+    if (filter === 'substantial' && !hasSubstantial) dhtml += '<p style="color:#888;">无可能高风险异常段落</p>';
+    if (filter === 'suspicious' && !hasSuspicious) dhtml += '<p style="color:#888;">无疑似模板段落</p>';
+    if (filter === 'template' && !hasTemplate) dhtml += '<p style="color:#888;">无已过滤模板段落</p>';
 
     dhtml += '</div></div>';
   });
