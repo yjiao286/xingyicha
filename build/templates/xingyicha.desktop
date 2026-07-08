@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=星易查
+Name[zh_CN]=星易查
+GenericName=围串标风险识别系统
+Comment=多维度分析投标文件，检测围标串标行为
+Exec=bash -lc 'cd "$(dirname "%k")" 2>/dev/null && ./install.sh || ./run.sh'
+Path=.
+Icon=star
+Terminal=true
+Categories=Office;Utility;
+StartupNotify=true

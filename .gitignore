@@ -21,3 +21,7 @@ history/
 
 # 部署文档 (非代码)
 部署手册.docx
+
+# 便携打包产物（体积大，本地生成）
+build/cache/
+dist/

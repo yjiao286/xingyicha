@@ -22,7 +22,7 @@ app.secret_key = 'bid_analysis_secret_key_2025'
 UPLOAD_FOLDER = os.environ.get('UPLOAD_FOLDER', tempfile.mkdtemp(prefix='bid_uploads_'))
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-HISTORY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'history')
+HISTORY_DIR = os.environ.get('HISTORY_DIR') or os.path.join(os.path.dirname(os.path.abspath(__file__)), 'history')
 os.makedirs(HISTORY_DIR, exist_ok=True)
 
 # ── Config constants ──────────────────────────────────────────────
@@ -3761,10 +3761,23 @@ def _nocache(response):
 
 if __name__ == '__main__':
     import sys
+    if '--check' in sys.argv:
+        # 离线自检：验证关键依赖可正常导入（用于便携包目标机校验）
+        import flask  # noqa: F401
+        import docx  # noqa: F401
+        import pypdf  # noqa: F401
+        import lxml  # noqa: F401
+        import werkzeug  # noqa: F401
+        import jinja2  # noqa: F401
+        from docx import Document
+        from pypdf import PdfReader
+        print('OK: 所有关键模块可正常导入')
+        sys.exit(0)
     port = int(sys.argv[1]) if len(sys.argv) > 1 else int(os.environ.get('PORT', 5001))
     debug = os.environ.get('DEBUG', '0') == '1'
+    host = os.environ.get('HOST', '0.0.0.0')
     print('=' * 60)
     print('  星易查 - 围串标风险识别分析系统')
-    print(f'  访问地址: http://0.0.0.0:{port}')
+    print(f'  访问地址: http://{host}:{port}')
     print('=' * 60)
-    app.run(debug=debug, host='0.0.0.0', port=port)
+    app.run(debug=debug, host=host, port=port, threaded=True)
