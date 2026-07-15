@@ -10,7 +10,7 @@ if [ ! -x "$PY" ]; then echo "✗ 找不到内置 Python: $PY"; exit 1; fi
 export PYTHONPATH="$HERE/python/lib/python3.11/site-packages${PYTHONPATH:+:$PYTHONPATH}"
 
 echo "① 导入关键依赖..."
-"$PY" -c "import flask,docx,pypdf,lxml,werkzeug,jinja2; print('   OK: flask / python-docx / pypdf / lxml ...')" \
+"$PY" -c "import flask,docx,pypdf,lxml,werkzeug,jinja2,olefile; print('   OK: flask / python-docx / pypdf / lxml / olefile ...')" \
   || { echo "   ✗ 依赖导入失败"; exit 1; }
 
 echo "② app 模块自检..."

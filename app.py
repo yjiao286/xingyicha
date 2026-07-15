@@ -3891,6 +3891,7 @@ if __name__ == '__main__':
         import docx  # noqa: F401
         import pypdf  # noqa: F401
         import lxml  # noqa: F401
+        import olefile  # noqa: F401
         import werkzeug  # noqa: F401
         import jinja2  # noqa: F401
         from docx import Document
