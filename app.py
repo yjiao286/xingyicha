@@ -235,7 +235,8 @@ def extract_doc_metadata(filepath):
                               ('last_saved_by', 'last_modified_by'),
                               ('creating_application', 'application'),
                               ('template', 'template'),
-                              ('revision_number', 'revision')):
+                              ('revision_number', 'revision'),
+                              ('company', 'company')):
                 val = _clean_doc_prop(getattr(m, attr, None), codepage)
                 if val:
                     meta[key] = val
@@ -3241,11 +3242,10 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
         'metadata': {
             'files': [{'name': fn, **all_meta[fn]} for fn in filenames],
             'matches': meta_matches,
-            'findings': time_findings + [
-                f'KSOProductBuildVer一致: 同一WPS版本',
-                f'最后保存者一致' if any(m['field'] == '最后保存者' for m in meta_matches) else '',
-                f'文档修改时间相隔很近，存在连续编辑特征',
-            ]
+            'findings': time_findings + list(filter(None, [
+                'KSOProductBuildVer一致: 同一WPS版本' if any(m['field'] == 'KSOProductBuildVer' for m in meta_matches) else '',
+                '最后保存者一致' if any(m['field'] == '最后保存者' for m in meta_matches) else '',
+            ]))
         },
         'personnel': {
             'files': [{'name': gn, **all_personnel[gn]} for gn in out_names],
