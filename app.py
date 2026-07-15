@@ -140,7 +140,12 @@ def _clean_doc_prop(value, codepage=1200):
     if not value:
         return ''
     if isinstance(value, bytes):
-        enc = {932: 'cp932', 949: 'cp949', 950: 'cp950', 1252: 'cp1252'}.get(codepage, 'gbk')
+        if 874 <= codepage <= 1258:
+            enc = 'cp%d' % codepage
+        elif codepage == 936:
+            enc = 'gbk'
+        else:
+            enc = 'gbk'
         try:
             value = value.decode(enc, errors='replace')
         except Exception:
@@ -2797,7 +2802,7 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
         # Known software vendor/product patterns
         software_patterns = [
             r'Microsoft[®\s]*\b(Word|Office|Excel|PowerPoint|Windows)',  # Microsoft products
-            r'\bWPS\b', r'Kingsoft', r'金山',
+            r'\bWPS\b', r'Kingsoft', r'金山(?:WPS|Office|软件|办公|文档|文字|表格|演示)',
             r'Adobe[®\s]', r'Adobe\s+(Acrobat|PDF|Photoshop|Illustrator)',
             r'LibreOffice', r'OpenOffice', r'Apache\s+OpenOffice',
             r'Apple\s+(Pages|Numbers|Keynote)',
