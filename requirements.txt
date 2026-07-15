@@ -1,4 +1,5 @@
 flask>=3.0
 python-docx>=1.0
 pypdf>=5.0
+olefile>=0.46
 gunicorn>=21.0

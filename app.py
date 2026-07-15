@@ -14,6 +14,7 @@ from collections import defaultdict
 from flask import Flask, request, jsonify, send_file, render_template, Response
 from docx import Document
 from pypdf import PdfReader
+import olefile
 import threading
 
 app = Flask(__name__)
@@ -126,6 +127,126 @@ def _pdf_date(date_str):
         return f'{match[1]}-{match[2]}-{match[3]}T{match[4]}:{match[5]}:{match[6]}Z'
     return str(date_str)[:50]
 
+def _clean_doc_prop(value, codepage=1200):
+    """Take the text before the first control char, decoding bytes if needed.
+
+    olefile.get_metadata() reads each OLE2 property at the correct offset but
+    appends trailing bytes (later properties / padding) to CJK string properties
+    instead of stopping at the length prefix. The genuine value is the prefix
+    before the first NUL/control char. For single-byte codepages (e.g. 936/GBK,
+    used by older MS Office .doc), olefile returns raw bytes that we must
+    decode with the stream's codepage.
+    """
+    if not value:
+        return ''
+    if isinstance(value, bytes):
+        enc = {932: 'cp932', 949: 'cp949', 950: 'cp950', 1252: 'cp1252'}.get(codepage, 'gbk')
+        try:
+            value = value.decode(enc, errors='replace')
+        except Exception:
+            value = value.decode('latin-1', errors='ignore')
+    s = str(value)
+    m = re.search(r'[\x00-\x1f]', s)
+    if m:
+        s = s[:m.start()]
+    return s.strip()
+
+
+def _extract_doc_kso_props(ole):
+    """Extract WPS custom strong-evidence fields (KSO*/ICV) from a .doc.
+
+    These live as user-defined properties inside the DocumentSummaryInformation
+    stream, which olefile does not parse. The stream layout (UTF-16-LE) lists
+    all property names contiguously, then all values contiguously, so we split
+    on control chars, locate the known field names, and pair them with the
+    value tokens that follow the name block.
+    """
+    result = {}
+    stream_name = '\x05DocumentSummaryInformation'
+    if not ole.exists(stream_name):
+        return result
+    try:
+        raw = ole.openstream(stream_name).read()
+    except Exception:
+        return result
+    text = raw.decode('utf-16-le', errors='ignore')
+    text = re.sub(r'[\x00-\x1f]+', '|', text)
+    tokens = [t.strip() for t in text.split('|') if t.strip()]
+
+    KNOWN = {'KSOProductBuildVer', 'KSOTemplateDocerSaveRecord', 'ICV'}
+    field_pos = [(i, t) for i, t in enumerate(tokens) if t in KNOWN]
+    if not field_pos:
+        return result
+
+    field_names = [t for _, t in field_pos]
+    block_end = field_pos[-1][0] + 1
+    # Value tokens: everything after the contiguous name block, noise filtered
+    value_tokens = []
+    for t in tokens[block_end:]:
+        if len(t) < 2:
+            continue
+        if re.fullmatch(r'[一-鿿]{1,2}', t):          # single CJK noise
+            continue
+        if re.search(r'[-￿]', t) and not re.search(r'[\x20-\x7e]', t):
+            continue
+        value_tokens.append(t)
+
+    for idx, fname in enumerate(field_names):
+        if idx < len(value_tokens):
+            result[fname] = value_tokens[idx]
+    return result
+
+
+def extract_doc_metadata(filepath):
+    """Extract metadata from a legacy .doc (OLE2) file via olefile.
+
+    SummaryInformation fields (author/template/last_saved_by/application/
+    revision/create_time/last_saved_time/pages/words) come from
+    olefile.get_metadata() with values truncated at the first control char
+    (olefile appends trailing bytes to CJK string properties). WPS custom
+    strong-evidence fields (KSOProductBuildVer/KSOTemplateDocerSaveRecord/ICV)
+    are read from the DocumentSummaryInformation stream directly, since
+    olefile does not parse user-defined properties.
+
+    Maps onto the same meta keys as the .docx/.pdf extractors so cross-
+    comparison (creator/last_modified_by/application/template/KSO*/ICV +
+    created/modified) works uniformly across formats.
+    """
+    meta = {}
+    try:
+        ole = olefile.OleFileIO(filepath)
+        try:
+            m = ole.get_metadata()
+            codepage = getattr(m, 'codepage', 1200) or 1200
+            # Time fields (reliable)
+            ct = getattr(m, 'create_time', None)
+            lt = getattr(m, 'last_saved_time', None)
+            if ct:
+                meta['created'] = ct.strftime('%Y-%m-%dT%H:%M:%SZ')
+            if lt:
+                meta['modified'] = lt.strftime('%Y-%m-%dT%H:%M:%SZ')
+            # Numeric fields (reliable)
+            if getattr(m, 'num_pages', None):
+                meta['pages'] = str(m.num_pages)
+            if getattr(m, 'num_words', None):
+                meta['words'] = str(m.num_words)
+            # String fields from SummaryInformation (clean trailing noise)
+            for attr, key in (('author', 'creator'),
+                              ('last_saved_by', 'last_modified_by'),
+                              ('creating_application', 'application'),
+                              ('template', 'template'),
+                              ('revision_number', 'revision')):
+                val = _clean_doc_prop(getattr(m, attr, None), codepage)
+                if val:
+                    meta[key] = val
+            # WPS strong-evidence fields from DocumentSummaryInformation
+            meta.update(_extract_doc_kso_props(ole))
+        finally:
+            ole.close()
+    except Exception as e:
+        meta['_error'] = str(e)
+    return meta
+
 def get_file_type(filepath):
     """Detect file type: 'docx', 'doc', or 'pdf'"""
     ext = os.path.splitext(filepath)[1].lower()
@@ -136,9 +257,12 @@ def get_file_type(filepath):
     return 'docx'
 
 def extract_metadata(filepath):
-    """Extract metadata from .docx or .pdf"""
-    if get_file_type(filepath) == 'pdf':
+    """Extract metadata from .docx, .doc, or .pdf"""
+    ftype = get_file_type(filepath)
+    if ftype == 'pdf':
         return extract_pdf_metadata(filepath)
+    if ftype == 'doc':
+        return extract_doc_metadata(filepath)
 
     meta = {}
     try:
