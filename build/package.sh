@@ -126,7 +126,7 @@ stdlib = sys.argv[3]
 available = set()
 BUILTINS = {"sys", "builtins", "_thread", "_io", "posix", "nt", "_warnings",
             "_signal", "_weakref", "_abc", "_collections_abc", "codecs",
-            "_frozen_importlib", "_frozen_importlib_external"}
+            "_frozen_importlib", "_frozen_importlib_external", "time", "math", "_json", "array", "binascii", "fcntl", "select", "unicodedata", "zlib", "ssl", "hashlib"}
 
 # vendored 第三方（site-packages）
 if os.path.isdir(site):
