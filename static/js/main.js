@@ -99,13 +99,28 @@ function startProgress() {
 }
 
 function updateProgress(event) {
-  // Once the analysis-phase progress events arrive, extraction is done —
-  // stop the indeterminate pulse animation and switch to exact percentages.
-  progressFill.classList.remove('extracting');
-  // Snapshot the current bar width (from extraction phase) so the
-  // monotonic guard has the right floor for subsequent analysis steps.
+  // Snapshot the currently rendered bar width before removing the
+  // pulse animation, so the transition to inline width has no snap.
+  var animatedPct = 0;
+  if (progressFill.classList.contains('extracting')) {
+    var barWrap = progressFill.parentElement;
+    if (barWrap) {
+      var wrapW = barWrap.getBoundingClientRect().width;
+      var fillW = progressFill.getBoundingClientRect().width;
+      animatedPct = wrapW > 0 ? Math.round(fillW / wrapW * 100) : 0;
+    }
+    if (animatedPct > 0) {
+      progressFill.style.width = animatedPct + '%';
+    }
+    progressFill.classList.remove('extracting');
+  }
+  // Use the higher of the animated position and the inline width as the
+  // floor for the monotonic guard (analysis phase must never shrink).
   if (_progressMaxPct < 1) {
-    _progressMaxPct = parseFloat(progressFill.style.width) || 0;
+    _progressMaxPct = Math.max(
+      parseFloat(progressFill.style.width) || 0,
+      animatedPct
+    );
   }
   _barSet(event.percent);
   progressText.textContent = event.label;
@@ -157,10 +172,15 @@ function updateExtractProgress(event) {
   }
 
   if (event.phase === 'pdf_page') {
-    // Real page-level progress — turn off the pulse and show exact position
-    progressFill.classList.remove('extracting');
-    var pct = event.total > 0 ? 1 + Math.round((event.current / event.total) * 8) : 3;
-    progressFill.style.width = Math.min(pct, 9) + '%';
+    // Real page-level progress. Don't kill the pulse until the calculated
+    // position exceeds the pulse band (1-3%), otherwise the bar snaps
+    // backward from the pulse peak and looks broken.
+    var pct = event.total > 0 ? 1 + Math.round((event.current / event.total) * 8) : 1;
+    var realPct = Math.min(pct, 9);
+    if (realPct >= 3) {
+      progressFill.classList.remove('extracting');
+    }
+    progressFill.style.width = realPct + '%';
     progressText.textContent = '提取文字: ' + _extractFileName + ' (' + event.current + '/' + event.total + ' 页)';
     return;
   }
