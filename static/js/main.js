@@ -102,6 +102,11 @@ function updateProgress(event) {
   // Once the analysis-phase progress events arrive, extraction is done —
   // stop the indeterminate pulse animation and switch to exact percentages.
   progressFill.classList.remove('extracting');
+  // Snapshot the current bar width (from extraction phase) so the
+  // monotonic guard has the right floor for subsequent analysis steps.
+  if (_progressMaxPct < 1) {
+    _progressMaxPct = parseFloat(progressFill.style.width) || 0;
+  }
   _barSet(event.percent);
   progressText.textContent = event.label;
 
@@ -142,10 +147,10 @@ function updateExtractProgress(event) {
       }
     });
     _extractStepEl.classList.add('active');
-    // Start the bar at 1% and begin the indeterminate pulse animation
-    // so the user sees movement even when there are no per-page events
-    // (e.g. .docx / .doc via LibreOffice).
-    _barSet(1);
+    // Direct assignment (no _barSet guard): each file starts from 1% so
+    // the user sees per-file page progress reset in multi-PDF scenarios.
+    // The _barSet guard only applies to the analysis phase (Phase 1).
+    progressFill.style.width = '1%';
     progressFill.classList.add('extracting');
     progressText.textContent = '提取文字: ' + _extractFileName;
     return;
@@ -155,14 +160,14 @@ function updateExtractProgress(event) {
     // Real page-level progress — turn off the pulse and show exact position
     progressFill.classList.remove('extracting');
     var pct = event.total > 0 ? 1 + Math.round((event.current / event.total) * 8) : 3;
-    _barSet(Math.min(pct, 9));
+    progressFill.style.width = Math.min(pct, 9) + '%';
     progressText.textContent = '提取文字: ' + _extractFileName + ' (' + event.current + '/' + event.total + ' 页)';
     return;
   }
 
   if (event.phase === 'pdf_early_stop' || event.phase === 'pdf_done') {
     progressFill.classList.remove('extracting');
-    _barSet(9);
+    progressFill.style.width = '9%';
     if (_extractStepEl) {
       _extractStepEl.classList.remove('active');
       _extractStepEl.classList.add('done');
