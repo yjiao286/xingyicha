@@ -109,7 +109,15 @@ function updateProgress(event) {
   // Entering the analysis phase: stop the extraction sweep. The sweep is
   // a transform-based overlay, so it never touched `width`; the bar's real
   // (monotonic) position is already correct - we only drop the class.
-  progressBar.classList.remove('extracting');
+  // The similarity step is the slow O(n^2) difflib phase; a single large
+  // file yields no inner events, so keep the sweep overlay alive so the
+  // bar isn't dead-still for seconds. All other analysis steps are fast and
+  // run clean (no sweep).
+  if (event.step === 'similarity') {
+    progressBar.classList.add('extracting');
+  } else {
+    progressBar.classList.remove('extracting');
+  }
   _barSet(event.percent);
   progressText.textContent = event.label;
 
