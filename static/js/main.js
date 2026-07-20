@@ -56,24 +56,65 @@ function formatSize(bytes) {
   return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
 }
 
+// ── Progress bar helpers ──
+
+// Highest bar percentage ever reached — the bar must never shrink.
+var _progressMaxPct = 0;
+
+function _barSet(pct) {
+  pct = Math.max(0, Math.min(100, pct));
+  if (pct > _progressMaxPct) _progressMaxPct = pct;
+  progressFill.style.width = _progressMaxPct + '%';
+}
+
+function _ensureExtractStep(detail) {
+  // Find or create the "提取文字" progress step so the user sees a
+  // dedicated indicator for the (potentially long) extraction phase.
+  var existing = progressSteps.querySelectorAll('.progress-step');
+  var found = null;
+  existing.forEach(function(el) {
+    if (el.getAttribute('data-step') === 'extract') found = el;
+  });
+  if (!found) {
+    found = document.createElement('span');
+    found.className = 'progress-step';
+    found.setAttribute('data-step', 'extract');
+    progressSteps.appendChild(found);
+  }
+  found.textContent = detail || '提取文字';
+  return found;
+}
+
+var _extractFileName = '';
+var _extractStepEl = null;
+
 function startProgress() {
+  _progressMaxPct = 0;
+  progressFill.classList.remove('extracting');
   progressPanel.style.display = 'block';
   progressFill.style.width = '0%';
   progressText.textContent = '上传中...';
   progressSteps.innerHTML = '<span class="progress-step active" data-step="upload">上传文件</span>';
+  _extractStepEl = null;
 }
 
 function updateProgress(event) {
-  progressFill.style.width = event.percent + '%';
+  // Once the analysis-phase progress events arrive, extraction is done —
+  // stop the indeterminate pulse animation and switch to exact percentages.
+  progressFill.classList.remove('extracting');
+  _barSet(event.percent);
   progressText.textContent = event.label;
 
+  // Mark the extraction step as completed (if it was created)
+  if (_extractStepEl) {
+    _extractStepEl.classList.remove('active');
+    _extractStepEl.classList.add('done');
+  }
+
   if (event.detail) {
-    // Reset all active states only when updating steps
     var existing = progressSteps.querySelectorAll('.progress-step');
     existing.forEach(function(el) { el.classList.remove('active'); });
 
-    // Find existing step by data-step attribute (set at creation or in
-    // startProgress); update its text in case the detail changed
     var found = null;
     existing.forEach(function(el) {
       if (el.getAttribute('data-step') === event.step) { found = el; }
@@ -89,35 +130,48 @@ function updateProgress(event) {
   }
 }
 
-// Track current extraction filename across start/page/done event sequence
-var _extractFileName = '';
-
 function updateExtractProgress(event) {
   if (event.phase === 'start') {
     _extractFileName = event.file || '';
-    progressFill.style.width = '1%';
+    _extractStepEl = _ensureExtractStep('提取文字: ' + _extractFileName);
+    // Keep the upload step "done" while switching to extraction
+    var steps = progressSteps.querySelectorAll('.progress-step');
+    steps.forEach(function(el) {
+      if (el.getAttribute('data-step') === 'upload') {
+        el.classList.remove('active'); el.classList.add('done');
+      }
+    });
+    _extractStepEl.classList.add('active');
+    // Start the bar at 1% and begin the indeterminate pulse animation
+    // so the user sees movement even when there are no per-page events
+    // (e.g. .docx / .doc via LibreOffice).
+    _barSet(1);
+    progressFill.classList.add('extracting');
     progressText.textContent = '提取文字: ' + _extractFileName;
     return;
   }
 
   if (event.phase === 'pdf_page') {
-    // Scale page progress within 1-9% of the overall bar so it transitions
-    // smoothly into the analysis-phase markers (10%, 25%, ...). A 300-page
-    // PDF at page 150 shows ~5% which is honest about extraction progress.
+    // Real page-level progress — turn off the pulse and show exact position
+    progressFill.classList.remove('extracting');
     var pct = event.total > 0 ? 1 + Math.round((event.current / event.total) * 8) : 3;
-    progressFill.style.width = Math.min(pct, 9) + '%';
+    _barSet(Math.min(pct, 9));
     progressText.textContent = '提取文字: ' + _extractFileName + ' (' + event.current + '/' + event.total + ' 页)';
     return;
   }
 
   if (event.phase === 'pdf_early_stop' || event.phase === 'pdf_done') {
-    progressFill.style.width = '9%';
+    progressFill.classList.remove('extracting');
+    _barSet(9);
+    if (_extractStepEl) {
+      _extractStepEl.classList.remove('active');
+      _extractStepEl.classList.add('done');
+    }
     if (event.detail) {
       progressText.textContent = event.detail;
     } else {
       progressText.textContent = '文字提取完成: ' + _extractFileName + ' (' + (event.current || '?') + ' 页)';
     }
-    // Warnings from no-text pages are sent separately as 'warning' events.
     return;
   }
 }
@@ -133,7 +187,6 @@ function showWarning(event) {
       resultsSection.parentNode.insertBefore(panel, resultsSection);
     }
   }
-  // Avoid duplicate messages
   var existing = panel.querySelectorAll('.warning-msg');
   for (var i = 0; i < existing.length; i++) {
     if (existing[i].textContent === event.message) return;
@@ -146,7 +199,8 @@ function showWarning(event) {
 }
 
 function finishProgress() {
-  progressFill.style.width = '100%';
+  _barSet(100);
+  progressFill.classList.remove('extracting');
   progressText.textContent = '分析完成';
   var steps = progressSteps.querySelectorAll('.progress-step');
   steps.forEach(function(el) { el.classList.remove('active'); el.classList.add('done'); });

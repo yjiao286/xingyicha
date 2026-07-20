@@ -212,6 +212,15 @@ body {
   background: linear-gradient(90deg, var(--accent), #6366f1);
   border-radius: 3px; transition: width .4s ease;
 }
+/* Indeterminate pulse while extracting non-PDF files (no per-page events) */
+.progress-fill.extracting {
+  animation: extraction-pulse 2.5s ease-in-out infinite;
+}
+@keyframes extraction-pulse {
+  0%   { width: 1%; }
+  50%  { width: 7%; }
+  100% { width: 1%; }
+}
 .progress-text { margin-top: 8px; font-size: 12px; font-weight: 500; color: var(--accent-text); }
 .progress-steps { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
 .progress-step {
