@@ -87,9 +87,15 @@ function _ensureExtractStep(detail) {
 
 var _extractFileName = '';
 var _extractStepEl = null;
+var _fileIndex = 1;
+var _totalFiles = 1;
+var _fileShare = 24;
 
 function startProgress() {
   _progressMaxPct = 0;
+  _fileIndex = 1;
+  _totalFiles = 1;
+  _fileShare = 24;
   progressFill.classList.remove('extracting');
   progressPanel.style.display = 'block';
   progressFill.style.width = '0%';
@@ -154,7 +160,6 @@ function updateExtractProgress(event) {
   if (event.phase === 'start') {
     _extractFileName = event.file || '';
     _extractStepEl = _ensureExtractStep('提取文字: ' + _extractFileName);
-    // Keep the upload step "done" while switching to extraction
     var steps = progressSteps.querySelectorAll('.progress-step');
     steps.forEach(function(el) {
       if (el.getAttribute('data-step') === 'upload') {
@@ -162,31 +167,42 @@ function updateExtractProgress(event) {
       }
     });
     _extractStepEl.classList.add('active');
-    // Direct assignment (no _barSet guard): each file starts from 1% so
-    // the user sees per-file page progress reset in multi-PDF scenarios.
-    // The _barSet guard only applies to the analysis phase (Phase 1).
-    progressFill.style.width = '1%';
+    // Record this file's position so subsequent pdf_page events can
+    // compute a cumulative position within its fair sub-range.
+    _fileIndex = event.fileIndex || 1;
+    _totalFiles = event.totalFiles || 1;
+    _fileShare = 24 / _totalFiles;  // 1-25% extraction range
+    var fileStartPct = 1 + (_fileIndex - 1) * _fileShare;
+    // Never shrink: keep the bar at max(current, fileStart). The first
+    // file starts at 1%, file N starts where file N-1 left off.
+    if (fileStartPct > parseFloat(progressFill.style.width || '0')) {
+      progressFill.style.width = fileStartPct + '%';
+    }
     progressFill.classList.add('extracting');
     progressText.textContent = '提取文字: ' + _extractFileName;
     return;
   }
 
   if (event.phase === 'pdf_page') {
-    // Scale page progress across 1-25% (extraction dominates runtime;
-    // the analysis phases that follow are faster and compressed above).
-    var pct = event.total > 0 ? 1 + Math.round((event.current / event.total) * 24) : 1;
-    var realPct = Math.min(pct, 25);
-    if (realPct >= 5) {
+    var fileFraction = event.total > 0 ? (event.current / event.total) : 0;
+    var fileStartPct = 1 + (_fileIndex - 1) * _fileShare;
+    var realPct = Math.min(fileStartPct + Math.round(fileFraction * _fileShare), 25);
+    // Only advance forward — cumulative across files
+    var cur = parseFloat(progressFill.style.width || '0');
+    if (realPct > cur) {
+      progressFill.style.width = realPct + '%';
+    }
+    if (realPct >= fileStartPct + Math.max(2, _fileShare * 0.15)) {
       progressFill.classList.remove('extracting');
     }
-    progressFill.style.width = realPct + '%';
     progressText.textContent = '提取文字: ' + _extractFileName + ' (' + event.current + '/' + event.total + ' 页)';
     return;
   }
 
   if (event.phase === 'pdf_early_stop' || event.phase === 'pdf_done') {
     progressFill.classList.remove('extracting');
-    progressFill.style.width = '25%';
+    var fileEndPct = Math.min(1 + _fileIndex * _fileShare, 25);
+    progressFill.style.width = fileEndPct + '%';
     if (_extractStepEl) {
       _extractStepEl.classList.remove('active');
       _extractStepEl.classList.add('done');

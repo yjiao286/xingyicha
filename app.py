@@ -4131,14 +4131,17 @@ def analyze_stream():
         extraction_done = threading.Event()
 
         def extract_all():
-            for group, paths in group_map.items():
+            total_groups = len(group_map)
+            for fi, (group, paths) in enumerate(group_map.items()):
                 combined = ''
                 for p in paths:
                     base = os.path.basename(p)
                     try:
                         progress_queue.put({
                             'type': 'extract', 'phase': 'start',
-                            'file': base, 'group': group
+                            'file': base, 'group': group,
+                            'fileIndex': fi + 1,
+                            'totalFiles': total_groups
                         })
                         combined += extract_text_with_tables(
                             p, max_pages=300, on_progress=_on_extract_progress
