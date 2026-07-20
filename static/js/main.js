@@ -89,19 +89,36 @@ function updateProgress(event) {
   }
 }
 
+// Track current extraction filename across start/page/done event sequence
+var _extractFileName = '';
+
 function updateExtractProgress(event) {
-  progressFill.style.width = '5%';  // extraction is early phase
   if (event.phase === 'start') {
-    progressText.textContent = '正在提取文字: ' + (event.file || '');
-  } else if (event.phase === 'pdf_page') {
-    var pct = event.total > 0 ? Math.round((event.current / event.total) * 10) : 5;
-    progressFill.style.width = Math.min(pct, 10) + '%';
-    progressText.textContent = '提取文字中 ' + event.current + '/' + event.total + ' 页';
-  } else if (event.phase === 'pdf_early_stop' || event.phase === 'pdf_done') {
+    _extractFileName = event.file || '';
+    progressFill.style.width = '1%';
+    progressText.textContent = '提取文字: ' + _extractFileName;
+    return;
+  }
+
+  if (event.phase === 'pdf_page') {
+    // Scale page progress within 1-9% of the overall bar so it transitions
+    // smoothly into the analysis-phase markers (10%, 25%, ...). A 300-page
+    // PDF at page 150 shows ~5% which is honest about extraction progress.
+    var pct = event.total > 0 ? 1 + Math.round((event.current / event.total) * 8) : 3;
+    progressFill.style.width = Math.min(pct, 9) + '%';
+    progressText.textContent = '提取文字: ' + _extractFileName + ' (' + event.current + '/' + event.total + ' 页)';
+    return;
+  }
+
+  if (event.phase === 'pdf_early_stop' || event.phase === 'pdf_done') {
+    progressFill.style.width = '9%';
     if (event.detail) {
       progressText.textContent = event.detail;
+    } else {
+      progressText.textContent = '文字提取完成: ' + _extractFileName + ' (' + (event.current || '?') + ' 页)';
     }
-    // Warnings are sent separately via 'warning' events — don't duplicate here
+    // Warnings from no-text pages are sent separately as 'warning' events.
+    return;
   }
 }
 

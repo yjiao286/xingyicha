@@ -4080,9 +4080,16 @@ def analyze_stream():
 
     file_groups = request.form.getlist('file_groups')
     group_map = {}
-    for fp, group in zip(saved, file_groups):
-        group = group.strip() or os.path.basename(fp)
-        group_map.setdefault(group, []).append(fp)
+    if file_groups:
+        for fp, group in zip(saved, file_groups):
+            group = group.strip() or os.path.basename(fp)
+            group_map.setdefault(group, []).append(fp)
+    else:
+        # Default: each file is its own group (no explicit grouping).
+        # Matches the fallback inside run_full_analysis so the threaded
+        # Phase 0 extraction actually has files to process.
+        for fp in saved:
+            group_map.setdefault(os.path.basename(fp), []).append(fp)
 
     import queue
     progress_queue = queue.Queue()
@@ -4116,33 +4123,57 @@ def analyze_stream():
             yield json.dumps({'type': 'warning', 'code': 'large_file', 'message': w},
                            ensure_ascii=False) + '\n'
 
-        # ── Phase 0: Text extraction with progress ──
+        # ── Phase 0: Text extraction (threaded so per-page PDF progress
+        #    drains to the client in real time, not all at once after
+        #    extraction finishes) ──
         group_texts = {}
         extraction_errors = []
-        for group, paths in group_map.items():
-            combined = ''
-            for p in paths:
-                base = os.path.basename(p)
-                try:
-                    progress_queue.put({
-                        'type': 'extract', 'phase': 'start',
-                        'file': base, 'group': group
-                    })
-                    combined += extract_text_with_tables(
-                        p, max_pages=300, on_progress=_on_extract_progress
-                    ) + '\n'
-                except Exception as e:
-                    # Surface extraction failures to the user instead of silently
-                    # producing empty text (which would yield a vacuous analysis
-                    # with no explanation).
-                    msg = f'文件 {base} 文字提取失败: {e}'
-                    extraction_errors.append(msg)
-                    logger.warning('text extraction failed for %s: %s', base, e)
-                    progress_queue.put({
-                        'type': 'warning', 'code': 'extraction_failed',
-                        'message': msg
-                    })
-            group_texts[group] = combined
+        extraction_done = threading.Event()
+
+        def extract_all():
+            for group, paths in group_map.items():
+                combined = ''
+                for p in paths:
+                    base = os.path.basename(p)
+                    try:
+                        progress_queue.put({
+                            'type': 'extract', 'phase': 'start',
+                            'file': base, 'group': group
+                        })
+                        combined += extract_text_with_tables(
+                            p, max_pages=300, on_progress=_on_extract_progress
+                        ) + '\n'
+                    except Exception as e:
+                        msg = f'文件 {base} 文字提取失败: {e}'
+                        extraction_errors.append(msg)
+                        logger.warning('text extraction failed for %s: %s', base, e)
+                        progress_queue.put({
+                            'type': 'warning', 'code': 'extraction_failed',
+                            'message': msg
+                        })
+                group_texts[group] = combined
+            extraction_done.set()
+
+        ext_thread = threading.Thread(target=extract_all, daemon=True)
+        ext_thread.start()
+
+        # Drain extraction progress events in real time — per-page PDF
+        # updates now reach the client while pages are being read instead
+        # of being buffered until extraction completes.
+        while ext_thread.is_alive() or not progress_queue.empty():
+            try:
+                event = progress_queue.get(timeout=0.2)
+                yield json.dumps(event, ensure_ascii=False) + '\n'
+            except queue.Empty:
+                pass
+
+        ext_thread.join(timeout=5)
+        if ext_thread.is_alive():
+            logger.error('text extraction thread did not finish within timeout')
+            yield json.dumps({'type': 'error',
+                              'message': '文字提取超时，请减少文件页数或压缩后重试'},
+                             ensure_ascii=False) + '\n'
+            return
 
         if extraction_warnings:
             progress_queue.put({
@@ -4150,6 +4181,14 @@ def analyze_stream():
                 'code': 'no_text_or_truncated',
                 'messages': extraction_warnings[:10]
             })
+        # Flush any remaining events (warnings, last progress ticks) before
+        # starting Phase 1 so the client's bar is at the right position.
+        while not progress_queue.empty():
+            try:
+                event = progress_queue.get(timeout=0.1)
+                yield json.dumps(event, ensure_ascii=False) + '\n'
+            except queue.Empty:
+                break
 
         # ── Phase 1: Full analysis ──
         results_holder = []
