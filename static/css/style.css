@@ -284,10 +284,15 @@ body {
 }
 .score-num { font-size: 40px; font-weight: 800; line-height: 1; }
 .score-unit { font-size: 14px; color: var(--text-muted); }
-.score-bar-wrap { background: #e5e7eb; border-radius: 4px; height: 10px; overflow: hidden; margin-bottom: 6px; }
+.score-bar-wrap { position: relative; background: #e5e7eb; border-radius: 4px; height: 10px; overflow: hidden; margin-bottom: 6px; }
 .score-bar-fill { height: 100%; border-radius: 4px; transition: width .5s ease; }
-.score-ticks { display: flex; justify-content: space-between; font-size: 10px; color: var(--text-muted); }
-.score-ticks span { text-align: center; }
+.score-bar-mark { position: absolute; top: 0; bottom: 0; width: 2px; background: rgba(0,0,0,0.22); z-index: 2; }
+.score-ticks { position: relative; height: 14px; font-size: 10px; color: var(--text-muted); }
+.score-ticks .tick { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+.score-ticks .tick:first-child { transform: translateX(0); }
+.score-ticks .tick:last-child { transform: translateX(-100%); }
+.score-ticks .tick-warn { color: #d97706; font-weight: 600; }
+.score-ticks .tick-danger { color: #dc2626; font-weight: 600; }
 
 /* ── Clauses ── */
 .clauses-grid { display: grid; gap: 10px; }

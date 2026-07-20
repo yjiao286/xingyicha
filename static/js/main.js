@@ -404,15 +404,21 @@ function renderVerdict() {
         <span style="font-size:13px;font-weight:600;color:var(--text-secondary);">综合风险评分</span>
         <span style="font-size:32px;font-weight:800;color:${scoreColor};line-height:1;">${score}</span>
         <span style="font-size:13px;color:var(--text-muted);">/ ${maxScore}</span>
-        ${v.synergy_bonus > 0 ? '<span style="font-size:10px;color:#d97706;background:#fff7ed;padding:1px 6px;border-radius:4px;">含协同+' + v.synergy_bonus + '</span>' : ''}
+        ${v.synergy_bonus > 0 ? '<span style="font-size:10px;color:#d97706;background:#fff7ed;padding:1px 6px;border-radius:4px;">软协同+' + v.synergy_bonus + '</span>' : ''}
+        ${v.hard_synergy_bonus > 0 ? '<span style="font-size:10px;color:#b45309;background:#fef3c7;padding:1px 6px;border-radius:4px;">硬证据协同+' + v.hard_synergy_bonus + '</span>' : ''}
         <span style="flex:1;"></span>
         <span style="font-size:12px;color:var(--text-muted);">满足 <b style="color:#dc2626;">${satisfiedCount}</b> · 无法判断 <b style="color:#d97706;">${uncertainCount}</b> · 不满足 <b style="color:#16a34a;">${notCount}</b></span>
       </div>
       <div class="score-bar-wrap">
         <div class="score-bar-fill" style="width:${pct}%;background:${scoreColor};"></div>
+        <div class="score-bar-mark" style="left:15%;"></div>
+        <div class="score-bar-mark" style="left:50%;"></div>
       </div>
       <div class="score-ticks">
-        <span>0</span><span style="font-weight:600;color:#d97706;">15 可疑</span><span style="font-weight:600;color:#dc2626;">50 高度嫌疑</span><span>${maxScore}</span>
+        <span class="tick" style="left:0%;">0</span>
+        <span class="tick tick-warn" style="left:15%;">15 可疑</span>
+        <span class="tick tick-danger" style="left:50%;">50 高度嫌疑</span>
+        <span class="tick" style="left:100%;">${maxScore}</span>
       </div>
     </div>
     <details class="rules-panel">
@@ -437,7 +443,9 @@ function renderVerdict() {
           <li>中 = 权重 × 0.3（多项间接证据）</li>
           <li>弱 = 权重 × 0.15（单条间接证据，已过滤默认模板/通病版本号）</li>
           <li>无法判断 / 无 = 0</li>
-          <li>协同加分：第（四）项-a 和 -b 同时为"强" → +1分</li>
+          <li>软协同加分：第（四）项-a 和 -b 同时为"强" 时 +1分</li>
+          <li>硬证据协同加分：第（一）项 与 第（二）项 同为"强" 时 +5分（文档同源+投标事宜同人双重确认）</li>
+          <li>总分上限 100分</li>
         </ul>
         <p style="margin:0 0 6px;font-weight:600;">综合结论阈值：</p>
         <ul style="margin:0;padding-left:18px;">

@@ -3527,10 +3527,13 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
         '项目经理', '项目负责人', '技术负责人', '技术总监', '总工程师',
         '项目副经理', '安全负责人', '商务经理', '财务负责人', '设计负责人',
     }
-    # Clause (二) independent triggers: same person handling bidding affairs,
-    # decoupled from the "auth-rep == creator" cross-match (which belongs to
-    # clause 一) to avoid double-counting a single signal.
-    CLAUSE2_TYPES = {'授权代表姓名相同', '联系电话相同', '身份证号相同'}
+    # Clause (二) triggers: same person handling bidding affairs for
+    # different bidders. The "auth-rep == creator" cross-match is included
+    # here too: if bidder A's authorized representative is the document
+    # creator of bidder B, that one person is both preparing B's bid (一)
+    # and handling A's bidding (二) -- a single fact breaching both
+    # clauses, not a double-count of one weak signal.
+    CLAUSE2_TYPES = {'授权代表姓名相同', '联系电话相同', '身份证号相同', '授权代表与创建者交叉'}
     clauses = [
         {
             'clause': '第（一）项',
@@ -3704,7 +3707,18 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
         synergy_bonus = 1
         total_score += synergy_bonus
 
-    total_score = round(total_score, 1)
+    # 硬证据协同加分：同一人编制(一) + 同一人办理投标(二) 同时为"强" -> +5
+    # 既证明文档同源、又证明投标事宜同人，双重确认使置信度显著提升
+    # （如：A的授权代表同时是B的文档创建者，单一事实同时触犯两条）
+    clause_1 = next((c for c in clauses if c['clause'] == '第（一）项'), None)
+    clause_2 = next((c for c in clauses if c['clause'] == '第（二）项'), None)
+    hard_synergy_bonus = 0
+    if clause_1 and clause_2 and clause_1.get('evidence_level') == '强' and clause_2.get('evidence_level') == '强':
+        hard_synergy_bonus = 5
+        total_score += hard_synergy_bonus
+
+    # 协同加分可能使总分超过100（如全维度强+硬协同），封顶于满分
+    total_score = min(max_score, round(total_score, 1))
 
     # ── Three-tier conclusion ──
     if num_bids < 2:
@@ -3761,10 +3775,12 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
             'score': total_score,
             'max_score': max_score,
             'synergy_bonus': synergy_bonus,
+            'hard_synergy_bonus': hard_synergy_bonus,
             'scoring_rule': {
                 'weights': clause_weights,
                 'level_multipliers': level_score_map,
                 'synergy_bonus': 1,
+                'hard_synergy_bonus': 5,
                 'thresholds': {'high': 50, 'medium': 15, 'low': 0}
             }
         }
@@ -3915,9 +3931,14 @@ def generate_report_docx(analysis):
             style='List Bullet'
         )
         doc.add_paragraph(
-            '协同加分: 第（四）项-a 与 -b 同为"强"时 +1分（上限100分）',
+            '软证据协同加分: 第（四）项-a 与 -b 同为"强"时 +1分',
             style='List Bullet'
         )
+        doc.add_paragraph(
+            '硬证据协同加分: 第（一）项 与 第（二）项 同为"强"时 +5分（文档同源+投标事宜同人双重确认）',
+            style='List Bullet'
+        )
+        doc.add_paragraph('总分上限100分', style='List Bullet')
 
     # 5. Verdict
     doc.add_heading('五、综合判定', level=1)
