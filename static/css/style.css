@@ -213,13 +213,13 @@ body {
   border-radius: 3px; transition: width .4s ease;
 }
 /* Indeterminate pulse while extracting non-PDF files (no per-page events).
-   Narrow band (1-3%) so the transition to real page progress doesn't visibly shrink. */
+   Band (1-5%) fits the expanded extraction phase (1-25% of total bar). */
 .progress-fill.extracting {
   animation: extraction-pulse 2s ease-in-out infinite;
 }
 @keyframes extraction-pulse {
   0%   { width: 1%; }
-  50%  { width: 3%; }
+  50%  { width: 5%; }
   100% { width: 1%; }
 }
 .progress-text { margin-top: 8px; font-size: 12px; font-weight: 500; color: var(--accent-text); }

@@ -172,12 +172,11 @@ function updateExtractProgress(event) {
   }
 
   if (event.phase === 'pdf_page') {
-    // Real page-level progress. Don't kill the pulse until the calculated
-    // position exceeds the pulse band (1-3%), otherwise the bar snaps
-    // backward from the pulse peak and looks broken.
-    var pct = event.total > 0 ? 1 + Math.round((event.current / event.total) * 8) : 1;
-    var realPct = Math.min(pct, 9);
-    if (realPct >= 3) {
+    // Scale page progress across 1-25% (extraction dominates runtime;
+    // the analysis phases that follow are faster and compressed above).
+    var pct = event.total > 0 ? 1 + Math.round((event.current / event.total) * 24) : 1;
+    var realPct = Math.min(pct, 25);
+    if (realPct >= 5) {
       progressFill.classList.remove('extracting');
     }
     progressFill.style.width = realPct + '%';
@@ -187,7 +186,7 @@ function updateExtractProgress(event) {
 
   if (event.phase === 'pdf_early_stop' || event.phase === 'pdf_done') {
     progressFill.classList.remove('extracting');
-    progressFill.style.width = '9%';
+    progressFill.style.width = '25%';
     if (_extractStepEl) {
       _extractStepEl.classList.remove('active');
       _extractStepEl.classList.add('done');
