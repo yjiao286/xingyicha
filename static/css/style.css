@@ -333,6 +333,7 @@ body {
 }
 .level-strong { color: var(--danger); }
 .level-medium { color: var(--warn); }
+.level-weak { color: #6b7280; }
 .level-none { color: var(--success); }
 
 /* ── Tables ── */

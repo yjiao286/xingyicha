@@ -3221,6 +3221,29 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
                 return True
         return False
 
+    def _is_default_template(m):
+        """Filter circumstantial metadata matches that are generic defaults
+        rather than collusion signals: empty templates, Word's default
+        Normal.dotm, or ubiquitous WPS build numbers. Such a single match
+        alone must not push clause (一) to the "中" (suspicious) band."""
+        field = (m.get('field') or '')
+        value = str(m.get('value') or '').strip()
+        if not value:
+            return True
+        # Word's default global template
+        if value.lower() in ('normal.dotm', 'normal.dot', 'default', '默认'):
+            return True
+        # Ubiquitous template field values that every WPS/Word doc shares
+        if field == '模板' and value.lower() in ('normal.dotm', 'normal.dot'):
+            return True
+        # WPS product build version alone (shared by every WPS install of
+        # that release) only counts when paired with another signal, never
+        # as the sole circumstantial item. It is excluded here so a lone
+        # KSO build number does not reach the "弱" tier either.
+        if field == 'WPS版本号' and re.match(r'^[\d.\-]+$', value):
+            return True
+        return False
+
     # ── Compile metadata cross-comparison (all group pairs) ──
     meta_matches = []
     if len(out_names) >= 2:
@@ -3299,7 +3322,8 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
                             personnel_matches.append({
                                 'type': '人员重叠（同角色）',
                                 'detail': f'"{name}"（{role_i}）同时出现在 {gi} 和 {gj} 中',
-                                'severity': 'high'
+                                'severity': 'high',
+                                'role': role_i
                             })
                     else:
                         key = f'same_person_diff_role|{name}|{gi}|{gj}'
@@ -3358,6 +3382,22 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
                                 'detail': f'{gj}的授权代表"{pj["authorized_rep"]}" = {gi}的文档创建者',
                                 'severity': 'high'
                             })
+
+                # ── Layer 4b: Authorized representative name identical ──
+                # Independent trigger for clause (二): same person handling
+                # bidding for different bidders, without relying on the
+                # "auth-rep == creator" cross-match substring.
+                ai = pi.get('authorized_rep') or ''
+                aj = pj.get('authorized_rep') or ''
+                if ai and aj and ai == aj and not _is_software_name(ai):
+                    key = f'auth_rep_name|{ai}'
+                    if key not in personnel_dedup:
+                        personnel_dedup.add(key)
+                        personnel_matches.append({
+                            'type': '授权代表姓名相同',
+                            'detail': f'{gi} 和 {gj} 的授权代表均为"{ai}"',
+                            'severity': 'high'
+                        })
 
                 # ── Layer 5: Same last modifier ──
                 if mi.get('last_modified_by') and mj.get('last_modified_by'):
@@ -3480,6 +3520,17 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
     _progress('pricing', '报价分析', 75, f'比较含税总价、不含税总价、分项单价等')
 
     # ── Compile verdict ──
+    # Project-management roles: a single shared name in one of these roles
+    # is itself evidence for clause (三). Ordinary line roles (安全员/质量员
+    # etc.) are excluded as they are frequently outsourced/coincidental.
+    PM_ROLES = {
+        '项目经理', '项目负责人', '技术负责人', '技术总监', '总工程师',
+        '项目副经理', '安全负责人', '商务经理', '财务负责人', '设计负责人',
+    }
+    # Clause (二) independent triggers: same person handling bidding affairs,
+    # decoupled from the "auth-rep == creator" cross-match (which belongs to
+    # clause 一) to avoid double-counting a single signal.
+    CLAUSE2_TYPES = {'授权代表姓名相同', '联系电话相同', '身份证号相同'}
     clauses = [
         {
             'clause': '第（一）项',
@@ -3492,13 +3543,15 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
         {
             'clause': '第（二）项',
             'description': '不同投标人委托同一单位或者个人办理投标事宜',
-            'satisfied': any('授权代表' in m.get('type', '') for m in personnel_matches),
+            'satisfied': any(m.get('type') in CLAUSE2_TYPES for m in personnel_matches),
             'evidence': []
         },
         {
             'clause': '第（三）项',
             'description': '不同投标人的投标文件载明的项目管理成员为同一人',
-            'satisfied': any(m['type'] == '人员高度重叠' for m in personnel_matches),
+            'satisfied': any(m['type'] == '人员高度重叠' for m in personnel_matches) or
+                         any(m.get('type') == '人员重叠（同角色）' and m.get('role') in PM_ROLES
+                             for m in personnel_matches),
             'evidence': []
         },
         {
@@ -3509,11 +3562,30 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
         },
         {
             'clause': '第（四）项-b',
-            'description': '投标报价呈规律性差异',
+            'description': '投标报价异常一致或呈规律性差异',
             'satisfied': True if len(price_risk_findings) > 0 else (None if len(price_no_data_findings) > 0 else False),
             'evidence': []
         },
     ]
+
+    # ── Data-sufficiency: detect dimensions whose input bucket is empty ──
+    # A clause whose source data was entirely absent returns "无法判断"
+    # (not "无"), so an all-empty analysis reaches the "数据不足" branch
+    # instead of falsely reporting "未发现明显围标串标异常".
+    _META_DATA_FIELDS = ('creator', 'last_modified_by', 'application',
+                         'template', 'KSOTemplateDocerSaveRecord',
+                         'KSOProductBuildVer', 'ICV')
+    meta_bucket_empty = not any(
+        any(gm.get(f) for f in _META_DATA_FIELDS)
+        for gm in group_meta.values()
+    )
+    personnel_bucket_empty = not any(
+        (all_personnel.get(gn, {}) or {}).get('all_persons')
+        or (all_personnel.get(gn, {}) or {}).get('legal_rep')
+        or (all_personnel.get(gn, {}) or {}).get('authorized_rep')
+        for gn in out_names
+    )
+    text_bucket_empty = not any((all_text.get(gn) or '').strip() for gn in out_names)
 
     # Populate evidence
     for c in clauses:
@@ -3522,39 +3594,51 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
                 c['evidence'].append('WPS硬件ID和用户ID完全一致，同一台设备同一账号编辑')
             if any(m['type'] == '最后修改人为同一人' for m in personnel_matches):
                 c['evidence'].append('两份标书最后修改人为同一人')
-            if any('创建者' in m.get('type', '') for m in personnel_matches):
+            if any(m['type'] == '授权代表与创建者交叉' for m in personnel_matches):
                 c['evidence'].append('一方授权代表为另一方标书创建者')
             if c['satisfied']:
                 c['evidence_level'] = '强'
+            elif meta_bucket_empty:
+                c['evidence_level'] = '无法判断'
+                c['evidence'].append('未提取到任何文档元数据，无法进行元数据比对')
             else:
-                # 检查间接证据：模板/编辑程序/ICV/WPS版本等非软件名元数据一致项
-                circumstantial = [m for m in meta_matches if m.get('severity') != 'info']
+                # 间接证据：过滤软件名与默认模板(如 Normal.dotm/通病WPS版本号)后的非info一致项
+                circumstantial = [m for m in meta_matches
+                                 if m.get('severity') != 'info' and not _is_default_template(m)]
                 if len(circumstantial) >= 2:
                     c['evidence_level'] = '中'
                     c['evidence'].append(f'存在 {len(circumstantial)} 项元数据一致（模板/程序/版本等间接证据）')
                 elif len(circumstantial) == 1:
-                    c['evidence_level'] = '中'
+                    c['evidence_level'] = '弱'
                     c['evidence'].append(f'存在 1 项元数据一致（{circumstantial[0]["field"]}），间接证据较弱')
                 else:
                     c['evidence_level'] = '无'
         elif c['clause'] == '第（二）项':
             if c['satisfied']:
                 c['evidence_level'] = '强'
-                # 收集授权代表相关证据
+                # 收集授权代表/电话/身份证相同等独立硬证据
                 for m in personnel_matches:
-                    if '授权代表' in m.get('type', ''):
+                    if m.get('type') in CLAUSE2_TYPES:
                         c['evidence'].append(m.get('detail', ''))
+            elif personnel_bucket_empty:
+                c['evidence_level'] = '无法判断'
+                c['evidence'].append('未提取到任何人员信息，无法进行人员比对')
             else:
                 c['evidence_level'] = '无'
         elif c['clause'] == '第（三）项':
             if c['satisfied']:
                 c['evidence_level'] = '强'
                 for m in personnel_matches:
-                    if m.get('type') == '人员高度重叠':
+                    if m['type'] == '人员高度重叠' or (
+                        m.get('type') == '人员重叠（同角色）' and m.get('role') in PM_ROLES
+                    ):
                         c['evidence'].append(m.get('detail', ''))
             else:
                 c['evidence_level'] = '无法判断'
-                c['evidence'].append('标书中未明确列出项目团队成员信息，无法判断')
+                if any((all_personnel.get(gn, {}) or {}).get('all_persons') for gn in out_names):
+                    c['evidence'].append('已提取项目团队人员，但未发现同名项目管理成员，重叠率未达判定阈值')
+                else:
+                    c['evidence'].append('标书中未明确列出项目团队成员信息，无法判断')
         elif c['clause'] == '第（四）项-a':
             substantial_count = len(similarity.get('substantial_abnormal', []))
             suspicious_count = len(similarity.get('suspicious_template', []))
@@ -3569,12 +3653,15 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
                 c['evidence_level'] = '强'
             elif suspicious_count > 0:
                 c['evidence_level'] = '中'
+            elif text_bucket_empty:
+                c['evidence_level'] = '无法判断'
+                c['evidence'].append('未提取到任何文本内容，无法进行相似度比对')
             else:
                 c['evidence_level'] = '无'
         elif c['clause'] == '第（四）项-b':
             c['evidence'] = price_risk_findings + price_no_data_findings
             if c['satisfied'] is True:
-                c['evidence_level'] = '中'
+                c['evidence_level'] = '强'
             elif c['satisfied'] is None:
                 c['evidence_level'] = '无法判断'
             else:
@@ -3594,7 +3681,7 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
         '第（四）项-a': 5,      # 软证据: 文本相似度
         '第（四）项-b': 4,      # 软证据: 报价规律
     }
-    level_score_map = {'强': 1.0, '中': 0.3, '无法判断': 0, '无': 0}
+    level_score_map = {'强': 1.0, '中': 0.3, '弱': 0.15, '无法判断': 0, '无': 0}
 
     total_score = 0
     max_score = 100
@@ -3620,7 +3707,11 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
     total_score = round(total_score, 1)
 
     # ── Three-tier conclusion ──
-    if all_uncertain:
+    if num_bids < 2:
+        # 围标串标判定本质上是多份标书的交叉比对；单份文件无法判定
+        conclusion = '仅上传1份标书，无法进行交叉比对，请至少上传2份标书'
+        conclusion_level = 'uncertain'
+    elif all_uncertain:
         conclusion = '数据不足，无法做出完整判定'
         conclusion_level = 'uncertain'
     elif total_score >= 50:
@@ -3820,7 +3911,11 @@ def generate_report_docx(analysis):
         for clause, weight in weights.items():
             doc.add_paragraph(f'{clause}: {weight}分', style='List Bullet')
         doc.add_paragraph(
-            '证据强度系数: 强=权重×1.0  中=权重×0.3  无法判断/无=0',
+            '证据强度系数: 强=权重×1.0  中=权重×0.3  弱=权重×0.15  无法判断/无=0',
+            style='List Bullet'
+        )
+        doc.add_paragraph(
+            '协同加分: 第（四）项-a 与 -b 同为"强"时 +1分（上限100分）',
             style='List Bullet'
         )
 

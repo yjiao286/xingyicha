@@ -404,7 +404,7 @@ function renderVerdict() {
         <span style="font-size:13px;font-weight:600;color:var(--text-secondary);">综合风险评分</span>
         <span style="font-size:32px;font-weight:800;color:${scoreColor};line-height:1;">${score}</span>
         <span style="font-size:13px;color:var(--text-muted);">/ ${maxScore}</span>
-        ${v.synergy_bonus > 0 ? '<span style="font-size:10px;color:#d97706;background:#fff7ed;padding:1px 6px;border-radius:4px;">含协同+5</span>' : ''}
+        ${v.synergy_bonus > 0 ? '<span style="font-size:10px;color:#d97706;background:#fff7ed;padding:1px 6px;border-radius:4px;">含协同+' + v.synergy_bonus + '</span>' : ''}
         <span style="flex:1;"></span>
         <span style="font-size:12px;color:var(--text-muted);">满足 <b style="color:#dc2626;">${satisfiedCount}</b> · 无法判断 <b style="color:#d97706;">${uncertainCount}</b> · 不满足 <b style="color:#16a34a;">${notCount}</b></span>
       </div>
@@ -426,15 +426,16 @@ function renderVerdict() {
             <td style="padding:4px 8px;border:1px solid #ddd;">说明</td>
           </tr>
           <tr><td style="padding:4px 8px;border:1px solid #ddd;">第（一）项</td><td style="padding:4px 8px;border:1px solid #ddd;">50分</td><td style="padding:4px 8px;border:1px solid #ddd;">同一单位或个人编制 — 硬证据：WPS ID、授权代表=创建者、最后修改人同一</td></tr>
-          <tr><td style="padding:4px 8px;border:1px solid #ddd;">第（二）项</td><td style="padding:4px 8px;border:1px solid #ddd;">25分</td><td style="padding:4px 8px;border:1px solid #ddd;">同一人办理投标 — 硬证据：授权代表重叠（命中即强）</td></tr>
-          <tr><td style="padding:4px 8px;border:1px solid #ddd;">第（三）项</td><td style="padding:4px 8px;border:1px solid #ddd;">15分</td><td style="padding:4px 8px;border:1px solid #ddd;">项目管理人员相同 — 硬证据：人员高度重叠（≥50%）</td></tr>
+          <tr><td style="padding:4px 8px;border:1px solid #ddd;">第（二）项</td><td style="padding:4px 8px;border:1px solid #ddd;">25分</td><td style="padding:4px 8px;border:1px solid #ddd;">同一人办理投标 — 硬证据：授权代表姓名相同 / 联系电话相同 / 身份证号相同（命中即强）</td></tr>
+          <tr><td style="padding:4px 8px;border:1px solid #ddd;">第（三）项</td><td style="padding:4px 8px;border:1px solid #ddd;">15分</td><td style="padding:4px 8px;border:1px solid #ddd;">项目管理人员相同 — 硬证据：人员高度重叠(≥50%) 或同名项目管理成员(项目经理/技术负责人等)</td></tr>
           <tr><td style="padding:4px 8px;border:1px solid #ddd;">第（四）项-a</td><td style="padding:4px 8px;border:1px solid #ddd;">5分</td><td style="padding:4px 8px;border:1px solid #ddd;">投标文件异常一致 — 软证据：辅助参考</td></tr>
-          <tr><td style="padding:4px 8px;border:1px solid #ddd;">第（四）项-b</td><td style="padding:4px 8px;border:1px solid #ddd;">4分</td><td style="padding:4px 8px;border:1px solid #ddd;">报价呈规律性差异 — 软证据：辅助参考</td></tr>
+          <tr><td style="padding:4px 8px;border:1px solid #ddd;">第（四）项-b</td><td style="padding:4px 8px;border:1px solid #ddd;">4分</td><td style="padding:4px 8px;border:1px solid #ddd;">报价异常一致或呈规律性差异（相同报价可达"强"） — 软证据：辅助参考</td></tr>
         </table>
         <p style="margin:0 0 6px;font-weight:600;">证据强度系数：</p>
         <ul style="margin:0 0 10px;padding-left:18px;">
           <li>强 = 权重 × 1.0（满分）</li>
-          <li>中 = 权重 × 0.3</li>
+          <li>中 = 权重 × 0.3（多项间接证据）</li>
+          <li>弱 = 权重 × 0.15（单条间接证据，已过滤默认模板/通病版本号）</li>
           <li>无法判断 / 无 = 0</li>
           <li>协同加分：第（四）项-a 和 -b 同时为"强" → +1分</li>
         </ul>
@@ -442,8 +443,8 @@ function renderVerdict() {
         <ul style="margin:0;padding-left:18px;">
           <li>≥ 50分 → <span style="color:#dc2626;font-weight:600;">⚠️ 存在围标串标高度嫌疑</span></li>
           <li>15–49分 → <span style="color:#d97706;font-weight:600;">🔍 存在可疑情形，建议进一步核查</span></li>
-          <li>&lt; 10分 → <span style="color:#16a34a;font-weight:600;">✅ 未发现明显围标串标异常</span></li>
-          <li>全维度无法判断 → <span style="color:#9ca3af;font-weight:600;">❓ 数据不足，无法做出完整判定</span></li>
+          <li>&lt; 15分 → <span style="color:#16a34a;font-weight:600;">✅ 未发现明显围标串标异常</span></li>
+          <li>单份文件或全维度无法判断 → <span style="color:#9ca3af;font-weight:600;">❓ 数据不足，无法做出完整判定</span></li>
         </ul>
       </div>
     </details>
@@ -483,7 +484,10 @@ function renderVerdict() {
       html += '</ul>';
     }
     if (c.evidence_level) {
-      const lvlCls = c.evidence_level === '强' ? 'level-strong' : c.evidence_level === '中' ? 'level-medium' : 'level-none';
+      const lvlCls = c.evidence_level === '强' ? 'level-strong'
+        : c.evidence_level === '中' ? 'level-medium'
+        : c.evidence_level === '弱' ? 'level-weak'
+        : 'level-none';
       html += `<span class="evidence-level ${lvlCls}">证据强度: ${c.evidence_level}</span>`;
     }
     html += '</div>';
