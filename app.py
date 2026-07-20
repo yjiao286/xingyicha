@@ -4427,8 +4427,16 @@ def list_history():
         try:
             with open(os.path.join(HISTORY_DIR, fname), 'r', encoding='utf-8') as f:
                 entry = json.load(f)
+            eid = entry.get('id')
+            # Skip entries with missing/null IDs or where the stored id
+            # doesn't match the filename (e.g. leftover test files). This
+            # keeps the list clean and every entry deletable.
+            if not eid or not isinstance(eid, str):
+                continue
+            if fname != f'{eid}.json':
+                continue
             entries.append({
-                'id': entry.get('id'),
+                'id': eid,
                 'time': entry.get('time'),
                 'bid_count': entry.get('bid_count', 0),
                 'ref_count': entry.get('ref_count', 0),
@@ -4471,6 +4479,24 @@ def delete_history(history_id):
     if os.path.exists(fpath):
         os.remove(fpath)
         return jsonify({'ok': True})
+    # Fallback: some legacy files may have a filename that diverged from
+    # their stored id.  Walk the history dir and delete any file whose
+    # internal 'id' field matches the requested history_id.
+    try:
+        for fname in os.listdir(HISTORY_DIR):
+            if not fname.endswith('.json'):
+                continue
+            candidate = os.path.join(HISTORY_DIR, fname)
+            try:
+                with open(candidate, 'r', encoding='utf-8') as f:
+                    entry = json.load(f)
+                if entry.get('id') == history_id:
+                    os.remove(candidate)
+                    return jsonify({'ok': True})
+            except Exception:
+                pass
+    except OSError:
+        pass
     return jsonify({'error': '记录不存在'}), 404
 
 @app.after_request

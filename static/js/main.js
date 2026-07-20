@@ -60,30 +60,31 @@ function startProgress() {
   progressPanel.style.display = 'block';
   progressFill.style.width = '0%';
   progressText.textContent = '上传中...';
-  progressSteps.innerHTML = '<span class="progress-step active">上传文件</span>';
+  progressSteps.innerHTML = '<span class="progress-step active" data-step="upload">上传文件</span>';
 }
 
 function updateProgress(event) {
   progressFill.style.width = event.percent + '%';
   progressText.textContent = event.label;
 
-  // Reset all active states
-  var existing = progressSteps.querySelectorAll('.progress-step');
-  existing.forEach(function(el) { el.classList.remove('active'); });
-
   if (event.detail) {
-    // Find or create step
+    // Reset all active states only when updating steps
+    var existing = progressSteps.querySelectorAll('.progress-step');
+    existing.forEach(function(el) { el.classList.remove('active'); });
+
+    // Find existing step by data-step attribute (set at creation or in
+    // startProgress); update its text in case the detail changed
     var found = null;
     existing.forEach(function(el) {
-      if (el.getAttribute('data-step') === event.step) found = el;
+      if (el.getAttribute('data-step') === event.step) { found = el; }
     });
     if (!found) {
       found = document.createElement('span');
       found.className = 'progress-step';
       found.setAttribute('data-step', event.step);
-      found.textContent = event.detail;
       progressSteps.appendChild(found);
     }
+    found.textContent = event.detail;
     found.classList.add('active');
   }
 }
@@ -1164,6 +1165,8 @@ async function openHistory() {
 
     let html = '<div style="display:flex;flex-direction:column;gap:8px;">';
     entries.forEach(e => {
+      const eid = e.id;
+      if (!eid) return;  // skip invalid/legacy entries without a valid id
       const vText = e.verdict || '';
       let verdictCls = 'success';
       if (vText.includes('高度嫌疑')) verdictCls = 'danger';
@@ -1173,7 +1176,7 @@ async function openHistory() {
       if (e.bid_files.length > 3) filesStr += ` 等${e.bid_files.length}份`;
 
       html += `<div class="history-item">
-        <div class="history-main" onclick="loadHistory('${e.id}')">
+        <div class="history-main" onclick="loadHistory('${eid}')">
           <div class="history-header">
             <span class="history-time">${escapeHtml(e.time)}</span>
             <span class="history-verdict ${verdictCls}">${escapeHtml(e.verdict)}</span>
@@ -1186,7 +1189,7 @@ async function openHistory() {
             ${e.ref_count > 0 ? `<span>📂 ${e.ref_count}份参考</span>` : ''}
           </div>
         </div>
-        <button class="history-delete" title="删除" onclick="event.stopPropagation();deleteHistory('${e.id}')">×</button>
+        <button class="history-delete" title="删除" onclick="event.stopPropagation();deleteHistory('${eid}')">×</button>
       </div>`;
     });
     html += '</div>';
@@ -1198,6 +1201,7 @@ async function openHistory() {
 }
 
 async function loadHistory(id) {
+  if (!id) return;
   document.getElementById('historyModal').style.display = 'none';
   try {
     const resp = await fetch('/api/history/' + id);
@@ -1225,8 +1229,13 @@ async function loadHistory(id) {
 }
 
 async function deleteHistory(id) {
+  if (!id) return;
   if (!confirm('确定删除此记录？')) return;
-  await fetch('/api/history/' + id, { method: 'DELETE' });
+  const resp = await fetch('/api/history/' + id, { method: 'DELETE' });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    alert(err.error || '删除失败，请刷新后重试');
+  }
   openHistory();
 }
 
