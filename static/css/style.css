@@ -206,21 +206,32 @@ body {
   background: var(--bg-surface); border-radius: var(--radius-sm);
   border: 1px solid var(--border-light); box-shadow: var(--shadow);
 }
-.progress-bar { height: 5px; background: #e8ecf1; border-radius: 3px; overflow: hidden; }
+.progress-bar {
+  height: 5px; background: #e8ecf1; border-radius: 3px;
+  overflow: hidden; position: relative;
+}
 .progress-fill {
   height: 100%; width: 0%;
   background: linear-gradient(90deg, var(--accent), #6366f1);
   border-radius: 3px; transition: width .4s ease;
 }
-/* Indeterminate pulse while extracting non-PDF files (no per-page events).
-   Band (1-5%) fits the expanded extraction phase (1-25% of total bar). */
-.progress-fill.extracting {
-  animation: extraction-pulse 2s ease-in-out infinite;
+/* Indeterminate sweep shown while text is being extracted. It is an
+   overlay on the track (not the fill) and is animated with transform -
+   never `width` - so it cannot shrink the bar or fight the inline width
+   set by JS. It sweeps the full track so it stays visible even when the
+   fill is narrow (e.g. the 1% start of extraction or .docx files that
+   emit no per-page events). */
+.progress-bar.extracting::after {
+  content: '';
+  position: absolute; top: 0; bottom: 0; left: 0; width: 30%;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.7), transparent);
+  transform: translateX(-150%);
+  animation: extraction-sweep 1.4s ease-in-out infinite;
+  pointer-events: none;
 }
-@keyframes extraction-pulse {
-  0%   { width: 1%; }
-  50%  { width: 5%; }
-  100% { width: 1%; }
+@keyframes extraction-sweep {
+  0%   { transform: translateX(-150%); }
+  100% { transform: translateX(450%); }
 }
 .progress-text { margin-top: 8px; font-size: 12px; font-weight: 500; color: var(--accent-text); }
 .progress-steps { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }

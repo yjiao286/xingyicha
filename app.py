@@ -3128,7 +3128,7 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
     for group_name in display_names:
         all_text[group_name] = group_texts.get(group_name, '')
 
-    _progress('text', '提取文本内容', 10, f'已提取 {len(display_names)} 份标书的文本')
+    _progress('text', '提取文本内容', 28, f'已提取 {len(display_names)} 份标书的文本')
 
     # 2b. Text extraction — reference documents
     ref_texts = []
@@ -3184,7 +3184,7 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
                     meta[f] = extra[f]
         group_meta[gn] = meta
 
-    _progress('metadata', '元数据比对', 25, f'交叉比对 {len(out_names)} 份标书的创建者、修改者、编辑程序等')
+    _progress('metadata', '元数据比对', 42, f'交叉比对 {len(out_names)} 份标书的创建者、修改者、编辑程序等')
 
     # ── Helper: filter out software/application names from metadata matching ──
     def _is_software_name(val):
@@ -3437,11 +3437,11 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
                     'severity': 'medium'
                 })
 
-    _progress('personnel', '人员交叉比对', 40, f'交叉比对法定代表人、授权代表、项目成员等，发现 {len(personnel_matches)} 处异常')
+    _progress('personnel', '人员交叉比对', 56, f'交叉比对法定代表人、授权代表、项目成员等，发现 {len(personnel_matches)} 处异常')
 
     # ── Text similarity findings (summary before pricing) ──
     total_abnormal = sum(p['abnormal_count'] for p in similarity['pair_results'])
-    _progress('similarity', '文本相似度分析', 55, f'检测 {similarity["total_pairs"]} 组文档对，发现 {total_abnormal} 处异常一致段落')
+    _progress('similarity', '文本相似度分析', 70, f'检测 {similarity["total_pairs"]} 组文档对，发现 {total_abnormal} 处异常一致段落')
 
     # ── Compile pricing comparison (structured format) ──
     price_compare = {}
@@ -3517,7 +3517,7 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
             elif not has_total and has_details:
                 price_no_data_findings.append(f'{gn}仅提取到成本明细，未提取到总价')
 
-    _progress('pricing', '报价分析', 75, f'比较含税总价、不含税总价、分项单价等')
+    _progress('pricing', '报价分析', 84, f'比较含税总价、不含税总价、分项单价等')
 
     # ── Compile verdict ──
     # Project-management roles: a single shared name in one of these roles
@@ -3743,7 +3743,7 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
         if '份标书' in f_text and '两份' in f_text:
             time_findings[i] = f_text.replace('两份标书', f'{bid_word}标书')
 
-    _progress('verdict', '综合判定', 90, f'依据《招标投标法实施条例》第四十条判定：{conclusion}')
+    _progress('verdict', '综合判定', 94, f'依据《招标投标法实施条例》第四十条判定：{conclusion}')
 
     return {
         'metadata': {

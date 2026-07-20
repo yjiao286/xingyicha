@@ -16,6 +16,7 @@ const btnClear = document.getElementById('btnClear');
 const btnDownload = document.getElementById('btnDownload');
 const progressPanel = document.getElementById('progressPanel');
 const progressFill = document.getElementById('progressFill');
+const progressBar = progressFill.parentElement;  // the track (.progress-bar)
 const progressText = document.getElementById('progressText');
 const progressSteps = document.getElementById('progressSteps');
 const resultsSection = document.getElementById('resultsSection');
@@ -96,7 +97,7 @@ function startProgress() {
   _fileIndex = 1;
   _totalFiles = 1;
   _fileShare = 24;
-  progressFill.classList.remove('extracting');
+  progressBar.classList.remove('extracting');
   progressPanel.style.display = 'block';
   progressFill.style.width = '0%';
   progressText.textContent = '上传中...';
@@ -105,29 +106,10 @@ function startProgress() {
 }
 
 function updateProgress(event) {
-  // Snapshot the currently rendered bar width before removing the
-  // pulse animation, so the transition to inline width has no snap.
-  var animatedPct = 0;
-  if (progressFill.classList.contains('extracting')) {
-    var barWrap = progressFill.parentElement;
-    if (barWrap) {
-      var wrapW = barWrap.getBoundingClientRect().width;
-      var fillW = progressFill.getBoundingClientRect().width;
-      animatedPct = wrapW > 0 ? Math.round(fillW / wrapW * 100) : 0;
-    }
-    if (animatedPct > 0) {
-      progressFill.style.width = animatedPct + '%';
-    }
-    progressFill.classList.remove('extracting');
-  }
-  // Use the higher of the animated position and the inline width as the
-  // floor for the monotonic guard (analysis phase must never shrink).
-  if (_progressMaxPct < 1) {
-    _progressMaxPct = Math.max(
-      parseFloat(progressFill.style.width) || 0,
-      animatedPct
-    );
-  }
+  // Entering the analysis phase: stop the extraction sweep. The sweep is
+  // a transform-based overlay, so it never touched `width`; the bar's real
+  // (monotonic) position is already correct - we only drop the class.
+  progressBar.classList.remove('extracting');
   _barSet(event.percent);
   progressText.textContent = event.label;
 
@@ -166,19 +148,17 @@ function updateExtractProgress(event) {
         el.classList.remove('active'); el.classList.add('done');
       }
     });
+    _extractStepEl.classList.remove('done');
     _extractStepEl.classList.add('active');
-    // Record this file's position so subsequent pdf_page events can
-    // compute a cumulative position within its fair sub-range.
+    // Each file owns an equal slice of the 1-25% extraction band. _barSet
+    // is monotonic (it tracks the high-water mark), so file N starts where
+    // file N-1 ended and the bar never moves backward across files.
     _fileIndex = event.fileIndex || 1;
     _totalFiles = event.totalFiles || 1;
-    _fileShare = 24 / _totalFiles;  // 1-25% extraction range
+    _fileShare = 24 / _totalFiles;  // extraction occupies the 1-25% band
     var fileStartPct = 1 + (_fileIndex - 1) * _fileShare;
-    // Never shrink: keep the bar at max(current, fileStart). The first
-    // file starts at 1%, file N starts where file N-1 left off.
-    if (fileStartPct > parseFloat(progressFill.style.width || '0')) {
-      progressFill.style.width = fileStartPct + '%';
-    }
-    progressFill.classList.add('extracting');
+    _barSet(fileStartPct);
+    progressBar.classList.add('extracting');
     progressText.textContent = '提取文字: ' + _extractFileName;
     return;
   }
@@ -186,27 +166,17 @@ function updateExtractProgress(event) {
   if (event.phase === 'pdf_page') {
     var fileFraction = event.total > 0 ? (event.current / event.total) : 0;
     var fileStartPct = 1 + (_fileIndex - 1) * _fileShare;
-    var realPct = Math.min(fileStartPct + Math.round(fileFraction * _fileShare), 25);
-    // Only advance forward — cumulative across files
-    var cur = parseFloat(progressFill.style.width || '0');
-    if (realPct > cur) {
-      progressFill.style.width = realPct + '%';
-    }
-    if (realPct >= fileStartPct + Math.max(2, _fileShare * 0.15)) {
-      progressFill.classList.remove('extracting');
-    }
+    var realPct = Math.min(fileStartPct + fileFraction * _fileShare, 25);
+    _barSet(realPct);
     progressText.textContent = '提取文字: ' + _extractFileName + ' (' + event.current + '/' + event.total + ' 页)';
     return;
   }
 
   if (event.phase === 'pdf_early_stop' || event.phase === 'pdf_done') {
-    progressFill.classList.remove('extracting');
+    // Park the bar at this file's end of band. The sweep stays on for the
+    // next file, or until the analysis phase begins in updateProgress.
     var fileEndPct = Math.min(1 + _fileIndex * _fileShare, 25);
-    progressFill.style.width = fileEndPct + '%';
-    if (_extractStepEl) {
-      _extractStepEl.classList.remove('active');
-      _extractStepEl.classList.add('done');
-    }
+    _barSet(fileEndPct);
     if (event.detail) {
       progressText.textContent = event.detail;
     } else {
@@ -240,7 +210,7 @@ function showWarning(event) {
 
 function finishProgress() {
   _barSet(100);
-  progressFill.classList.remove('extracting');
+  progressBar.classList.remove('extracting');
   progressText.textContent = '分析完成';
   var steps = progressSteps.querySelectorAll('.progress-step');
   steps.forEach(function(el) { el.classList.remove('active'); el.classList.add('done'); });
