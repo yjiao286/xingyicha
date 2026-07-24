@@ -1204,37 +1204,83 @@ function renderModalMatch() {
   document.getElementById('diffLabel1').textContent = ref.file1 || '';
   document.getElementById('diffLabel2').textContent = ref.file2 || '';
   document.getElementById('matchReason').innerHTML = (m.reasons || []).map(r => `<span class="text-match-reason">${escapeHtml(r)}</span>`).join(' ');
-  document.getElementById('diffContent1').innerHTML = renderContextWithHighlight(m.ctx1 || matchText, matchText);
-  document.getElementById('diffContent2').innerHTML = renderContextWithHighlight(m.ctx2 || matchText, matchText);
+  document.getElementById('diffContent1').innerHTML = renderContextWithHighlight(m.ctx1 || matchText, matchText, m.length);
+  document.getElementById('diffContent2').innerHTML = renderContextWithHighlight(m.ctx2 || matchText, matchText, m.length);
 }
 
-function renderContextWithHighlight(ctx, matchText) {
+// Whitespace stripped when the server builds the normalised match text
+// (see _build_normalized_map in app.py).  We mirror the exact set here so the
+// non-whitespace run we search for equals the server-side normalised segment.
+function _isNormWs(c) {
+  return c === ' ' || c === '\t' || c === '\n' || c === '\r' || c === '　' || c === ' ';
+}
+
+function renderContextWithHighlight(ctx, matchText, fullLen) {
   if (!ctx) return escapeHtml(matchText || '');
   if (!matchText) return escapeHtml(ctx);
 
-  // Find match text position in context
-  var idx = ctx.indexOf(matchText);
-  if (idx === -1) {
-    // Try with trimmed match text
-    var trimmed = matchText.replace(/^[\s\n\r]+|[\s\n\r]+$/g, '');
-    idx = ctx.indexOf(trimmed);
-    if (idx !== -1) matchText = trimmed;
+  // matchText comes from one file's extraction, but the context shown for the
+  // *other* file is from that file's extraction.  Matches are computed on
+  // whitespace-normalised text, so both sides share the same non-whitespace
+  // characters yet differ in line breaks / spacing.  A plain indexOf of
+  // matchText against the opposite context therefore usually misses and the
+  // highlight silently vanishes (e.g. the right pane shows no highlight).
+  //
+  // Instead we drop whitespace from the needle and locate it as a contiguous
+  // non-whitespace run inside the context, then extend over the full normalised
+  // match length (fullLen == m.length) so both panes light up the same span.
+  var needle = [];
+  for (var i = 0; i < matchText.length; i++) {
+    var c = matchText.charAt(i);
+    if (!_isNormWs(c)) needle.push(c);
   }
-  if (idx === -1) {
-    // Try finding first 10 chars of match as fallback
-    var short = matchText.substring(0, Math.min(20, matchText.length));
-    idx = ctx.indexOf(short);
-    if (idx !== -1) {
-      // Extend to include full match if possible
-      matchText = ctx.substring(idx, Math.min(ctx.length, idx + matchText.length));
+  if (needle.length === 0) return escapeHtml(ctx);
+
+  var want = (typeof fullLen === 'number' && fullLen > needle.length) ? fullLen : needle.length;
+  var n = ctx.length, start = -1;
+
+  // First index in ctx whose non-whitespace run equals the whole needle.
+  for (var s = 0; s < n; s++) {
+    if (ctx.charAt(s) !== needle[0]) continue;        // only a non-ws char can start
+    var k = 0;
+    for (var j = s; j < n && k < needle.length; j++) {
+      var cj = ctx.charAt(j);
+      if (_isNormWs(cj)) continue;
+      if (cj !== needle[k]) break;
+      k++;
+    }
+    if (k === needle.length) { start = s; break; }
+  }
+
+  // Fallback: the tail of the needle may have drifted between extractions, so
+  // match just its first ~16 non-whitespace chars and still extend to fullLen.
+  if (start === -1) {
+    var headLen = Math.min(16, needle.length);
+    for (var s2 = 0; s2 < n; s2++) {
+      if (ctx.charAt(s2) !== needle[0]) continue;
+      var k2 = 0;
+      for (var j2 = s2; j2 < n && k2 < headLen; j2++) {
+        var cj2 = ctx.charAt(j2);
+        if (_isNormWs(cj2)) continue;
+        if (cj2 !== needle[k2]) break;
+        k2++;
+      }
+      if (k2 === headLen) { start = s2; break; }
     }
   }
 
-  if (idx === -1) return escapeHtml(ctx);
+  if (start === -1) return escapeHtml(ctx);
 
-  var before = ctx.substring(0, idx);
-  var after = ctx.substring(idx + matchText.length);
-  return escapeHtml(before) + '<mark class="match-highlight">' + escapeHtml(matchText) + '</mark>' + escapeHtml(after);
+  // Extend over `want` non-whitespace chars starting at `start`.
+  var end = start, counted = 0;
+  for (var e = start; e < n && counted < want; e++) {
+    end = e + 1;
+    if (!_isNormWs(ctx.charAt(e))) counted++;
+  }
+
+  return escapeHtml(ctx.substring(0, start)) +
+         '<mark class="match-highlight">' + escapeHtml(ctx.substring(start, end)) + '</mark>' +
+         escapeHtml(ctx.substring(end));
 }
 
 // ── History ──
