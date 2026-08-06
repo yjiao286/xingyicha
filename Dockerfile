@@ -16,8 +16,14 @@ COPY app.py .
 COPY templates/ templates/
 COPY static/ static/
 
-# Create upload directory
-RUN mkdir -p /data/uploads
+# Create upload + history directories. UPLOAD_FOLDER / HISTORY_DIR point at
+# them so uploads survive worker restarts and analysis history persists
+# across container recreations (mount both as volumes in docker-compose).
+RUN mkdir -p /data/uploads /data/history
+ENV UPLOAD_FOLDER=/data/uploads
+ENV HISTORY_DIR=/data/history
+ENV MAX_CONTENT_LENGTH_MB=200
+ENV ANALYSIS_TIMEOUT=270
 
 EXPOSE 5001
 

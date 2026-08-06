@@ -6,4 +6,5 @@ services:
       - "5001:5001"
     volumes:
       - ./uploads:/data/uploads
+      - ./history:/data/history
     restart: unless-stopped

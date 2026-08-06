@@ -43,7 +43,7 @@ refUploadArea.addEventListener('drop', e => {
 });
 refFileInput.addEventListener('change', e => addFiles(e.target.files, 'ref'));
 
-const VALID_EXTS = ['.docx', '.doc', '.pdf'];
+const VALID_EXTS = ['.docx', '.doc', '.pdf', '.txt'];
 
 function escapeHtml(str) {
   const div = document.createElement('div');
@@ -229,7 +229,7 @@ function addFiles(files, type) {
   const validFiles = Array.from(files).filter(f =>
     VALID_EXTS.some(ext => f.name.toLowerCase().endsWith(ext))
   );
-  if (validFiles.length === 0) { alert('请选择 .docx / .doc / .pdf 格式的文件'); return; }
+  if (validFiles.length === 0) { alert('请选择 .docx / .doc / .pdf / .txt 格式的文件'); return; }
 
   const target = type === 'ref' ? selectedRefFiles : selectedFiles;
   validFiles.forEach(f => {
@@ -251,7 +251,7 @@ function renderAllFileLists() {
       const key = f.name + '_' + f.size;
       if (!(key in fileGroups)) {
         const defaultGroup = f.name.replace(/[（(]?(商务|技术|投标|响应)[部分卷册文件]*[）)]?/g, '')
-          .replace(/\.(docx|doc|pdf)$/i, '').trim() || f.name;
+          .replace(/\.(docx|doc|pdf|txt)$/i, '').trim() || f.name;
         fileGroups[key] = defaultGroup;
       }
       const group = fileGroups[key] || '';
@@ -336,7 +336,7 @@ function updateButtons() {
 // ── Analyze (streaming progress with NDJSON) ──
 btnAnalyze.addEventListener('click', async () => {
   if (selectedFiles.length < 2) {
-    alert('请至少上传2份标书文件(.docx/.doc/.pdf)');
+    alert('请至少上传2份标书文件(.docx/.doc/.pdf/.txt)');
     return;
   }
 
@@ -636,7 +636,7 @@ function renderMetadata() {
     fhtml += `<h3 style="margin:10px 0 6px;font-size:14px;color:#4361ee;">${escapeHtml(shortName)}</h3>`;
     fhtml += '<table class="data-table"><thead><tr><th>属性</th><th>值</th></tr></thead><tbody>';
     const rows = [
-      ['文件类型', f._error ? '读取异常' : (f.name.endsWith('.pdf') ? 'PDF' : f.name.endsWith('.doc') ? 'DOC(旧版)' : 'DOCX')],
+      ['文件类型', f._error ? '读取异常' : (f.name.endsWith('.pdf') ? 'PDF' : f.name.endsWith('.doc') ? 'DOC(旧版)' : f.name.endsWith('.txt') ? 'TXT(纯文本)' : 'DOCX')],
       ['创建者', f.creator], ['最后保存者', f.last_modified_by],
       ['创建时间', f.created], ['修改时间', f.modified],
       ['修订次数', f.revision], ['编辑时长(分钟)', f.total_edit_time],
@@ -1208,79 +1208,88 @@ function renderModalMatch() {
   document.getElementById('diffContent2').innerHTML = renderContextWithHighlight(m.ctx2 || matchText, matchText, m.length);
 }
 
-// Whitespace stripped when the server builds the normalised match text
-// (see _build_normalized_map in app.py).  We mirror the exact set here so the
-// non-whitespace run we search for equals the server-side normalised segment.
-function _isNormWs(c) {
-  return c === ' ' || c === '\t' || c === '\n' || c === '\r' || c === '　' || c === ' ';
+// Server-side matching (see _build_normalized_map / _FOLD_TABLE in app.py)
+// drops whitespace + invisible chars and folds case / full-width / CJK
+// punctuation, so two extractions that differ only in those forms still
+// match. We mirror that normalization here to locate the highlight span in
+// EITHER pane's raw context, then map back to raw indices so the displayed
+// text stays faithful to the source document.
+var _SKIP_RE = /[\s\u0085\u001c\u001d\u001e\u001f­​‌‍﻿]/;
+var _FOLD = {};
+(function () {
+  for (var o = 0xFF01; o < 0xFF5F; o++) {            // full-width !-~ -> ascii
+    var d = String.fromCharCode(o - 0xFEE0);
+    if (d >= 'A' && d <= 'Z') d = d.toLowerCase();   // fold letters to lowercase
+    _FOLD[o] = d;
+  }
+  for (var c = 65; c <= 90; c++) { _FOLD[c] = String.fromCharCode(c + 32); }
+  var punct = {
+    '，': ',', '。': '.', '、': ',', '；': ';', '：': ':', '？': '?', '！': '!',
+    '‘': "'", '’': "'", '‚': "'", '“': '"', '”': '"', '„': '"',
+    '（': '(', '）': ')', '【': '[', '】': ']', '〔': '[', '〕': ']',
+    '《': '<', '》': '>', '〈': '<', '〉': '>', '『': '[', '』': ']',
+    '–': '-', '—': '-', '―': '-', '−': '-', '…': '.', '·': '.',
+    '～': '~', '％': '%', '＋': '+', '×': 'x', '÷': '/', '￥': '¥'
+  };
+  for (var k in punct) { _FOLD[k.charCodeAt(0)] = punct[k]; }
+})();
+function _foldChar(c) { return _FOLD[c.charCodeAt(0)] || c; }
+function _buildNormMap(text) {
+  var chars = [], pos = [];
+  for (var i = 0; i < text.length; i++) {
+    var c = text.charAt(i);
+    if (_SKIP_RE.test(c)) continue;
+    chars.push(_foldChar(c)); pos.push(i);
+  }
+  return { s: chars.join(''), p: pos };
 }
-
 function renderContextWithHighlight(ctx, matchText, fullLen) {
   if (!ctx) return escapeHtml(matchText || '');
   if (!matchText) return escapeHtml(ctx);
-
-  // matchText comes from one file's extraction, but the context shown for the
-  // *other* file is from that file's extraction.  Matches are computed on
-  // whitespace-normalised text, so both sides share the same non-whitespace
-  // characters yet differ in line breaks / spacing.  A plain indexOf of
-  // matchText against the opposite context therefore usually misses and the
-  // highlight silently vanishes (e.g. the right pane shows no highlight).
-  //
-  // Instead we drop whitespace from the needle and locate it as a contiguous
-  // non-whitespace run inside the context, then extend over the full normalised
-  // match length (fullLen == m.length) so both panes light up the same span.
-  var needle = [];
-  for (var i = 0; i < matchText.length; i++) {
-    var c = matchText.charAt(i);
-    if (!_isNormWs(c)) needle.push(c);
-  }
+  var cm = _buildNormMap(ctx);
+  var needle = _buildNormMap(matchText).s;
   if (needle.length === 0) return escapeHtml(ctx);
-
   var want = (typeof fullLen === 'number' && fullLen > needle.length) ? fullLen : needle.length;
-  var n = ctx.length, start = -1;
-
-  // First index in ctx whose non-whitespace run equals the whole needle.
-  for (var s = 0; s < n; s++) {
-    if (ctx.charAt(s) !== needle[0]) continue;        // only a non-ws char can start
-    var k = 0;
-    for (var j = s; j < n && k < needle.length; j++) {
-      var cj = ctx.charAt(j);
-      if (_isNormWs(cj)) continue;
-      if (cj !== needle[k]) break;
-      k++;
-    }
-    if (k === needle.length) { start = s; break; }
+  var start = cm.s.indexOf(needle);
+  if (start < 0) {
+    // Fallback: the tail may have drifted between extractions; match the head.
+    var head = needle.slice(0, Math.min(16, needle.length));
+    start = cm.s.indexOf(head);
   }
-
-  // Fallback: the tail of the needle may have drifted between extractions, so
-  // match just its first ~16 non-whitespace chars and still extend to fullLen.
-  if (start === -1) {
-    var headLen = Math.min(16, needle.length);
-    for (var s2 = 0; s2 < n; s2++) {
-      if (ctx.charAt(s2) !== needle[0]) continue;
-      var k2 = 0;
-      for (var j2 = s2; j2 < n && k2 < headLen; j2++) {
-        var cj2 = ctx.charAt(j2);
-        if (_isNormWs(cj2)) continue;
-        if (cj2 !== needle[k2]) break;
-        k2++;
+  if (start < 0) {
+    // Fallback 2 (near-duplicate matches): the two extractions differ by
+    // scattered edits, so no single run of the needle exists in this pane.
+    // Anchor the highlight on the longest exact substring shared between the
+    // needle and the normalized ctx (rolling DP), then extend to `want`
+    // chars around the anchor so the whole match region lights up.
+    var bestStart = -1, bestLen = 0, nl = needle.length, cl = cm.s.length;
+    var dp = new Array(cl + 1).fill(0);
+    for (var i2 = 1; i2 <= nl; i2++) {
+      var prev = 0;
+      for (var j2 = 1; j2 <= cl; j2++) {
+        var tmp = dp[j2];
+        if (needle.charAt(i2 - 1) === cm.s.charAt(j2 - 1)) {
+          dp[j2] = prev + 1;
+          if (dp[j2] > bestLen) { bestLen = dp[j2]; bestStart = j2 - dp[j2]; }
+        } else { dp[j2] = 0; }
+        prev = tmp;
       }
-      if (k2 === headLen) { start = s2; break; }
+    }
+    if (bestLen >= 8 && bestStart >= 0) {
+      start = bestStart;
+      // Extend left/right around the anchor to cover `want` chars (clamped).
+      var left = Math.min(start, Math.floor((want - bestLen) / 2));
+      start = start - left;
     }
   }
-
-  if (start === -1) return escapeHtml(ctx);
-
-  // Extend over `want` non-whitespace chars starting at `start`.
-  var end = start, counted = 0;
-  for (var e = start; e < n && counted < want; e++) {
-    end = e + 1;
-    if (!_isNormWs(ctx.charAt(e))) counted++;
-  }
-
-  return escapeHtml(ctx.substring(0, start)) +
-         '<mark class="match-highlight">' + escapeHtml(ctx.substring(start, end)) + '</mark>' +
-         escapeHtml(ctx.substring(end));
+  if (start < 0) return escapeHtml(ctx);
+  var end = Math.min(start + want, cm.s.length);
+  if (end <= start) end = start + 1;
+  var rawStart = cm.p[start];
+  var rawEnd = cm.p[end - 1] + 1;
+  return escapeHtml(ctx.substring(0, rawStart)) +
+         '<mark class="match-highlight">' + escapeHtml(ctx.substring(rawStart, rawEnd)) + '</mark>' +
+         escapeHtml(ctx.substring(rawEnd));
 }
 
 // ── History ──
