@@ -23,6 +23,9 @@ const resultsSection = document.getElementById('resultsSection');
 
 // ── Bid File Selection ──
 uploadArea.addEventListener('click', () => fileInput.click());
+uploadArea.addEventListener('keydown', e => {
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInput.click(); }
+});
 uploadArea.addEventListener('dragover', e => { e.preventDefault(); uploadArea.classList.add('drag-over'); });
 uploadArea.addEventListener('dragleave', () => uploadArea.classList.remove('drag-over'));
 uploadArea.addEventListener('drop', e => {
@@ -34,6 +37,9 @@ fileInput.addEventListener('change', e => addFiles(e.target.files, 'bid'));
 
 // ── Reference File Selection ──
 refUploadArea.addEventListener('click', () => refFileInput.click());
+refUploadArea.addEventListener('keydown', e => {
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); refFileInput.click(); }
+});
 refUploadArea.addEventListener('dragover', e => { e.preventDefault(); refUploadArea.classList.add('drag-over'); });
 refUploadArea.addEventListener('dragleave', () => refUploadArea.classList.remove('drag-over'));
 refUploadArea.addEventListener('drop', e => {

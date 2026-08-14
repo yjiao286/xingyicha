@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700;9..40,800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/css/style.css?v=2">
+<link rel="stylesheet" href="/static/css/style.css?v=3">
 </head>
 <body>
 
@@ -49,28 +49,34 @@
     <div class="upload-row">
       <div class="upload-col">
         <label class="col-label">标书文件 <span class="required">*</span></label>
-        <div class="upload-area" id="uploadArea">
+        <div class="upload-area" id="uploadArea" tabindex="0" role="button" aria-label="上传标书文件">
           <div class="upload-icon">
             <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
               <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
             </svg>
           </div>
           <p class="upload-text">拖拽标书文件到此处</p>
-          <p class="upload-hint">.docx .doc .pdf .txt — 至少 2 份</p>
+          <p class="upload-hint">或点击选择文件 — 至少 2 份</p>
+          <div class="format-chips">
+            <span>.docx</span><span>.doc</span><span>.pdf</span><span>.txt</span>
+          </div>
         </div>
         <input type="file" id="fileInput" multiple accept=".docx,.doc,.pdf,.txt" hidden>
         <div class="file-list" id="fileList"></div>
       </div>
       <div class="upload-col">
         <label class="col-label">招标文件 / 技术要求 <span class="optional">可选</span></label>
-        <div class="upload-area upload-area-ref" id="refUploadArea">
+        <div class="upload-area upload-area-ref" id="refUploadArea" tabindex="0" role="button" aria-label="上传招标文件或技术要求">
           <div class="upload-icon">
             <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
               <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
             </svg>
           </div>
           <p class="upload-text">拖拽招标文件</p>
-          <p class="upload-hint">用于扣减模板内容 — .docx .doc .pdf .txt</p>
+          <p class="upload-hint">或点击选择 — 用于扣减模板内容</p>
+          <div class="format-chips">
+            <span>.docx</span><span>.doc</span><span>.pdf</span><span>.txt</span>
+          </div>
         </div>
         <input type="file" id="refFileInput" multiple accept=".docx,.doc,.pdf,.txt" hidden>
         <div class="file-list" id="refFileList"></div>
@@ -83,8 +89,8 @@
       </button>
       <button class="btn btn-ghost" id="btnClear">清空</button>
     </div>
-    <div class="upload-tips" style="margin-top:8px;padding:10px 14px;background:#f0f7ff;border:1px solid #b3d4ff;border-radius:6px;font-size:12px;color:#0052cc;display:flex;align-items:flex-start;gap:8px;">
-      <span style="flex-shrink:0;font-size:16px;">💡</span>
+    <div class="upload-tips">
+      <span class="upload-tips-icon">💡</span>
       <span>请上传<strong>可复制文字版</strong>PDF或Word文件。扫描件/全图片PDF无法提取文字，将导致分析无结果。大文件（>100MB）处理较慢，建议提前压缩。</span>
     </div>
     <div class="progress-panel" id="progressPanel" style="display:none">
