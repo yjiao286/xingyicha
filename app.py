@@ -4801,6 +4801,132 @@ def single_upload_and_analyze():
         return jsonify({'error': str(e)}), 500
 
 
+def _verdict_level(entry):
+    """Conclusion level of a history entry, preferring the authoritative
+    verdict.conclusion_level and falling back to parsing the conclusion text
+    (legacy entries) the same way the frontend history list does."""
+    data = entry.get('data') or {}
+    level = (data.get('verdict') or {}).get('conclusion_level')
+    if level in ('high', 'medium', 'low', 'uncertain'):
+        return level
+    text = entry.get('verdict') or ''
+    if '高度嫌疑' in text:
+        return 'high'
+    if '可疑' in text or '核查' in text:
+        return 'medium'
+    if '数据不足' in text or '无法' in text:
+        return 'uncertain'
+    return 'low'
+
+
+@app.route('/api/stats', methods=['GET'])
+def get_stats():
+    """Aggregate all history entries for the statistics page.
+
+    One pass over HISTORY_DIR (same fault tolerance as list_history):
+    corrupt or legacy entries are skipped instead of failing the whole page.
+    """
+    DIMENSIONS = ('metadata', 'personnel', 'similarity', 'pricing')
+    stats = {
+        'total_analyses': 0,
+        'total_documents': 0,
+        'total_pairs': 0,
+        'total_abnormal_matches': 0,
+        'total_template_matches': 0,
+        'verdict_counts': {'high': 0, 'medium': 0, 'low': 0, 'uncertain': 0},
+        'avg_score': None,
+        'timeline': [],            # per-day {date, count, avg_score, high}
+        'scores_over_time': [],    # per-analysis {time, score, level, id}
+        'dimension_hits': {d: 0 for d in DIMENSIONS},    # analyses touching d
+        'dimension_totals': {d: 0 for d in DIMENSIONS},  # accumulated findings
+        'recent': [],
+    }
+    loaded = []
+    try:
+        fnames = sorted(f for f in os.listdir(HISTORY_DIR) if f.endswith('.json'))
+    except OSError:
+        fnames = []
+    for fname in fnames:
+        try:
+            with open(os.path.join(HISTORY_DIR, fname), 'r', encoding='utf-8') as f:
+                entry = json.load(f)
+        except Exception:
+            continue
+        if not entry.get('id'):
+            continue
+        loaded.append(entry)
+
+    scores = []
+    by_day = {}
+    for entry in loaded:  # filenames sort by timestamp -> chronological order
+        level = _verdict_level(entry)
+        data = entry.get('data') or {}
+        verdict = data.get('verdict') or {}
+        score = verdict.get('score')
+        score = float(score) if isinstance(score, (int, float)) else None
+
+        stats['total_analyses'] += 1
+        stats['total_documents'] += entry.get('bid_count') or 0
+        stats['total_pairs'] += entry.get('total_pairs') or 0
+        stats['total_abnormal_matches'] += entry.get('abnormal_matches') or 0
+        stats['total_template_matches'] += entry.get('template_matches') or 0
+        stats['verdict_counts'][level] += 1
+        if score is not None:
+            scores.append(score)
+
+        ts = data.get('text_similarity') or {}
+        sub = ts.get('substantial_abnormal')
+        sub_count = len(sub) if isinstance(sub, list) else (sub or 0)
+        hits = {
+            'metadata': sum(1 for m in (data.get('metadata') or {}).get('matches', [])
+                            if m.get('severity') != 'info'),
+            'personnel': len((data.get('personnel') or {}).get('cross_matches', [])),
+            'similarity': sub_count,
+            'pricing': len((data.get('pricing') or {}).get('findings', [])),
+        }
+        for dim, cnt in hits.items():
+            if cnt > 0:
+                stats['dimension_hits'][dim] += 1
+                stats['dimension_totals'][dim] += cnt
+
+        time_str = entry.get('time') or ''
+        stats['scores_over_time'].append({
+            'time': time_str, 'score': score, 'level': level, 'id': entry['id'],
+        })
+        day = time_str.split(' ')[0] if time_str else '未知'
+        slot = by_day.setdefault(day, {'count': 0, 'scores': [], 'high': 0})
+        slot['count'] += 1
+        if score is not None:
+            slot['scores'].append(score)
+        if level == 'high':
+            slot['high'] += 1
+
+    if scores:
+        stats['avg_score'] = round(sum(scores) / len(scores), 1)
+    stats['timeline'] = [
+        {
+            'date': day,
+            'count': slot['count'],
+            'avg_score': round(sum(slot['scores']) / len(slot['scores']), 1)
+            if slot['scores'] else None,
+            'high': slot['high'],
+        }
+        for day, slot in by_day.items()
+    ]
+    stats['recent'] = [
+        {
+            'id': e.get('id'),
+            'time': e.get('time'),
+            'bid_count': e.get('bid_count', 0),
+            'verdict': e.get('verdict', ''),
+            'level': _verdict_level(e),
+            'score': ((e.get('data') or {}).get('verdict') or {}).get('score'),
+        }
+        for e in reversed(loaded[-8:])  # newest first
+    ]
+    return jsonify(stats)
+
+
 @app.route('/api/history', methods=['GET'])
 def list_history():
     """List all saved analysis history entries."""

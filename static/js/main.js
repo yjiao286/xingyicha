@@ -1570,3 +1570,418 @@ document.getElementById('historyModal').addEventListener('click', e => {
     document.getElementById('historyModal').style.display = 'none';
   }
 });
+
+// ══════════════════════════════════════════════════════════
+// 数据统计页 (Stats View)
+// ══════════════════════════════════════════════════════════
+
+const LEVEL_META = {
+  high:      { label: '高度嫌疑', color: '#dc2626' },
+  medium:    { label: '可疑',     color: '#d97706' },
+  low:       { label: '未见异常', color: '#16a34a' },
+  uncertain: { label: '数据不足', color: '#94a3b8' },
+};
+
+let _statsData = null;        // last fetched /api/stats payload
+let _statsAnimated = false;   // skip entry animations on resize re-render
+
+function _prefersReducedMotion() {
+  return window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
+// ── View switching ──
+function switchView(name) {
+  const isStats = name === 'stats';
+  document.getElementById('view-analyze').hidden = isStats;
+  document.getElementById('view-stats').hidden = !isStats;
+  document.getElementById('navLinkAnalyze').classList.toggle('active', !isStats);
+  document.getElementById('navLinkStats').classList.toggle('active', isStats);
+  window.scrollTo({ top: 0 });
+  if (isStats) refreshStats();
+  if ((location.hash === '#stats') !== isStats) {
+    history.replaceState(null, '', isStats ? '#stats' : '#analyze');
+  }
+}
+// Deep-link support: /#stats opens the stats view on load
+if (location.hash === '#stats') switchView('stats');
+
+// Sticky nav gains a shadow once the page scrolls
+window.addEventListener('scroll', function() {
+  const nav = document.getElementById('siteNav');
+  if (nav) nav.classList.toggle('scrolled', window.scrollY > 4);
+}, { passive: true });
+
+document.getElementById('btnRefreshStats').addEventListener('click', () => refreshStats(true));
+
+// Re-layout the px-based trend chart on viewport changes (no refetch)
+let _statsResizeTimer = null;
+window.addEventListener('resize', function() {
+  if (document.getElementById('view-stats').hidden || !_statsData) return;
+  clearTimeout(_statsResizeTimer);
+  _statsResizeTimer = setTimeout(function() {
+    _statsAnimated = true;
+    renderStats(_statsData);
+  }, 200);
+});
+
+async function refreshStats(force) {
+  const body = document.getElementById('statsBody');
+  if (force || !_statsData) {
+    body.innerHTML = '<div class="stats-error" style="color:var(--text-muted);">加载中...</div>';
+  }
+  try {
+    const resp = await fetch('/api/stats');
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    _statsData = await resp.json();
+    _statsAnimated = false;  // fresh fetch -> play entry animations
+    renderStats(_statsData);
+    document.getElementById('statsUpdated').textContent =
+      '更新于 ' + new Date().toLocaleTimeString('zh-CN', { hour12: false });
+  } catch (err) {
+    console.error('Stats fetch failed:', err);
+    body.innerHTML = '<div class="stats-error">统计加载失败，请确认服务器已启动</div>';
+  }
+}
+
+// ── Number count-up ──
+function _countUp(el, target, decimals) {
+  const fmt = function(v) {
+    return v.toLocaleString('zh-CN', {
+      minimumFractionDigits: decimals || 0,
+      maximumFractionDigits: decimals || 0,
+    });
+  };
+  if (_prefersReducedMotion() || !target) { el.textContent = fmt(target || 0); return; }
+  const dur = 900, t0 = performance.now();
+  (function frame(t) {
+    const p = Math.min(1, (t - t0) / dur);
+    const eased = 1 - Math.pow(1 - p, 3);
+    el.textContent = fmt(target * eased);
+    if (p < 1) requestAnimationFrame(frame);
+  })(t0);
+}
+
+// ── Render whole stats page ──
+function renderStats(s) {
+  const body = document.getElementById('statsBody');
+
+  if (!s.total_analyses) {
+    body.innerHTML = `
+      <div class="stats-empty">
+        <div class="stats-empty-icon">
+          <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/><path d="M3 3v18h18"/></svg>
+        </div>
+        <h3>暂无分析数据</h3>
+        <p>完成首次围串标分析后，此处将展示风险分布、评分趋势与维度统计。</p>
+        <button class="btn btn-primary" onclick="switchView('analyze')">前往分析</button>
+      </div>`;
+    return;
+  }
+
+  const total = s.total_analyses;
+  const high = s.verdict_counts.high || 0;
+  const highPct = Math.round(high / total * 100);
+
+  // ── KPI cards ──
+  body.innerHTML = `
+    <div class="kpi-grid">
+      <div class="kpi-card" style="--kpi-icon-bg:#eff4ff;--kpi-icon-fg:#1d4ed8;--kpi-glow:rgba(37,99,235,.07);">
+        <div class="kpi-icon"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></div>
+        <div class="kpi-num" id="kpiAnalyses">0</div>
+        <div class="kpi-label">累计分析</div>
+        <div class="kpi-note accent">覆盖 ${s.total_documents.toLocaleString()} 份标书</div>
+      </div>
+      <div class="kpi-card" style="--kpi-icon-bg:#eef2ff;--kpi-icon-fg:#4f46e5;--kpi-glow:rgba(79,70,229,.07);">
+        <div class="kpi-icon"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V9z"/><polyline points="13 2 13 9 20 9"/></svg></div>
+        <div class="kpi-num" id="kpiDocs">0</div>
+        <div class="kpi-label">分析标书总数</div>
+        <div class="kpi-note">${s.total_pairs.toLocaleString()} 组两两比对</div>
+      </div>
+      <div class="kpi-card" style="--kpi-icon-bg:#fef2f2;--kpi-icon-fg:#dc2626;--kpi-glow:rgba(220,38,38,.07);">
+        <div class="kpi-icon"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></div>
+        <div class="kpi-num" id="kpiHigh" style="color:#dc2626;">0</div>
+        <div class="kpi-label">高风险案件</div>
+        <div class="kpi-note danger">占全部分析 ${highPct}%</div>
+      </div>
+      <div class="kpi-card" style="--kpi-icon-bg:#fffbeb;--kpi-icon-fg:#d97706;--kpi-glow:rgba(217,119,6,.08);">
+        <div class="kpi-icon"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 100 20 10 10 0 000-20z"/><path d="M12 6v6l4 2"/></svg></div>
+        <div class="kpi-num" id="kpiAvg">0</div>
+        <div class="kpi-label">平均风险评分</div>
+        <div class="kpi-note">满分 100 · 单次最高 ${_maxScoreSeen(s)} 分</div>
+      </div>
+      <div class="kpi-card" style="--kpi-icon-bg:#f0fdf4;--kpi-icon-fg:#16a34a;--kpi-glow:rgba(22,163,74,.07);">
+        <div class="kpi-icon"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></div>
+        <div class="kpi-num" id="kpiAbnormal" style="color:#d97706;">0</div>
+        <div class="kpi-label">累计异常匹配段</div>
+        <div class="kpi-note success">另过滤模板段 ${s.total_template_matches.toLocaleString()} 处</div>
+      </div>
+    </div>
+
+    <div class="stats-charts">
+      <div class="chart-card">
+        <div class="chart-card-title">结论分布</div>
+        <div class="chart-card-sub">按综合判定结论统计 ${total} 次分析</div>
+        <div class="donut-wrap">
+          ${_donutSVG(s.verdict_counts, total)}
+          <div class="donut-legend">
+            ${['high', 'medium', 'low', 'uncertain'].map(function(k) {
+              const cnt = s.verdict_counts[k] || 0;
+              const pct = total ? Math.round(cnt / total * 100) : 0;
+              return `<div class="legend-item">
+                <span class="legend-dot" style="background:${LEVEL_META[k].color};"></span>
+                <span class="legend-name">${LEVEL_META[k].label}</span>
+                <span class="legend-count">${cnt}</span>
+                <span class="legend-pct">${pct}%</span>
+              </div>`;
+            }).join('')}
+          </div>
+        </div>
+      </div>
+      <div class="chart-card wide">
+        <div class="chart-card-title">风险评分趋势</div>
+        <div class="chart-card-sub">按分析时序排列 · 虚线为 15 分（可疑）与 50 分（高度嫌疑）阈值</div>
+        <div class="trend-wrap" id="trendWrap"></div>
+        <div class="trend-legend">
+          ${['high', 'medium', 'low', 'uncertain'].map(k =>
+            `<span><i style="background:${LEVEL_META[k].color};"></i>${LEVEL_META[k].label}</span>`).join('')}
+        </div>
+      </div>
+    </div>
+
+    <div class="chart-card">
+      <div class="chart-card-title">风险维度涉及情况</div>
+      <div class="chart-card-sub">出现对应维度风险线索的案件数（条形）与累计命中条数（右侧）</div>
+      <div class="dim-bars" id="dimBars"></div>
+    </div>
+
+    <div class="chart-card">
+      <div class="chart-card-title">最近分析记录</div>
+      <div class="chart-card-sub">点击「查看」载入完整分析结果</div>
+      <div style="margin-top:14px;">${_recentTableHTML(s.recent)}</div>
+    </div>
+  `;
+
+  // KPI count-ups
+  _countUp(document.getElementById('kpiAnalyses'), s.total_analyses, 0);
+  _countUp(document.getElementById('kpiDocs'), s.total_documents, 0);
+  _countUp(document.getElementById('kpiHigh'), high, 0);
+  _countUp(document.getElementById('kpiAvg'), s.avg_score || 0, 1);
+  _countUp(document.getElementById('kpiAbnormal'), s.total_abnormal_matches, 0);
+
+  _renderTrend(s.scores_over_time || []);
+  _renderDimBars(s);
+
+  // Donut draw-in: swap the zero-length dasharray for the real one after
+  // the initial paint so the CSS transition animates the segments.
+  if (!_statsAnimated) {
+    requestAnimationFrame(function() {
+      requestAnimationFrame(function() {
+        document.querySelectorAll('.donut-seg').forEach(function(c) {
+          c.setAttribute('stroke-dasharray', c.getAttribute('data-final'));
+        });
+      });
+    });
+  }
+}
+
+function _maxScoreSeen(s) {
+  let max = 0;
+  (s.scores_over_time || []).forEach(function(p) {
+    if (typeof p.score === 'number' && p.score > max) max = p.score;
+  });
+  return max % 1 === 0 ? max : max.toFixed(1);
+}
+
+// ── Donut chart (pure SVG) ──
+function _donutSVG(counts, total) {
+  const R = 74, C = 2 * Math.PI * R;
+  const keys = ['high', 'medium', 'low', 'uncertain'].filter(k => (counts[k] || 0) > 0);
+  const gap = keys.length > 1 ? 3 : 0;  // px gap between segments
+  let startFrac = 0, segs = '';
+  keys.forEach(function(k) {
+    const frac = (counts[k] || 0) / total;
+    const len = Math.max(frac * C - gap, 0.5);
+    const startDeg = startFrac * 360 - 90;
+    const finalDash = len.toFixed(2) + ' ' + (C - len).toFixed(2);
+    segs += `<circle class="donut-seg" cx="100" cy="100" r="${R}"
+      stroke="${LEVEL_META[k].color}" stroke-width="26"
+      stroke-dasharray="${_statsAnimated ? finalDash : '0 ' + C.toFixed(2)}"
+      data-final="${finalDash}"
+      transform="rotate(${startDeg.toFixed(2)} 100 100)"></circle>`;
+    startFrac += frac;
+  });
+  return `<svg class="donut-svg" viewBox="0 0 200 200" role="img" aria-label="结论分布环图">
+    ${segs}
+    <text class="donut-center-num" x="100" y="98" text-anchor="middle">${total}</text>
+    <text class="donut-center-label" x="100" y="116" text-anchor="middle">次分析</text>
+  </svg>`;
+}
+
+// ── Trend chart (px-coordinate SVG so tooltips map 1:1) ──
+function _renderTrend(points) {
+  const wrap = document.getElementById('trendWrap');
+  if (!wrap) return;
+  const pts = points.filter(function(p) { return typeof p.score === 'number'; });
+  if (pts.length === 0) {
+    wrap.innerHTML = '<p class="empty-note">暂无评分数据</p>';
+    return;
+  }
+
+  wrap.innerHTML = '<svg class="trend-svg" id="trendSvg"></svg><div class="trend-tooltip" id="trendTooltip"></div>';
+  const svg = document.getElementById('trendSvg');
+  const W = Math.max(svg.clientWidth || 0, 320);
+  const H = Math.max(svg.clientHeight || 0, 236);
+  svg.setAttribute('width', W);
+  svg.setAttribute('height', H);
+
+  const padL = 36, padR = 16, padT = 16, padB = 28;
+  const innerW = W - padL - padR, innerH = H - padT - padB;
+  const x = function(i) {
+    return pts.length === 1 ? padL + innerW / 2 : padL + innerW * i / (pts.length - 1);
+  };
+  const y = function(score) { return padT + innerH * (1 - score / 100); };
+
+  let grid = '', labels = '';
+  [0, 25, 50, 75, 100].forEach(function(v) {
+    const gy = y(v);
+    grid += `<line class="trend-grid" x1="${padL}" y1="${gy}" x2="${W - padR}" y2="${gy}"></line>`;
+    labels += `<text class="trend-axis-label" x="${padL - 8}" y="${gy + 3}" text-anchor="end">${v}</text>`;
+  });
+  // Threshold guides (same cutoffs as the score card on the verdict tab)
+  let guides = '';
+  [[15, '#d97706'], [50, '#dc2626']].forEach(function(t) {
+    guides += `<line class="trend-threshold" x1="${padL}" y1="${y(t[0])}" x2="${W - padR}" y2="${y(t[0])}" stroke="${t[1]}" opacity=".45"></line>`;
+  });
+  // X labels: first, last, and a few evenly-spaced in between
+  const maxLabels = Math.min(6, pts.length);
+  for (let i = 0; i < maxLabels; i++) {
+    const idx = maxLabels === 1 ? 0 : Math.round(i * (pts.length - 1) / (maxLabels - 1));
+    const t = (pts[idx].time || '').slice(5, 10);  // MM-DD
+    labels += `<text class="trend-axis-label" x="${x(idx)}" y="${H - 8}" text-anchor="middle">${escapeHtml(t)}</text>`;
+  }
+
+  const coords = pts.map(function(p, i) { return [x(i), y(p.score)]; });
+  const lineD = coords.map(function(c, i) {
+    return (i === 0 ? 'M' : 'L') + c[0].toFixed(1) + ' ' + c[1].toFixed(1);
+  }).join(' ');
+  const areaD = lineD +
+    ` L ${coords[coords.length - 1][0].toFixed(1)} ${y(0)}` +
+    ` L ${coords[0][0].toFixed(1)} ${y(0)} Z`;
+
+  let dots = '';
+  pts.forEach(function(p, i) {
+    dots += `<circle class="trend-dot" data-idx="${i}" cx="${coords[i][0].toFixed(1)}" cy="${coords[i][1].toFixed(1)}" r="4.5" stroke="${LEVEL_META[p.level] ? LEVEL_META[p.level].color : '#94a3b8'}"></circle>`;
+  });
+
+  svg.innerHTML = `
+    <defs>
+      <linearGradient id="trendAreaGrad" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="rgba(37,99,235,.22)"/>
+        <stop offset="100%" stop-color="rgba(37,99,235,0)"/>
+      </linearGradient>
+      <linearGradient id="trendLineGrad" x1="${padL}" y1="0" x2="${W - padR}" y2="0" gradientUnits="userSpaceOnUse">
+        <stop offset="0%" stop-color="#2563eb"/>
+        <stop offset="100%" stop-color="#6366f1"/>
+      </linearGradient>
+    </defs>
+    ${grid}${guides}${labels}
+    <path class="trend-area${_statsAnimated ? ' shown' : ''}" d="${areaD}" fill="url(#trendAreaGrad)"></path>
+    <path class="trend-line${_statsAnimated ? ' shown' : ''}" d="${lineD}" pathLength="1"
+      fill="none" stroke="url(#trendLineGrad)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"></path>
+    ${dots}
+  `;
+
+  // Draw-in + tooltips
+  if (!_statsAnimated) {
+    requestAnimationFrame(function() {
+      requestAnimationFrame(function() {
+        const line = svg.querySelector('.trend-line');
+        const area = svg.querySelector('.trend-area');
+        if (line) line.classList.add('shown');
+        if (area) area.classList.add('shown');
+      });
+    });
+  }
+
+  const tip = document.getElementById('trendTooltip');
+  svg.querySelectorAll('.trend-dot').forEach(function(dot) {
+    dot.addEventListener('mouseenter', function() {
+      const p = pts[+dot.getAttribute('data-idx')];
+      if (!p) return;
+      const lvl = LEVEL_META[p.level] || LEVEL_META.uncertain;
+      tip.innerHTML = `<div class="tt-time">${escapeHtml(p.time || '')}</div>` +
+        `<div class="tt-score" style="color:${lvl.color === '#94a3b8' ? '#cbd5e1' : lvl.color};">${p.score}<span style="font-size:11px;color:#94a3b8;"> / 100</span></div>` +
+        `<div class="tt-verdict ${p.level}">${lvl.label}</div>`;
+      tip.style.left = (+dot.getAttribute('cx')) + 'px';
+      tip.style.top = (+dot.getAttribute('cy')) + 'px';
+      tip.classList.add('show');
+    });
+    dot.addEventListener('mouseleave', function() { tip.classList.remove('show'); });
+  });
+}
+
+// ── Dimension bars ──
+function _renderDimBars(s) {
+  const holder = document.getElementById('dimBars');
+  if (!holder) return;
+  const total = s.total_analyses || 0;
+  const DIMS = [
+    { key: 'metadata',  cls: 'meta',  name: '元数据一致',  sub: '创建者/修改者/机器码等' },
+    { key: 'personnel', cls: 'person', name: '人员交叉',   sub: '同名/同手机号/同身份证' },
+    { key: 'similarity', cls: 'sim',  name: '文本查重',   sub: '高风险异常一致段落' },
+    { key: 'pricing',   cls: 'price', name: '报价异常',   sub: '报价一致或规律性差异' },
+  ];
+  holder.innerHTML = DIMS.map(function(d) {
+    const hits = s.dimension_hits[d.key] || 0;
+    const totals = s.dimension_totals[d.key] || 0;
+    const pct = total ? Math.round(hits / total * 100) : 0;
+    return `<div class="bar-row">
+      <div class="bar-row-top">
+        <span class="bar-name">${d.name}<span class="bar-sub">${d.sub} · 累计 ${totals.toLocaleString()} 条</span></span>
+        <span class="bar-count"><b>${hits}</b> / ${total} 件 (${pct}%)</span>
+      </div>
+      <div class="bar-track"><div class="bar-fill ${d.cls}" data-pct="${pct}"></div></div>
+    </div>`;
+  }).join('');
+  const apply = function() {
+    holder.querySelectorAll('.bar-fill').forEach(function(el) {
+      el.style.width = el.getAttribute('data-pct') + '%';
+    });
+  };
+  if (!_statsAnimated) {
+    requestAnimationFrame(function() { requestAnimationFrame(apply); });
+  } else {
+    apply();
+  }
+}
+
+// ── Recent records table ──
+function _recentTableHTML(recent) {
+  if (!recent || recent.length === 0) {
+    return '<p class="empty-note">暂无记录</p>';
+  }
+  let rows = '';
+  recent.forEach(function(e) {
+    if (!e.id) return;
+    const lvl = LEVEL_META[e.level] || LEVEL_META.uncertain;
+    const score = (typeof e.score === 'number') ? (e.score % 1 === 0 ? e.score : e.score.toFixed(1)) : '-';
+    rows += `<tr>
+      <td style="white-space:nowrap;font-family:var(--font-mono);font-size:11.5px;">${escapeHtml(e.time || '')}</td>
+      <td style="text-align:center;">${e.bid_count || 0} 份</td>
+      <td class="score-cell ${e.level}">${score}</td>
+      <td><span class="level-chip ${e.level}">${lvl.label}</span></td>
+      <td style="color:var(--text-secondary);">${escapeHtml(e.verdict || '')}</td>
+      <td style="text-align:right;"><button class="recent-open-btn" onclick="openHistoryRecord('${escapeHtml(e.id)}')">查看</button></td>
+    </tr>`;
+  });
+  return `<table class="data-table" style="margin-bottom:0;">
+    <thead><tr><th>时间</th><th style="text-align:center;">标书数</th><th>评分</th><th>结论</th><th>判定详情</th><th></th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+// Load a history record from the stats page, then jump back to the analysis view
+async function openHistoryRecord(id) {
+  switchView('analyze');
+  await loadHistory(id);
+}

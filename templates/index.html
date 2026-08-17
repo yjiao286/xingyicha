@@ -7,20 +7,52 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700;9..40,800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/css/style.css?v=4">
+<link rel="stylesheet" href="/static/css/style.css?v=5">
 </head>
 <body>
 
 <div class="scanline"></div>
 
-<div class="app-container">
-  <div class="top-bar">
-    <button class="btn btn-ghost btn-sm" onclick="openHistory()">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-      历史记录
-    </button>
+<!-- Sticky glass navigation -->
+<nav class="site-nav" id="siteNav">
+  <div class="site-nav-inner">
+    <div class="nav-brand" onclick="switchView('analyze')" role="button" tabindex="0" aria-label="返回分析工作台">
+      <div class="nav-logo">
+        <svg width="20" height="20" viewBox="0 0 36 36" fill="none">
+          <rect x="2" y="2" width="32" height="32" rx="8" stroke="currentColor" stroke-width="2.5"/>
+          <circle cx="18" cy="14" r="5" stroke="currentColor" stroke-width="2.5"/>
+          <path d="M10 26c0-4.418 3.582-8 8-8s8 3.582 8 8" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+          <circle cx="28" cy="10" r="2" fill="currentColor"/>
+        </svg>
+      </div>
+      <div class="nav-brand-text">
+        <span class="nav-brand-name">星易查</span>
+        <span class="nav-brand-sub">围串标风险识别</span>
+      </div>
+    </div>
+    <div class="nav-links" role="tablist">
+      <button class="nav-link active" id="navLinkAnalyze" onclick="switchView('analyze')" title="分析工作台">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+        <span>分析工作台</span>
+      </button>
+      <button class="nav-link" id="navLinkStats" onclick="switchView('stats')" title="数据统计">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+        <span>数据统计</span>
+      </button>
+    </div>
+    <div class="nav-actions">
+      <button class="btn btn-ghost btn-sm" onclick="openHistory()">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+        历史记录
+      </button>
+    </div>
   </div>
+</nav>
 
+<div class="app-container">
+
+  <!-- ═══ Analyze View ═══ -->
+  <div id="view-analyze">
   <header class="app-header">
     <div class="header-badge">
       <span class="badge-dot"></span>
@@ -144,6 +176,26 @@
       </button>
     </div>
   </section>
+  </div>
+
+  <!-- ═══ Stats View ═══ -->
+  <div id="view-stats" hidden>
+    <header class="stats-header">
+      <div>
+        <h2 class="stats-title">数据统计</h2>
+        <p class="stats-subtitle">基于历史分析记录的聚合视图 · 数据来源：本机 history 目录</p>
+      </div>
+      <div class="stats-header-actions">
+        <span class="stats-updated" id="statsUpdated"></span>
+        <button class="btn btn-ghost btn-sm" id="btnRefreshStats">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
+          刷新
+        </button>
+      </div>
+    </header>
+
+    <div id="statsBody"><!-- rendered by main.js --></div>
+  </div>
 </div>
 
 <!-- Match Modal -->
@@ -187,6 +239,6 @@
   </div>
 </div>
 
-<script src="/static/js/main.js?v=5"></script>
+<script src="/static/js/main.js?v=6"></script>
 </body>
 </html>
