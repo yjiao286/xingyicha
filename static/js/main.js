@@ -3,6 +3,16 @@ let selectedFiles = [];
 let selectedRefFiles = [];
 let analysisResult = null;
 let fileGroups = {}; // {filename: groupName} — same group = same bidder
+let isAnalyzing = false;
+
+// ── Analyzing lock (guard against mid-run state changes) ──
+function _unloadGuard(e) { e.preventDefault(); e.returnValue = ''; }
+function setAnalyzing(on) {
+  isAnalyzing = on;
+  document.querySelector('.app-container').classList.toggle('analyzing', on);
+  if (on) window.addEventListener('beforeunload', _unloadGuard);
+  else window.removeEventListener('beforeunload', _unloadGuard);
+}
 
 // ── DOM refs ──
 const uploadArea = document.getElementById('uploadArea');
@@ -52,9 +62,14 @@ refFileInput.addEventListener('change', e => addFiles(e.target.files, 'ref'));
 const VALID_EXTS = ['.docx', '.doc', '.pdf', '.txt'];
 
 function escapeHtml(str) {
-  const div = document.createElement('div');
-  div.appendChild(document.createTextNode(str));
-  return div.innerHTML;
+  // Escapes quotes too: results are interpolated into value="..." and
+  // other double-quoted attributes, where a bare " would break out.
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 function formatSize(bytes) {
@@ -100,10 +115,12 @@ var _fileShare = 24;
 
 function startProgress() {
   _progressMaxPct = 0;
+  _analysisFailed = false;
   _fileIndex = 1;
   _totalFiles = 1;
   _fileShare = 24;
   progressBar.classList.remove('extracting');
+  progressPanel.classList.remove('error');
   progressPanel.style.display = 'block';
   progressFill.style.width = '0%';
   progressText.textContent = '上传中...';
@@ -205,7 +222,17 @@ function showWarning(event) {
   if (!panel) {
     panel = document.createElement('div');
     panel.id = 'warningPanel';
-    panel.style.cssText = 'margin:10px 0;padding:10px 16px;background:#fff3cd;border:1px solid #ffc107;border-radius:6px;font-size:13px;color:#856404;';
+    panel.className = 'warning-panel';
+    var head = document.createElement('div');
+    head.className = 'warning-panel-head';
+    head.innerHTML = '<span>⚠ 分析提示</span>';
+    var close = document.createElement('button');
+    close.className = 'warning-panel-close';
+    close.title = '关闭提示';
+    close.innerHTML = '&times;';
+    close.onclick = function() { panel.remove(); };
+    head.appendChild(close);
+    panel.appendChild(head);
     var resultsSection = document.getElementById('resultsSection');
     if (resultsSection) {
       resultsSection.parentNode.insertBefore(panel, resultsSection);
@@ -218,11 +245,26 @@ function showWarning(event) {
   var msg = document.createElement('div');
   msg.className = 'warning-msg';
   msg.textContent = '⚠ ' + event.message;
-  msg.style.cssText = 'margin-bottom:4px;';
   panel.appendChild(msg);
 }
 
+// Marks the progress panel as failed: red bar + error text, no "分析完成".
+var _analysisFailed = false;
+function failProgress(msg) {
+  _analysisFailed = true;
+  progressBar.classList.remove('extracting');
+  progressPanel.classList.add('error');
+  progressText.textContent = msg || '分析失败';
+  var active = progressSteps.querySelectorAll('.progress-step.active');
+  active.forEach(function(el) { el.classList.remove('active'); });
+}
+
 function finishProgress() {
+  if (_analysisFailed) {
+    // Keep the red failure state up a bit longer than the success state.
+    setTimeout(function() { progressPanel.style.display = 'none'; }, 5000);
+    return;
+  }
   _barSet(100);
   progressBar.classList.remove('extracting');
   progressText.textContent = '分析完成';
@@ -266,7 +308,10 @@ function renderAllFileLists() {
       html += '<span style="word-break:break-all;">' + escapeHtml(f.name) + ' (' + formatSize(f.size) + ')</span>';
       html += '<span class="remove-btn" title="移除" onclick="removeFile(' + i + ',\'bid\')">&times;</span>';
       html += '</span>';
-      html += '<input class="group-input" value="' + escapeHtml(group) + '" placeholder="投标人名称" onchange="updateGroup(\'' + key.replace(/'/g, "\\'") + '\', this.value)" title="相同名称的文件将合并为一个投标人"/>';
+      // data-key goes through escapeHtml (which escapes quotes), and the
+      // handler reads this.dataset.key - no inline string concatenation of
+      // raw filenames into JS code.
+      html += '<input class="group-input" value="' + escapeHtml(group) + '" placeholder="投标人名称" data-key="' + escapeHtml(key) + '" onchange="updateGroup(this.dataset.key, this.value)" title="相同名称的文件将合并为一个投标人"/>';
       html += '</div>';
     });
     html += '</div>';
@@ -301,25 +346,35 @@ function updateGroup(key, value) {
 }
 
 function removeFile(idx, type) {
+  if (isAnalyzing) return;
   const target = type === 'ref' ? selectedRefFiles : selectedFiles;
   target.splice(idx, 1);
+  if (type !== 'ref') {
+    // Drop group entries for files that are no longer selected.
+    var validKeys = new Set(selectedFiles.map(f => f.name + '_' + f.size));
+    Object.keys(fileGroups).forEach(k => { if (!validKeys.has(k)) delete fileGroups[k]; });
+  }
   renderAllFileLists();
   updateButtons();
   if (selectedFiles.length === 0 && selectedRefFiles.length === 0) {
     resultsSection.style.display = 'none';
     analysisResult = null;
+    clearTabCounts();
   }
   fileInput.value = '';
   refFileInput.value = '';
 }
 
 btnClear.addEventListener('click', () => {
+  if (isAnalyzing) return;
   selectedFiles = [];
   selectedRefFiles = [];
+  fileGroups = {};
   renderAllFileLists();
   updateButtons();
   resultsSection.style.display = 'none';
   analysisResult = null;
+  clearTabCounts();
   fileInput.value = '';
   refFileInput.value = '';
   // Clear all warnings
@@ -328,26 +383,31 @@ btnClear.addEventListener('click', () => {
 });
 
 function updateButtons() {
-  btnAnalyze.disabled = selectedFiles.length < 2;
-  if (selectedFiles.length < 2 && selectedFiles.length > 0) {
-    btnAnalyze.innerHTML = '<span class="btn-icon">&#9881;</span> 请至少上传2份标书';
+  btnAnalyze.disabled = selectedFiles.length < 2 || isAnalyzing;
+  var textEl = document.getElementById('btnAnalyzeText');
+  if (!textEl) return;
+  if (isAnalyzing) {
+    textEl.textContent = '分析中...';
   } else if (selectedFiles.length >= 2) {
     const extra = selectedRefFiles.length > 0 ? ` + ${selectedRefFiles.length}份模板` : '';
-    btnAnalyze.innerHTML = '<span class="btn-icon">&#9881;</span> 开始分析' + extra;
+    textEl.textContent = '开始分析' + extra;
+  } else if (selectedFiles.length > 0) {
+    textEl.textContent = '请至少上传 2 份标书';
   } else {
-    btnAnalyze.innerHTML = '<span class="btn-icon">&#9881;</span> 请至少上传2份标书文件';
+    textEl.textContent = '请至少上传 2 份标书文件';
   }
 }
 
 // ── Analyze (streaming progress with NDJSON) ──
 btnAnalyze.addEventListener('click', async () => {
+  if (isAnalyzing) return;
   if (selectedFiles.length < 2) {
     alert('请至少上传2份标书文件(.docx/.doc/.pdf/.txt)');
     return;
   }
 
-  btnAnalyze.disabled = true;
-  btnAnalyze.innerHTML = '<span class="btn-icon">&#9881;</span> 分析中...';
+  setAnalyzing(true);
+  updateButtons();
   // Clear previous warnings before new analysis
   var prevWarn = document.getElementById('warningPanel');
   if (prevWarn) prevWarn.remove();
@@ -368,10 +428,9 @@ btnAnalyze.addEventListener('click', async () => {
     });
 
     if (!resp.ok) {
-      const errData = await resp.json();
+      const errData = await resp.json().catch(() => ({}));
+      failProgress('分析失败: ' + (errData.error || '服务器错误'));
       alert('分析失败: ' + (errData.error || '服务器错误'));
-      finishProgress();
-      updateButtons();
       return;
     }
 
@@ -416,6 +475,7 @@ btnAnalyze.addEventListener('click', async () => {
             renderAllTabs();
             resultsSection.scrollIntoView({ behavior: 'smooth' });
           } else if (event.type === 'error') {
+            failProgress('分析失败: ' + event.message);
             alert('分析失败: ' + event.message);
           }
         } catch (e) {
@@ -425,9 +485,11 @@ btnAnalyze.addEventListener('click', async () => {
     }
   } catch (err) {
     console.error('Analysis failed:', err);
+    failProgress('分析失败，请确认服务器已启动');
     alert('分析失败，请确认服务器已启动: ' + err.message);
   } finally {
     finishProgress();
+    setAnalyzing(false);
     updateButtons();
   }
 });
@@ -453,6 +515,56 @@ function renderAllTabs() {
   renderPersonnel();
   renderSimilarity();
   renderPricing();
+  updateTabCounts();
+}
+
+// ── Tab count badges ──
+function _setTabCount(id, count, danger) {
+  var el = document.getElementById(id);
+  if (!el) return;
+  if (count > 0) {
+    el.textContent = count;
+    el.classList.remove('hidden');
+    el.classList.toggle('danger', !!danger);
+  } else {
+    el.classList.add('hidden');
+  }
+}
+
+function updateTabCounts() {
+  if (!analysisResult) return;
+
+  // 元数据：一致项数量（排除 info 级）；存在 high 级则标红
+  var meta = analysisResult.metadata || {};
+  var metaMatches = meta.matches || [];
+  _setTabCount('tabCountMetadata',
+    metaMatches.filter(m => m.severity !== 'info').length,
+    metaMatches.some(m => m.severity === 'high'));
+
+  // 人员：高/致命交叉命中数
+  var p = analysisResult.personnel || {};
+  _setTabCount('tabCountPersonnel',
+    (p.cross_matches || []).filter(m => m.severity === 'high' || m.severity === 'critical').length,
+    true);
+
+  // 查重：可见匹配段（高风险 + 疑似）；存在高风险则标红
+  var s = analysisResult.text_similarity || {};
+  var subCnt = 0, susCnt = 0;
+  (s.pair_results || []).forEach(pr => {
+    subCnt += pr.substantial_count || 0;
+    susCnt += pr.suspicious_count || 0;
+  });
+  _setTabCount('tabCountSimilarity', subCnt + susCnt, subCnt > 0);
+
+  // 报价：发现条数；存在完全一致报价则标红
+  var pr = analysisResult.pricing || {};
+  var samePrice = Object.values(pr.comparison || {}).some(c => c && c._same_all === true);
+  _setTabCount('tabCountPricing', (pr.findings || []).length, samePrice);
+}
+
+function clearTabCounts() {
+  ['tabCountMetadata', 'tabCountPersonnel', 'tabCountSimilarity', 'tabCountPricing']
+    .forEach(id => { var el = document.getElementById(id); if (el) el.classList.add('hidden'); });
 }
 
 // ── Verdict Tab ──
@@ -494,47 +606,54 @@ function renderVerdict() {
     else uncertainCount++;
   });
 
-  document.getElementById('verdictSummary').innerHTML = `
-    <div style="background:var(--bg-surface);border:1px solid var(--border-light);border-radius:var(--radius);padding:16px 20px;margin-bottom:14px;">
-      <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">
-        <span style="font-size:13px;font-weight:600;color:var(--text-secondary);">综合风险评分</span>
-        <span style="font-size:32px;font-weight:800;color:${scoreColor};line-height:1;">${score}</span>
-        <span style="font-size:13px;color:var(--text-muted);">/ ${maxScore}</span>
-        ${v.synergy_bonus > 0 ? '<span style="font-size:10px;color:#d97706;background:#fff7ed;padding:1px 6px;border-radius:4px;">软协同+' + v.synergy_bonus + '</span>' : ''}
-        ${v.hard_synergy_bonus > 0 ? '<span style="font-size:10px;color:#b45309;background:#fef3c7;padding:1px 6px;border-radius:4px;">硬证据协同+' + v.hard_synergy_bonus + '</span>' : ''}
-        <span style="flex:1;"></span>
-        <span style="font-size:12px;color:var(--text-muted);">满足 <b style="color:#dc2626;">${satisfiedCount}</b> · 无法判断 <b style="color:#d97706;">${uncertainCount}</b> · 不满足 <b style="color:#16a34a;">${notCount}</b></span>
+    document.getElementById('verdictSummary').innerHTML = `
+    <div class="score-overview">
+      <div class="score-card">
+        <div class="score-card-header">综合风险评分</div>
+        <div class="score-big">
+          <span class="score-num" style="color:${scoreColor};">${score}</span>
+          <span class="score-unit">/ ${maxScore}</span>
+        </div>
+        <div class="score-bar-wrap">
+          <div class="score-bar-fill" style="width:${pct}%;background:${scoreColor};"></div>
+          <div class="score-bar-mark" style="left:15%;"></div>
+          <div class="score-bar-mark" style="left:50%;"></div>
+        </div>
+        <div class="score-ticks">
+          <span class="tick" style="left:0%;">0</span>
+          <span class="tick tick-warn" style="left:15%;">15 可疑</span>
+          <span class="tick tick-danger" style="left:50%;">50 高度嫌疑</span>
+          <span class="tick" style="left:100%;">${maxScore}</span>
+        </div>
       </div>
-      <div class="score-bar-wrap">
-        <div class="score-bar-fill" style="width:${pct}%;background:${scoreColor};"></div>
-        <div class="score-bar-mark" style="left:15%;"></div>
-        <div class="score-bar-mark" style="left:50%;"></div>
-      </div>
-      <div class="score-ticks">
-        <span class="tick" style="left:0%;">0</span>
-        <span class="tick tick-warn" style="left:15%;">15 可疑</span>
-        <span class="tick tick-danger" style="left:50%;">50 高度嫌疑</span>
-        <span class="tick" style="left:100%;">${maxScore}</span>
+      <div class="score-card">
+        <div class="score-card-header">条款命中统计</div>
+        <div class="clause-stats" style="font-size:13px;">
+          满足 <b class="danger">${satisfiedCount}</b> · 无法判断 <b class="warn">${uncertainCount}</b> · 不满足 <b class="success">${notCount}</b>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:12px;">
+          ${v.synergy_bonus > 0 ? `<span class="bonus-badge soft">软协同 +${v.synergy_bonus}</span>` : ''}
+          ${v.hard_synergy_bonus > 0 ? `<span class="bonus-badge hard">硬证据协同 +${v.hard_synergy_bonus}</span>` : ''}
+          ${!(v.synergy_bonus > 0) && !(v.hard_synergy_bonus > 0) ? '<span style="font-size:12px;color:var(--text-muted);">无协同加分</span>' : ''}
+        </div>
       </div>
     </div>
     <details class="rules-panel">
       <summary style="cursor:pointer;font-weight:600;color:var(--text-secondary);">📋 综合判定评分规则</summary>
       <div style="margin-top:8px;line-height:1.8;">
-        <p style="margin:0 0 6px;font-weight:600;">评分依据：《招标投标法实施条例》第四十条</p>
-        <table style="width:100%;border-collapse:collapse;font-size:11px;margin-bottom:8px;">
-          <tr style="background:#eef1f5;">
-            <td style="padding:4px 8px;border:1px solid #ddd;">条款</td>
-            <td style="padding:4px 8px;border:1px solid #ddd;">权重</td>
-            <td style="padding:4px 8px;border:1px solid #ddd;">说明</td>
-          </tr>
-          <tr><td style="padding:4px 8px;border:1px solid #ddd;">第（一）项</td><td style="padding:4px 8px;border:1px solid #ddd;">50分</td><td style="padding:4px 8px;border:1px solid #ddd;">同一单位或个人编制 — 硬证据：WPS ID、授权代表=创建者、最后修改人同一</td></tr>
-          <tr><td style="padding:4px 8px;border:1px solid #ddd;">第（二）项</td><td style="padding:4px 8px;border:1px solid #ddd;">25分</td><td style="padding:4px 8px;border:1px solid #ddd;">同一人办理投标 — 硬证据：授权代表姓名相同 / 联系电话相同 / 身份证号相同（命中即强）</td></tr>
-          <tr><td style="padding:4px 8px;border:1px solid #ddd;">第（三）项</td><td style="padding:4px 8px;border:1px solid #ddd;">15分</td><td style="padding:4px 8px;border:1px solid #ddd;">项目管理人员相同 — 硬证据：人员高度重叠(≥50%) 或同名项目管理成员(项目经理/技术负责人等)</td></tr>
-          <tr><td style="padding:4px 8px;border:1px solid #ddd;">第（四）项-a</td><td style="padding:4px 8px;border:1px solid #ddd;">5分</td><td style="padding:4px 8px;border:1px solid #ddd;">投标文件异常一致 — 软证据：辅助参考</td></tr>
-          <tr><td style="padding:4px 8px;border:1px solid #ddd;">第（四）项-b</td><td style="padding:4px 8px;border:1px solid #ddd;">4分</td><td style="padding:4px 8px;border:1px solid #ddd;">报价异常一致或呈规律性差异（相同报价可达"强"） — 软证据：辅助参考</td></tr>
+        <p class="rules-block-title">评分依据：《招标投标法实施条例》第四十条</p>
+        <table class="rules-table">
+          <thead><tr><th>条款</th><th>权重</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td>第（一）项</td><td>50分</td><td>同一单位或个人编制 - 硬证据：WPS ID、授权代表=创建者、最后修改人同一</td></tr>
+            <tr><td>第（二）项</td><td>25分</td><td>同一人办理投标 - 硬证据：授权代表姓名相同 / 联系电话相同 / 身份证号相同（命中即强）</td></tr>
+            <tr><td>第（三）项</td><td>15分</td><td>项目管理人员相同 - 硬证据：人员高度重叠(≥50%) 或同名项目管理成员(项目经理/技术负责人等)</td></tr>
+            <tr><td>第（四）项-a</td><td>5分</td><td>投标文件异常一致 - 软证据：辅助参考</td></tr>
+            <tr><td>第（四）项-b</td><td>4分</td><td>报价异常一致或呈规律性差异（相同报价可达"强"） - 软证据：辅助参考</td></tr>
+          </tbody>
         </table>
-        <p style="margin:0 0 6px;font-weight:600;">证据强度系数：</p>
-        <ul style="margin:0 0 10px;padding-left:18px;">
+        <p class="rules-block-title">证据强度系数：</p>
+        <ul class="rules-list">
           <li>强 = 权重 × 1.0（满分）</li>
           <li>中 = 权重 × 0.3（多项间接证据）</li>
           <li>弱 = 权重 × 0.15（单条间接证据，已过滤默认模板/通病版本号）</li>
@@ -543,12 +662,12 @@ function renderVerdict() {
           <li>硬证据协同加分：第（一）项 与 第（二）项 同为"强" 时 +5分（文档同源+投标事宜同人双重确认）</li>
           <li>总分上限 100分</li>
         </ul>
-        <p style="margin:0 0 6px;font-weight:600;">综合结论阈值：</p>
-        <ul style="margin:0;padding-left:18px;">
-          <li>≥ 50分 → <span style="color:#dc2626;font-weight:600;">⚠️ 存在围标串标高度嫌疑</span></li>
-          <li>15–49分 → <span style="color:#d97706;font-weight:600;">🔍 存在可疑情形，建议进一步核查</span></li>
-          <li>&lt; 15分 → <span style="color:#16a34a;font-weight:600;">✅ 未发现明显围标串标异常</span></li>
-          <li>单份文件或全维度无法判断 → <span style="color:#9ca3af;font-weight:600;">❓ 数据不足，无法做出完整判定</span></li>
+        <p class="rules-block-title">综合结论阈值：</p>
+        <ul class="rules-list">
+          <li>≥ 50分 -&gt; <span style="color:#dc2626;font-weight:600;">⚠️ 存在围标串标高度嫌疑</span></li>
+          <li>15–49分 -&gt; <span style="color:#d97706;font-weight:600;">🔍 存在可疑情形，建议进一步核查</span></li>
+          <li>&lt; 15分 -&gt; <span style="color:#16a34a;font-weight:600;">✅ 未发现明显围标串标异常</span></li>
+          <li>单份文件或全维度无法判断 -&gt; <span style="color:#9ca3af;font-weight:600;">❓ 数据不足，无法做出完整判定</span></li>
         </ul>
       </div>
     </details>
@@ -579,7 +698,7 @@ function renderVerdict() {
         <strong style="font-size:14px;">${escapeHtml(c.description)}</strong>
         <span class="clause-tag ${tagCls}">${tagText}</span>
         ${c._score !== undefined ? `<span class="clause-score-badge">+${c._score}分</span>` : ''}
-        ${targetTab ? `<span style="font-size:10px;color:var(--accent-text);margin-left:4px;">详情 →</span>` : ''}
+        ${targetTab ? `<span style="font-size:10px;color:var(--accent-dim);margin-left:4px;">详情 →</span>` : ''}
       </div>`;
 
     if (c.evidence && c.evidence.length > 0) {
@@ -639,7 +758,7 @@ function renderMetadata() {
   fhtml += '<div id="metaDetailBody" style="display:none;">';
   meta.files.forEach(f => {
     const shortName = f.name.length > 40 ? f.name.substring(0, 40) + '...' : f.name;
-    fhtml += `<h3 style="margin:10px 0 6px;font-size:14px;color:#4361ee;">${escapeHtml(shortName)}</h3>`;
+    fhtml += `<h3 class="section-subtitle tinted"><span class="file-chip">${escapeHtml(shortName)}</span></h3>`;
     fhtml += '<table class="data-table"><thead><tr><th>属性</th><th>值</th></tr></thead><tbody>';
     const rows = [
       ['文件类型', f._error ? '读取异常' : (f.name.endsWith('.pdf') ? 'PDF' : f.name.endsWith('.doc') ? 'DOC(旧版)' : f.name.endsWith('.txt') ? 'TXT(纯文本)' : 'DOCX')],
@@ -699,7 +818,7 @@ function renderPersonnel() {
     if (filled.length === 0 && teamMembers.length === 0) return;
 
     hasAnyData = true;
-    html += '<h3 style="margin-bottom:8px;">' + escapeHtml(f.name) + '</h3>';
+    html += '<h3 class="section-subtitle">' + escapeHtml(f.name) + '</h3>';
 
     // Basic info table
     if (filled.length > 0) {
@@ -712,7 +831,7 @@ function renderPersonnel() {
 
     // Project team members table
     if (teamMembers.length > 0) {
-      html += '<h4 style="margin:12px 0 6px;">项目团队成员</h4>';
+      html += '<h4 class="section-subtitle">项目团队成员</h4>';
       html += '<table class="data-table"><thead><tr><th>姓名</th><th>角色</th><th>置信度</th></tr></thead><tbody>';
       teamMembers.forEach(function(m) {
         var roleLabel = ROLE_LABELS[m.role] || m.role;
@@ -724,7 +843,7 @@ function renderPersonnel() {
   });
 
   if (!hasAnyData) {
-    html = '<p style="color:#888;text-align:center;padding:32px;">未从标书中提取到人员信息（法定代表人、授权代表、项目成员等）</p>';
+    html = '<p class="empty-note">未从标书中提取到人员信息（法定代表人、授权代表、项目成员等）</p>';
   }
   document.getElementById('personnelTables').innerHTML = html;
 
@@ -740,7 +859,7 @@ function renderPersonnel() {
       mhtml += '<div class="match-card">';
       mhtml += '<span class="match-badge ' + sevClass + '">' + sevLabel + '</span>';
       mhtml += '<strong>' + escapeHtml(m.type) + '</strong>';
-      mhtml += '<p style="margin-top:4px;font-size:14px;">' + escapeHtml(m.detail) + '</p>';
+      mhtml += '<p class="match-detail">' + escapeHtml(m.detail) + '</p>';
       mhtml += '</div>';
     });
   }
@@ -755,7 +874,7 @@ function renderPersonnel() {
   if (!mhtml && !hasAnyData) {
     document.getElementById('personnelMatches').innerHTML = '';
   } else if (!mhtml) {
-    document.getElementById('personnelMatches').innerHTML = '<p style="color:#888;">未发现人员交叉异常</p>';
+    document.getElementById('personnelMatches').innerHTML = '<p class="empty-note">未发现人员交叉异常</p>';
   } else {
     document.getElementById('personnelMatches').innerHTML = mhtml;
   }
@@ -795,28 +914,30 @@ function renderSimilarity() {
       <button class="smart-toggle-btn" onclick="toggleAllPairs()" id="btnSmartToggle">▸ 展开全部</button>
     </div>
     <ul class="finding-list">${s.findings.map(f => `<li>${escapeHtml(f)}</li>`).join('')}</ul>
-    <details class="scoring-rules" style="margin-top:10px;font-size:12px;color:var(--text-muted);background:#f8f9fb;border-radius:8px;padding:10px 14px;">
+        <details class="rules-panel" style="margin-top:10px;">
       <summary style="cursor:pointer;font-weight:600;color:var(--text-secondary);">📋 风险分级评分规则</summary>
       <div style="margin-top:8px;line-height:1.8;">
-        <p style="margin:0 0 6px;font-weight:600;">过滤链（依次执行）：</p>
-        <ol style="margin:0 0 10px;padding-left:18px;">
-          <li>参照文件匹配 — 用户上传的招标文件中出现过的段落 → <span style="color:#16a34a;">⚪ 已过滤</span></li>
-          <li>规则库匹配 — 签字/盖章/日期、公告措辞、法律条款、格式声明、编号等 → <span style="color:#16a34a;">⚪ 已过滤</span></li>
-          <li>全局共现检测 — 同一段落在 ≥ max(3, 50%文件数) 份标书中出现 → <span style="color:#16a34a;">⚪ 已过滤</span></li>
+        <p class="rules-block-title">过滤链（依次执行）：</p>
+        <ol class="rules-list">
+          <li>参照文件匹配 - 用户上传的招标文件中出现过的段落 -&gt; <span style="color:#16a34a;">⚪ 已过滤</span></li>
+          <li>规则库匹配 - 签字/盖章/日期、公告措辞、法律条款、格式声明、编号等 -&gt; <span style="color:#16a34a;">⚪ 已过滤</span></li>
+          <li>全局共现检测 - 同一段落在 ≥ max(3, 50%文件数) 份标书中出现 -&gt; <span style="color:#16a34a;">⚪ 已过滤</span></li>
         </ol>
-        <p style="margin:0 0 6px;font-weight:600;">实质性评分（4维度加权，满分1.0）：</p>
-        <table style="width:100%;border-collapse:collapse;font-size:11px;margin-bottom:8px;">
-          <tr style="background:#eef1f5;"><td style="padding:4px 8px;border:1px solid #ddd;">维度</td><td style="padding:4px 8px;border:1px solid #ddd;">权重</td><td style="padding:4px 8px;border:1px solid #ddd;">说明</td></tr>
-          <tr><td style="padding:4px 8px;border:1px solid #ddd;">段落长度</td><td style="padding:4px 8px;border:1px solid #ddd;">30%</td><td style="padding:4px 8px;border:1px solid #ddd;">越长越可能为独立编制内容（200字满分）</td></tr>
-          <tr><td style="padding:4px 8px;border:1px solid #ddd;">技术/业务术语密度</td><td style="padding:4px 8px;border:1px solid #ddd;">30%</td><td style="padding:4px 8px;border:1px solid #ddd;">含型号、参数、专业术语等具体信息</td></tr>
-          <tr><td style="padding:4px 8px;border:1px solid #ddd;">数值/编号特异性</td><td style="padding:4px 8px;border:1px solid #ddd;">25%</td><td style="padding:4px 8px;border:1px solid #ddd;">含具体金额、百分比、日期、版本号等</td></tr>
-          <tr><td style="padding:4px 8px;border:1px solid #ddd;">句式模板化程度（反向）</td><td style="padding:4px 8px;border:1px solid #ddd;">15%</td><td style="padding:4px 8px;border:1px solid #ddd;">"应当/必须/不得"密度高且无具体信息则扣分</td></tr>
+        <p class="rules-block-title">实质性评分（4维度加权，满分1.0）：</p>
+        <table class="rules-table">
+          <thead><tr><th>维度</th><th>权重</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td>段落长度</td><td>30%</td><td>越长越可能为独立编制内容（200字满分）</td></tr>
+            <tr><td>技术/业务术语密度</td><td>30%</td><td>含型号、参数、专业术语等具体信息</td></tr>
+            <tr><td>数值/编号特异性</td><td>25%</td><td>含具体金额、百分比、日期、版本号等</td></tr>
+            <tr><td>句式模板化程度（反向）</td><td>15%</td><td>"应当/必须/不得"密度高且无具体信息则扣分</td></tr>
+          </tbody>
         </table>
-        <p style="margin:0 0 6px;font-weight:600;">评分阈值：</p>
-        <ul style="margin:0;padding-left:18px;">
-          <li>≥ 0.6 → <span style="color:#dc2626;font-weight:600;">🔴 可能高风险异常</span> — 参与围串标结论判定</li>
-          <li>0.3–0.6 → <span style="color:#d97706;font-weight:600;">🟡 疑似模板</span> — 展示但降级，不参与判定</li>
-          <li>&lt; 0.3 → <span style="color:#16a34a;font-weight:600;">⚪ 已过滤模板</span> — 自动扣除</li>
+        <p class="rules-block-title">评分阈值：</p>
+        <ul class="rules-list">
+          <li>≥ 0.6 -&gt; <span style="color:#dc2626;font-weight:600;">🔴 可能高风险异常</span> - 参与围串标结论判定</li>
+          <li>0.3–0.6 -&gt; <span style="color:#d97706;font-weight:600;">🟡 疑似模板</span> - 展示但降级，不参与判定</li>
+          <li>&lt; 0.3 -&gt; <span style="color:#16a34a;font-weight:600;">⚪ 已过滤模板</span> - 自动扣除</li>
         </ul>
       </div>
     </details>
@@ -1022,15 +1143,15 @@ function renderPricing() {
         var sameAll = data._same_all;
         var vals = Object.entries(data).filter(function(kv) { return kv[0] !== '_same_all'; }).map(function(kv) { return kv[1]; }).filter(function(v) { return v != null; });
         if (sameAll === true && vals.length >= 2) {
-          tableHtml += '<p>📌 <strong>' + escapeHtml(label) + '</strong>: 全部一致 (' + vals[0].toLocaleString() + ' 元)</p>';
+          tableHtml += '<p class="price-compare-line same">📌 <strong>' + escapeHtml(label) + '</strong>: 全部一致 (' + vals[0].toLocaleString() + ' 元)</p>';
         } else if (sameAll === false && vals.length >= 2) {
-          tableHtml += '<p>⚠️ <strong>' + escapeHtml(label) + '</strong>: 存在差异 — ' + vals.map(function(v) { return v.toLocaleString(); }).join(' / ') + ' 元</p>';
+          tableHtml += '<p class="price-compare-line diff">⚠️ <strong>' + escapeHtml(label) + '</strong>: 存在差异 — ' + vals.map(function(v) { return v.toLocaleString(); }).join(' / ') + ' 元</p>';
         }
       });
       tableHtml += '</div>';
     }
   } else {
-    tableHtml += '<p style="color:#9ca3af;text-align:center;padding:20px;">暂无报价数据</p>';
+    tableHtml += '<p class="empty-note">暂无报价数据</p>';
   }
   document.getElementById('pricingTable').innerHTML = tableHtml;
 
@@ -1039,7 +1160,7 @@ function renderPricing() {
   if (p.subItemCompare && p.subItemCompare.length > 0) {
     subHtml += '<div class="section-title" style="margin-top:20px;">📊 分项明细比对</div>';
     p.subItemCompare.forEach(function(c, ci) {
-      subHtml += '<div style="margin-bottom:14px;border:1px solid var(--border-light);border-radius:8px;padding:12px;">';
+      subHtml += '<div class="subitem-card">';
       subHtml += '<strong style="font-size:14px;">' + escapeHtml(c.name || ('分项 ' + (ci + 1))) + '</strong>';
       if (c.items && c.items.length > 1) {
         // Check if any item has manufacturer/model extras
@@ -1191,10 +1312,21 @@ document.getElementById('btnNextMatch').addEventListener('click', () => {
 
 // Keyboard nav
 document.addEventListener('keydown', e => {
+  // Escape closes whichever modal is open (match modal takes priority)
+  if (e.key === 'Escape') {
+    if (document.getElementById('matchModal').style.display === 'flex') {
+      document.getElementById('btnCloseModal').click();
+      return;
+    }
+    if (document.getElementById('historyModal').style.display === 'flex') {
+      document.getElementById('btnCloseHistory').click();
+      return;
+    }
+    return;
+  }
   if (document.getElementById('matchModal').style.display !== 'flex') return;
   if (e.key === 'ArrowLeft') document.getElementById('btnPrevMatch').click();
   if (e.key === 'ArrowRight') document.getElementById('btnNextMatch').click();
-  if (e.key === 'Escape') document.getElementById('btnCloseModal').click();
 });
 
 function renderModalMatch() {

@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700;9..40,800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/css/style.css?v=3">
+<link rel="stylesheet" href="/static/css/style.css?v=4">
 </head>
 <body>
 
@@ -85,7 +85,7 @@
     <div class="btn-row">
       <button class="btn btn-primary" id="btnAnalyze" disabled>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-        请至少上传 2 份标书文件
+        <span id="btnAnalyzeText">请至少上传 2 份标书文件</span>
       </button>
       <button class="btn btn-ghost" id="btnClear">清空</button>
     </div>
@@ -104,10 +104,10 @@
   <section class="results-section" id="resultsSection" style="display:none">
     <nav class="tabs-nav">
       <button class="tab-btn active" data-tab="tab-verdict">综合结论</button>
-      <button class="tab-btn" data-tab="tab-metadata">元数据对比</button>
-      <button class="tab-btn" data-tab="tab-personnel">人员交叉</button>
-      <button class="tab-btn" data-tab="tab-similarity">文本查重</button>
-      <button class="tab-btn" data-tab="tab-pricing">报价分析</button>
+      <button class="tab-btn" data-tab="tab-metadata">元数据对比<span class="tab-count hidden" id="tabCountMetadata"></span></button>
+      <button class="tab-btn" data-tab="tab-personnel">人员交叉<span class="tab-count hidden" id="tabCountPersonnel"></span></button>
+      <button class="tab-btn" data-tab="tab-similarity">文本查重<span class="tab-count hidden" id="tabCountSimilarity"></span></button>
+      <button class="tab-btn" data-tab="tab-pricing">报价分析<span class="tab-count hidden" id="tabCountPricing"></span></button>
     </nav>
 
     <div class="tab-content active" id="tab-verdict">
@@ -152,9 +152,9 @@
     <div class="modal-header">
       <span class="modal-title" id="modalTitle"></span>
       <div class="modal-nav">
-        <button class="btn btn-sm btn-ghost" id="btnPrevMatch">◀ 上一个</button>
+        <button class="btn btn-sm btn-ghost" id="btnPrevMatch"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg> 上一个</button>
         <span class="modal-counter" id="matchCounter"></span>
-        <button class="btn btn-sm btn-ghost" id="btnNextMatch">下一个 ▶</button>
+        <button class="btn btn-sm btn-ghost" id="btnNextMatch">下一个 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></button>
       </div>
       <button class="modal-close" id="btnCloseModal">&times;</button>
     </div>
@@ -187,6 +187,6 @@
   </div>
 </div>
 
-<script src="/static/js/main.js?v=4"></script>
+<script src="/static/js/main.js?v=5"></script>
 </body>
 </html>

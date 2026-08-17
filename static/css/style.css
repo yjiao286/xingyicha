@@ -502,6 +502,145 @@ body::after {
 .level-weak { color: #64748b; }
 .level-none { color: var(--success); }
 
+/* ── Rules table (评分/分级规则说明表) ── */
+.rules-table {
+  width: 100%; border-collapse: separate; border-spacing: 0;
+  font-size: 11.5px; margin-bottom: 10px;
+  border: 1px solid var(--border-light); border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.rules-table th {
+  padding: 7px 10px; text-align: left; background: var(--bg-elevated);
+  font-weight: 700; color: var(--text-secondary); letter-spacing: .4px;
+  border-bottom: 1px solid var(--border-light);
+}
+.rules-table td {
+  padding: 6px 10px; border-bottom: 1px solid var(--border-light);
+  color: var(--text-secondary); line-height: 1.6;
+}
+.rules-table tbody tr:last-child td { border-bottom: none; }
+.rules-table tbody tr:nth-child(even) td { background: rgba(248,250,253,.6); }
+.rules-list { margin: 0 0 10px; padding-left: 18px; line-height: 1.9; }
+.rules-list li { margin-bottom: 1px; }
+.rules-block-title { margin: 0 0 6px; font-weight: 600; color: var(--text-secondary); }
+
+/* ── Verdict meta badges (协同加分等) ── */
+.bonus-badge {
+  display: inline-flex; align-items: center; gap: 3px;
+  font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 20px;
+  white-space: nowrap;
+}
+.bonus-badge.soft { color: #b45309; background: #fef3c7; }
+.bonus-badge.hard { color: #92400e; background: #fde68a; }
+
+/* ── Clause stats line ── */
+.clause-stats { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+.clause-stats b.danger { color: var(--danger); }
+.clause-stats b.warn { color: var(--warn); }
+.clause-stats b.success { color: var(--success); }
+
+/* ── Tab count badge ── */
+.tab-count {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 18px; height: 16px; padding: 0 5px; margin-left: 5px;
+  border-radius: 9px; font-size: 10px; font-weight: 700;
+  font-family: var(--font-mono); line-height: 1;
+  background: #eef1f6; color: var(--text-muted);
+  transition: all .18s;
+}
+.tab-btn.active .tab-count { background: var(--accent-soft); color: var(--accent-dim); }
+.tab-count.danger { background: #fee2e2; color: var(--danger); }
+.tab-btn.active .tab-count.danger { background: #fecaca; }
+.tab-count.hidden { display: none; }
+
+/* ── Section subtitle (文件级小标题) ── */
+.section-subtitle {
+  display: flex; align-items: center; gap: 8px;
+  margin: 14px 0 8px; font-size: 13px; font-weight: 700; color: var(--text);
+}
+.section-subtitle .file-chip {
+  font-family: var(--font-mono); font-size: 10px; font-weight: 600;
+  color: var(--accent-dim); background: var(--accent-soft);
+  border: 1px solid rgba(37,99,235,.16); border-radius: 20px;
+  padding: 2px 9px; white-space: nowrap;
+}
+.section-subtitle.tinted { color: var(--accent-dim); }
+
+/* ── Warning panel (分析警告) ── */
+.warning-panel {
+  margin: 0 0 16px; padding: 12px 16px;
+  background: linear-gradient(135deg, var(--warn-soft), #fef7e6);
+  border: 1px solid var(--warn-border); border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+.warning-panel-head {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 12px; font-weight: 700; color: #92400e; margin-bottom: 4px;
+  letter-spacing: .3px;
+}
+.warning-panel-close {
+  background: none; border: none; cursor: pointer;
+  font-size: 16px; line-height: 1; color: #b45309;
+  width: 22px; height: 22px; border-radius: 6px;
+  display: flex; align-items: center; justify-content: center;
+  transition: all .15s;
+}
+.warning-panel-close:hover { background: #fde68a; color: #92400e; }
+.warning-msg {
+  font-size: 12px; color: #92400e; line-height: 1.7; margin-bottom: 3px;
+}
+.warning-msg:last-child { margin-bottom: 0; }
+
+/* ── Match badge (人员交叉严重度) ── */
+.match-badge {
+  font-size: 10px; font-weight: 700; padding: 3px 10px;
+  border-radius: 20px; white-space: nowrap; flex-shrink: 0;
+}
+.match-card {
+  display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap;
+}
+.match-card strong { font-size: 13px; color: var(--text); }
+.match-card .match-detail { font-size: 12.5px; color: var(--text-secondary); margin-top: 4px; width: 100%; line-height: 1.7; }
+
+/* ── Pricing comparison lines ── */
+.price-compare-line {
+  display: flex; align-items: baseline; gap: 6px;
+  font-size: 12.5px; color: var(--text-secondary);
+  padding: 7px 12px; border-radius: var(--radius-sm);
+  background: var(--bg-subtle); border: 1px solid var(--border-light);
+  margin-bottom: 6px; line-height: 1.6;
+}
+.price-compare-line.same { background: var(--danger-soft); border-color: var(--danger-border); }
+.price-compare-line.same strong { color: var(--danger); }
+.price-compare-line.diff { background: var(--bg-subtle); }
+
+/* ── Sub-item card ── */
+.subitem-card {
+  border: 1px solid var(--border-light); border-radius: var(--radius);
+  padding: 14px 16px; margin-bottom: 14px; background: var(--bg-surface);
+  box-shadow: var(--shadow);
+}
+
+/* ── Empty state ── */
+.empty-note {
+  text-align: center; padding: 28px; font-size: 13px; color: var(--text-muted);
+}
+
+/* ── Analyzing lock ── */
+.app-container.analyzing .upload-area {
+  pointer-events: none; opacity: .55; filter: saturate(.7);
+}
+.app-container.analyzing .btn-ghost { opacity: .55; pointer-events: none; }
+
+/* ── Progress error state ── */
+.progress-panel.error { border-color: var(--danger-border); }
+.progress-panel.error .progress-fill {
+  background: linear-gradient(90deg, #dc2626, #ef4444);
+  box-shadow: 0 0 10px rgba(220,38,38,.4);
+}
+.progress-panel.error .progress-text { color: var(--danger); }
+.progress-panel.error .progress-bar.extracting::after { animation: none; opacity: 0; }
+
 /* ── Tables ── */
 .data-table {
   width: 100%; border-collapse: separate; border-spacing: 0;
@@ -791,6 +930,7 @@ details > summary::marker { color: var(--accent); }
 .history-verdict.danger { background: #fef2f2; color: var(--danger); }
 .history-verdict.warning { background: #fffbeb; color: #b45309; }
 .history-verdict.success { background: #f0fdf4; color: #15803d; }
+.history-verdict.muted { background: #f1f5f9; color: #64748b; }
 .history-files {
   font-size: 12px; color: var(--text-secondary);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
