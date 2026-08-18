@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700;9..40,800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/css/style.css?v=9">
+<link rel="stylesheet" href="/static/css/style.css?v=10">
 </head>
 <body>
 
@@ -113,7 +113,19 @@
     </div>
     <div class="upload-tips">
       <span class="upload-tips-icon">💡</span>
-      <span>支持 <strong>.docx/.doc/.pdf/.txt/.xlsx</strong>，上传不设大小上限。扫描件/全图片PDF 会自动启用 <strong>OCR 全量识别</strong>（不设页数/时间限制），数百页扫描件分析耗时约 10-40 分钟，期间请勿关闭页面。.xlsx 报价附件可直接上传参与报价分析。文字版PDF 处理速度远快于扫描件，建议优先。</span>
+      <div class="upload-tips-body">
+        <div class="upload-tips-line">
+          格式：<strong>.docx / .doc / .pdf / .txt / .xlsx</strong>
+          <span class="upload-tips-sep">·</span>上传不设大小上限
+          <span class="upload-tips-sep">·</span>.xlsx 报价附件可直接参与分析
+        </div>
+        <div class="upload-tips-line">
+          扫描件：<strong>全图片 PDF</strong> 自动 <strong>OCR 全量识别</strong>（不设页数/时间限制）；
+          <strong>图文混合型 PDF</strong> 的图片页同样自动 OCR，文字页正常提取。
+          数百页扫描件分析约需 10-40 分钟，期间请勿关闭页面。
+        </div>
+        <div class="upload-tips-line upload-tips-em">⭐ <strong>超大文件</strong>建议优先上传纯文字版 PDF 或 Word</div>
+      </div>
     </div>
     <div class="progress-panel" id="progressPanel" style="display:none">
       <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>

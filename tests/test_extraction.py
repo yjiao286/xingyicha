@@ -76,6 +76,24 @@ def t_price_reverse_pair():
     assert r['totalPriceInTax'] == 123456, r
 
 
+def t_similarity_toc_dots_ignored():
+    # TOC leader dots ('四、授权委托书 ....... 7') must never pair unrelated
+    # lines across documents ('9.7 网络拥塞的感知时间不高于 5s ....... 79')
+    t1 = '目录\n四、授权委托书 ....... 7\n一、投标函 ......... 3\n'
+    t2 = '9.7 网络拥塞的感知时间不高于 5s ....... 79\n项目人员与分工表\n'
+    res = m.text_similarity_analysis({'a': t1, 'b': t2})
+    for pr in res['pair_results']:
+        for mm in pr.get('matches', []):
+            assert '授权委托书' not in mm.get('text', ''), mm
+            assert '网络拥塞' not in mm.get('text', ''), mm
+    # 真实内容仍应匹配
+    t3 = '本项目采用三层架构设计，核心交换节点采用双机热备冗余部署策略\n'
+    t4 = '本项目采用三层架构设计，核心交换节点采用双机热备冗余部署策略\n'
+    res2 = m.text_similarity_analysis({'a': t3, 'b': t4})
+    assert any('三层架构' in mm.get('text', '')
+               for pr in res2['pair_results'] for mm in pr.get('matches', [])), res2
+
+
 def t_price_wan_near_context():
     # 万-form value must survive the near-context validation
     r = m.extract_prices('投标总价：￥12.5万元')
@@ -139,6 +157,21 @@ def t_personnel_blank_template_no_leak():
     assert '本人' not in names and '性别' not in names, names
     assert p.get('legal_rep') not in ('本人', '性别', '性别:'), p.get('legal_rep')
     assert p.get('company_name') not in ('________________（盖单位章', '（盖单位章'), p.get('company_name')
+
+
+def t_personnel_title_word_not_name():
+    # PDF "序号 姓名 职称 分工" tables: '张然 中级 项目负责人' — the 职称
+    # column value 中级 must not become the name; 张然 must be captured.
+    t = ('项目人员配置\n表 5 项目人员与分工\n序号 姓名 职称 分工\n'
+         '1 张然 中级 项目负责人\n'
+         '2 刘某某 教授 流资源预留协议设计\n'
+         '3 潘某某 副教授 负载均衡技术设计\n')
+    p = m.extract_personnel(t)
+    names = [x['name'] for x in p['all_persons']]
+    assert '中级' not in names and '教授' not in names and '副教授' not in names, names
+    assert '张然' in names, names
+    zhang = [x for x in p['all_persons'] if x['name'] == '张然']
+    assert any(x['role'] == 'project_manager' for x in zhang), zhang
 
 
 def t_personnel_role_not_name():

@@ -316,6 +316,14 @@ body::after {
   display: flex; align-items: flex-start; gap: 10px; line-height: 1.7;
 }
 .upload-tips-icon { flex-shrink: 0; font-size: 16px; margin-top: 1px; }
+.upload-tips-body { flex: 1; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.upload-tips-line { line-height: 1.6; }
+.upload-tips-sep { margin: 0 6px; color: #93b4e8; }
+.upload-tips-em {
+  margin-top: 2px; padding: 3px 10px; border-radius: 8px;
+  background: rgba(255, 255, 255, .75); border: 1px dashed #b9d2f7;
+  color: #0f2e6e; font-weight: 500;
+}
 
 /* ── Buttons ── */
 .btn-row { display: flex; gap: 12px; margin-top: 22px; justify-content: center; }

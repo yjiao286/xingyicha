@@ -161,12 +161,27 @@ _FOLD_TABLE = str.maketrans(_FOLD_MAP)
 del _o, _c, _src, _dst
 
 
+# TOC leader dots (目录点线): '四、授权委托书 ....... 7' — 2+ consecutive dots
+# (half/full-width, incl. 省略号 …) are filler, never content. They must not
+# participate in similarity matching, otherwise unrelated TOC lines pair up
+# across documents ('...7' vs '...79'). Replaced with equal-length spaces so
+# the 1:1 char↔position mapping stays intact.
+_TOC_DOTS_RE = re.compile(r'[.．…]{2,}')
+
+
+def _strip_toc_dots(text):
+    if not text or '.' not in text and '．' not in text and '…' not in text:
+        return text
+    return _TOC_DOTS_RE.sub(lambda m: ' ' * len(m.group()), text)
+
+
 def _normalize_for_match(text):
     """Normalize text for comparison: drop whitespace/invisible chars, then
     fold case / full-width / punctuation variants. The mapping is 1:1 on
     surviving characters, so normalized length == non-skipped char count."""
     if not text:
         return ''
+    text = _strip_toc_dots(text)
     out = []
     for ch in text:
         if not _is_skip_char(ch):
@@ -978,6 +993,10 @@ def _is_person_name(name):
         '户籍', '党派', '血型', '婚姻', '家庭住址', '现住址',
         # Function words that are not names but pass 2-char CJK validation
         '本人', '我方', '我们', '该人', '此人', '对方', '甲方', '乙方', '丙方',
+        # 职称/级别词 — PDF "姓名 职称 分工" tables put these in the 职称 column
+        # ('张然 中级 项目负责人'); they must never be captured as names.
+        '中级', '高级', '初级', '正高', '副高', '教授', '副教授', '讲师', '助教',
+        '研究员', '副研究员', '工程师', '技师', '助理', '总工', '高工',
         # Table column labels / role words that look like names
         '投标人名称', '项目名称', '公司名称', '企业名称', '单位名称',
         '招标人', '投标人', '采购人', '供应商', '供应商名称',
@@ -1129,12 +1148,17 @@ _ROLE_KEYWORDS = [
 
 def _extract_from_personnel_table(section_text, info):
     """Extract project members from personnel/team tables."""
+    # 职称/级别词（表格"职称"列的值，如"张然 中级 项目负责人"）— 绝不能当姓名
+    _TITLE_WORDS = r'(?:高级|中级|初级|正高级|副高级|教授|副教授|讲师|助教|研究员|副研究员|工程师|高级工程师|助理工程师|技师|高级技师|助理)?'
     patterns = [
         r'姓名[：:]\s*([一-鿿]{2,4}(?:[·•・][一-鿿]{2,4}){0,2})\s*.*?(?:职务|岗位|角色|职称)[：:]\s*([一-鿿]{2,10})',
         # Single space or tab between name and role is common in both docx
         # and PDF extraction ('王某某 项目经理'); require the role keyword
         # so a bare space-separated line cannot be a false positive.
-        r'([一-鿿]{2,4}(?:[·•・][一-鿿]{2,4}){0,2})\s+(项目经理|项目负责人|技术负责人|技术总监|总工程师|安全员|质量员|施工员|材料员|资料员|造价员|预算员)',
+        # PDF "序号 姓名 职称 分工" tables produce '张然 中级 项目负责人' —
+        # allow one title word between name and role so 张然 is captured
+        # instead of the 职称 column value 中级.
+        r'([一-鿿]{2,4}(?:[·•・][一-鿿]{2,4}){0,2})\s+' + _TITLE_WORDS + r'\s*(项目经理|项目负责人|技术负责人|技术总监|总工程师|安全员|质量员|施工员|材料员|资料员|造价员|预算员)',
         r'(项目经理|项目负责人|技术负责人|技术总监|总工程师)[：:]\s*([一-鿿]{2,4}(?:[·•・][一-鿿]{2,4}){0,2})(?![一-鿿])',
         r'(项目经理|项目负责人|技术负责人|安全负责人)\s+([一-鿿]{2,4}(?:[·•・][一-鿿]{2,4}){0,2})(?![一-鿿])',
     ]
@@ -2938,6 +2962,7 @@ def _build_normalized_map(text):
     """Return (norm_text, positions) where norm_text has whitespace and
     invisible characters dropped and case/punctuation folded (see
     _FOLD_TABLE), and positions[i] is the original index of norm_text[i]."""
+    text = _strip_toc_dots(text)  # TOC leader dots never participate in matching
     norm_chars = []
     positions = []
     for i, ch in enumerate(text):
