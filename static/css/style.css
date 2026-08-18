@@ -682,6 +682,14 @@ body::after {
   pointer-events: none; opacity: .55; filter: saturate(.7);
 }
 .app-container.analyzing .btn-ghost { opacity: .55; pointer-events: none; }
+/* 停止分析按钮必须在分析期间保持可点击（覆盖上面的 ghost 禁用规则） */
+.app-container.analyzing #btnCancel {
+  opacity: 1;
+  pointer-events: auto;
+  cursor: pointer;
+  border-color: var(--danger, #dc2626);
+  color: var(--danger, #dc2626);
+}
 
 /* ── Progress error state ── */
 .progress-panel.error { border-color: var(--danger-border); }

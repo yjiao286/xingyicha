@@ -11,8 +11,12 @@ APP_NAME="xingyicha-linux-${ARCH}"
 VERSION="1.0"
 
 case "$ARCH" in
-  x64)   PY_TRIPLET="x86_64-unknown-linux-gnu";  PIP_PLAT="manylinux_2_28_x86_64";  DEB_ARCH="amd64" ;;
-  arm64) PY_TRIPLET="aarch64-unknown-linux-gnu"; PIP_PLAT="manylinux_2_28_aarch64"; DEB_ARCH="arm64" ;;
+  # 多个 manylinux 平台标签：rapidocr 依赖链里的 pyclipper 只发布
+  # manylinux_2_17/manylinux2014 的 wheel，onnxruntime/opencv 等需要 2_28。
+  x64)   PY_TRIPLET="x86_64-unknown-linux-gnu";  DEB_ARCH="amd64"
+         PIP_PLATS=("manylinux_2_28_x86_64" "manylinux_2_17_x86_64" "manylinux2014_x86_64") ;;
+  arm64) PY_TRIPLET="aarch64-unknown-linux-gnu"; DEB_ARCH="arm64"
+         PIP_PLATS=("manylinux_2_28_aarch64" "manylinux_2_17_aarch64" "manylinux2014_aarch64") ;;
   *) echo "用法: $0 [x64|arm64]"; exit 1 ;;
 esac
 
@@ -59,12 +63,14 @@ rm -rf "$tmp_extract"
 ok "Python 就位: $PKG/python/bin/python3"
 
 # ── 2. 下载 Linux 预编译 wheel ───────────────────────────────────
-log "下载 Linux 依赖 wheel (${PIP_PLAT})"
+log "下载 Linux 依赖 wheel (${PIP_PLATS[*]})"
 mkdir -p "$WHEELHOUSE"
 # 仅在为空或缺少时重新下载（wheelhouse 非空即复用）
 if [ -z "$(ls -A "$WHEELHOUSE" 2>/dev/null)" ]; then
+  PLAT_ARGS=()
+  for plat in "${PIP_PLATS[@]}"; do PLAT_ARGS+=(--platform "$plat"); done
   python3 -m pip download \
-    --platform "$PIP_PLAT" \
+    "${PLAT_ARGS[@]}" \
     --python-version 311 \
     --abi cp311 \
     --implementation cp \

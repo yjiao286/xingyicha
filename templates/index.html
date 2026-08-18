@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700;9..40,800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/css/style.css?v=8">
+<link rel="stylesheet" href="/static/css/style.css?v=9">
 </head>
 <body>
 
@@ -80,10 +80,10 @@
           <p class="upload-text">拖拽标书文件到此处</p>
           <p class="upload-hint">或点击选择文件 — 至少 2 份</p>
           <div class="format-chips">
-            <span>.docx</span><span>.doc</span><span>.pdf</span><span>.txt</span>
+            <span>.docx</span><span>.doc</span><span>.pdf</span><span>.txt</span><span>.xlsx</span>
           </div>
         </div>
-        <input type="file" id="fileInput" multiple accept=".docx,.doc,.pdf,.txt" hidden>
+        <input type="file" id="fileInput" multiple accept=".docx,.doc,.pdf,.txt,.xlsx" hidden>
         <div class="file-list" id="fileList"></div>
       </div>
       <div class="upload-col">
@@ -97,10 +97,10 @@
           <p class="upload-text">拖拽招标文件</p>
           <p class="upload-hint">或点击选择 — 用于扣减模板内容</p>
           <div class="format-chips">
-            <span>.docx</span><span>.doc</span><span>.pdf</span><span>.txt</span>
+            <span>.docx</span><span>.doc</span><span>.pdf</span><span>.txt</span><span>.xlsx</span>
           </div>
         </div>
-        <input type="file" id="refFileInput" multiple accept=".docx,.doc,.pdf,.txt" hidden>
+        <input type="file" id="refFileInput" multiple accept=".docx,.doc,.pdf,.txt,.xlsx" hidden>
         <div class="file-list" id="refFileList"></div>
       </div>
     </div>
@@ -113,12 +113,13 @@
     </div>
     <div class="upload-tips">
       <span class="upload-tips-icon">💡</span>
-      <span>请上传<strong>可复制文字版</strong>PDF或Word文件。扫描件/全图片PDF无法提取文字，将导致分析无结果。大文件（>100MB）处理较慢，建议提前压缩。</span>
+      <span>支持 <strong>.docx/.doc/.pdf/.txt/.xlsx</strong>，上传不设大小上限。扫描件/全图片PDF 会自动启用 <strong>OCR 全量识别</strong>（不设页数/时间限制），数百页扫描件分析耗时约 10-40 分钟，期间请勿关闭页面。.xlsx 报价附件可直接上传参与报价分析。文字版PDF 处理速度远快于扫描件，建议优先。</span>
     </div>
     <div class="progress-panel" id="progressPanel" style="display:none">
       <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
       <div class="progress-text" id="progressText">准备中...</div>
       <div class="progress-steps" id="progressSteps"></div>
+      <button class="btn btn-ghost" id="btnCancel" style="display:none;margin-top:10px;">停止分析</button>
     </div>
   </section>
 
@@ -239,6 +240,6 @@
   </div>
 </div>
 
-<script src="/static/js/main.js?v=7"></script>
+<script src="/static/js/main.js?v=8"></script>
 </body>
 </html>

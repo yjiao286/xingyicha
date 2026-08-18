@@ -59,7 +59,7 @@ refUploadArea.addEventListener('drop', e => {
 });
 refFileInput.addEventListener('change', e => addFiles(e.target.files, 'ref'));
 
-const VALID_EXTS = ['.docx', '.doc', '.pdf', '.txt'];
+const VALID_EXTS = ['.docx', '.doc', '.pdf', '.txt', '.xlsx'];
 
 function escapeHtml(str) {
   // Escapes quotes too: results are interpolated into value="..." and
@@ -194,12 +194,21 @@ function updateExtractProgress(event) {
     return;
   }
 
-  if (event.phase === 'pdf_page') {
+  if (event.phase === 'pdf_page' || event.phase === 'pdf_ocr') {
     var fileFraction = event.total > 0 ? (event.current / event.total) : 0;
     var fileStartPct = 1 + (_fileIndex - 1) * _fileShare;
     var realPct = Math.min(fileStartPct + fileFraction * _fileShare, 25);
     _barSet(realPct);
-    progressText.textContent = '提取文字: ' + _extractFileName + ' (' + event.current + '/' + event.total + ' 页)';
+    if (event.phase === 'pdf_ocr') {
+      progressText.textContent = 'OCR识别扫描件: ' + _extractFileName + (event.detail ? ' - ' + event.detail : '');
+    } else {
+      progressText.textContent = '提取文字: ' + _extractFileName + ' (' + event.current + '/' + event.total + ' 页)';
+    }
+    return;
+  }
+
+  if (event.phase === 'pdf_ocr_start') {
+    progressText.textContent = event.detail || ('OCR识别扫描件: ' + _extractFileName);
     return;
   }
 
@@ -257,7 +266,52 @@ function failProgress(msg) {
   progressText.textContent = msg || '分析失败';
   var active = progressSteps.querySelectorAll('.progress-step.active');
   active.forEach(function(el) { el.classList.remove('active'); });
+  hideCancelBtn();
 }
+
+// ── Cancel (停止分析) ──
+var _cancelRequestId = null;
+var _cancelRequested = false;
+var btnCancel = document.getElementById('btnCancel');
+
+function showCancelBtn() {
+  if (btnCancel) btnCancel.style.display = 'inline-block';
+}
+function hideCancelBtn() {
+  if (btnCancel) btnCancel.style.display = 'none';
+  if (btnCancel) btnCancel.disabled = false;
+  btnCancel.textContent = '停止分析';
+}
+
+async function requestCancel() {
+  if (!_cancelRequestId || _cancelRequested) return;
+  _cancelRequested = true;
+  if (btnCancel) {
+    btnCancel.disabled = true;
+    btnCancel.textContent = '正在停止…';
+  }
+  try {
+    const resp = await fetch('/api/cancel', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: _cancelRequestId })
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      // Server doesn't know this run (already finished or restarted) — the
+      // stream will terminate on its own; fall back to a local abort.
+      _cancelRequestId = null;
+      if (btnCancel) { btnCancel.disabled = false; btnCancel.textContent = '停止分析'; }
+      _cancelRequested = false;
+      alert('未能通知服务器停止：' + (data.error || 'HTTP ' + resp.status) + '\n请稍候或刷新页面。');
+    }
+  } catch (e) {
+    _cancelRequested = false;
+    if (btnCancel) { btnCancel.disabled = false; btnCancel.textContent = '停止分析'; }
+    alert('停止请求发送失败: ' + e.message);
+  }
+}
+if (btnCancel) btnCancel.addEventListener('click', requestCancel);
 
 function finishProgress() {
   if (_analysisFailed) {
@@ -277,7 +331,7 @@ function addFiles(files, type) {
   const validFiles = Array.from(files).filter(f =>
     VALID_EXTS.some(ext => f.name.toLowerCase().endsWith(ext))
   );
-  if (validFiles.length === 0) { alert('请选择 .docx / .doc / .pdf / .txt 格式的文件'); return; }
+  if (validFiles.length === 0) { alert('请选择 .docx / .doc / .pdf / .txt / .xlsx 格式的文件'); return; }
 
   const target = type === 'ref' ? selectedRefFiles : selectedFiles;
   validFiles.forEach(f => {
@@ -299,7 +353,7 @@ function renderAllFileLists() {
       const key = f.name + '_' + f.size;
       if (!(key in fileGroups)) {
         const defaultGroup = f.name.replace(/[（(]?(商务|技术|投标|响应)[部分卷册文件]*[）)]?/g, '')
-          .replace(/\.(docx|doc|pdf|txt)$/i, '').trim() || f.name;
+          .replace(/\.(docx|doc|pdf|txt|xlsx)$/i, '').trim() || f.name;
         fileGroups[key] = defaultGroup;
       }
       const group = fileGroups[key] || '';
@@ -402,7 +456,7 @@ function updateButtons() {
 btnAnalyze.addEventListener('click', async () => {
   if (isAnalyzing) return;
   if (selectedFiles.length < 2) {
-    alert('请至少上传2份标书文件(.docx/.doc/.pdf/.txt)');
+    alert('请至少上传2份标书文件(.docx/.doc/.pdf/.txt/.xlsx)');
     return;
   }
 
@@ -412,6 +466,10 @@ btnAnalyze.addEventListener('click', async () => {
   var prevWarn = document.getElementById('warningPanel');
   if (prevWarn) prevWarn.remove();
   startProgress();
+  // Reset cancel state and reveal the 停止分析 button
+  _cancelRequestId = null;
+  _cancelRequested = false;
+  showCancelBtn();
 
   try {
     const formData = new FormData();
@@ -429,8 +487,16 @@ btnAnalyze.addEventListener('click', async () => {
 
     if (!resp.ok) {
       const errData = await resp.json().catch(() => ({}));
-      failProgress('分析失败: ' + (errData.error || '服务器错误'));
-      alert('分析失败: ' + (errData.error || '服务器错误'));
+      // Fall back to an actionable hint when the body isn't JSON
+      // (e.g. reverse proxies returning plain-text 413/502 pages)
+      let msg = errData.error;
+      if (!msg) {
+        if (resp.status === 413) msg = '上传文件过大，超过服务器设置的上传上限（可用 MAX_CONTENT_LENGTH_MB 调整）';
+        else if (resp.status >= 500) msg = '服务器内部错误（HTTP ' + resp.status + '），请查看服务器日志';
+        else msg = '请求失败（HTTP ' + resp.status + '）';
+      }
+      failProgress('分析失败: ' + msg);
+      alert('分析失败: ' + msg);
       return;
     }
 
@@ -450,7 +516,15 @@ btnAnalyze.addEventListener('click', async () => {
         if (!line.trim()) continue;
         try {
           const event = JSON.parse(line);
-          if (event.type === 'progress') {
+          if (event.type === 'ready') {
+            // Server-side run id for POST /api/cancel
+            _cancelRequestId = event.request_id || null;
+          } else if (event.type === 'cancelled') {
+            _cancelRequested = false;
+            _cancelRequestId = null;
+            failProgress('分析已停止：' + (event.message || ''));
+            return;
+          } else if (event.type === 'progress') {
             updateProgress(event);
           } else if (event.type === 'extract') {
             updateExtractProgress(event);
@@ -488,6 +562,7 @@ btnAnalyze.addEventListener('click', async () => {
     failProgress('分析失败，请确认服务器已启动');
     alert('分析失败，请确认服务器已启动: ' + err.message);
   } finally {
+    hideCancelBtn();
     finishProgress();
     setAnalyzing(false);
     updateButtons();
@@ -801,10 +876,15 @@ function renderPersonnel() {
   let hasAnyData = false;
 
   p.files.forEach(f => {
+    // Multi-value contact pools: show all collected phones / IDs / emails
+    // (a bid volume usually lists several contacts across its documents)
+    const phones = (f.phones && f.phones.length > 0) ? f.phones.join('、') : (f.phone || null);
+    const ids = (f.id_numbers && f.id_numbers.length > 0) ? f.id_numbers.join('、') : (f.id_number || null);
+    const emails = (f.emails && f.emails.length > 0) ? f.emails.join('、') : null;
     const rows = [
       ['公司名称', f.company_name],
       ['法定代表人', f.legal_rep], ['授权代表', f.authorized_rep],
-      ['身份证号', f.id_number], ['联系电话', f.phone],
+      ['身份证号', ids], ['联系电话', phones], ['邮箱', emails],
       ['联系地址', f.address], ['响应日期', f.response_date],
     ];
     const filled = rows.filter(r => r[1]);
@@ -1123,8 +1203,10 @@ function renderPricing() {
       { label: '收入（元）', key: 'revenue' },
       { label: '成本（元）', key: 'cost' },
     ];
+    var hasPriceRow = false;
     priceRows.forEach(function(row) {
       if (p.files.some(function(f) { return f[row.key] != null; })) {
+        hasPriceRow = true;
         tableHtml += '<tr><td>' + row.label + '</td>';
         p.files.forEach(function(f) {
           var v = f[row.key];
@@ -1133,7 +1215,21 @@ function renderPricing() {
         tableHtml += '</tr>';
       }
     });
-    tableHtml += '</tbody></table></div>';
+    // Rate-based bids (费率/下浮率) carry no price amounts — surface them
+    // instead of reporting "no price data"
+    var rateFiles = p.files.filter(function(f) { return f.bidRate != null; });
+    if (!hasPriceRow && rateFiles.length > 0) {
+      tableHtml += '<tr><td>费率/下浮率</td>';
+      p.files.forEach(function(f) {
+        tableHtml += '<td>' + (f.bidRate != null ? escapeHtml(String(f.bidRate)) : '<span style="color:#9ca3af;">—</span>') + '</td>';
+      });
+      tableHtml += '</tr>';
+      tableHtml += '</tbody></table></div>';
+      tableHtml += '<p class="empty-note" style="margin-top:8px;">该报价为费率形式（服务类项目），不涉及总价金额</p>';
+    } else {
+      tableHtml += '</tbody></table></div>';
+      if (!hasPriceRow) tableHtml += '<p class="empty-note">暂无报价数据</p>';
+    }
 
     if (p.comparison && Object.keys(p.comparison).length > 0) {
       tableHtml += '<div style="margin-top:12px;font-size:13px;">';

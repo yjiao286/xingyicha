@@ -2,9 +2,13 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system deps for .doc file support
+# Install system deps for .doc file support.
+# libgl1 is required by opencv-python (pulled in by rapidocr_onnxruntime) for
+# the scanned-PDF OCR fallback; fonts-noto-cjk improves OCR glyph coverage.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     antiword \
+    libgl1 \
+    fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
@@ -22,10 +26,12 @@ COPY static/ static/
 RUN mkdir -p /data/uploads /data/history
 ENV UPLOAD_FOLDER=/data/uploads
 ENV HISTORY_DIR=/data/history
-ENV MAX_CONTENT_LENGTH_MB=200
-ENV ANALYSIS_TIMEOUT=270
+# 上传不设上限（默认）；OCR 完全放开（0=不限）。
+# 可按需覆盖：MAX_CONTENT_LENGTH_MB / OCR_TIME_BUDGET / OCR_MAX_PAGES
+ENV ANALYSIS_TIMEOUT=3600
 
 EXPOSE 5001
 
-# Production: use gunicorn
-CMD ["gunicorn", "--bind", "0.0.0.0:5001", "--workers", "2", "--timeout", "300", "app:app"]
+# Production: use gunicorn. --timeout must exceed ANALYSIS_TIMEOUT (3600)
+# so the analysis thread can flush a timeout error before the worker kills it.
+CMD ["gunicorn", "--bind", "0.0.0.0:5001", "--workers", "2", "--timeout", "3900", "app:app"]

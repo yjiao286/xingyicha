@@ -3,3 +3,8 @@ python-docx>=1.0
 pypdf>=5.0
 olefile>=0.46
 gunicorn>=21.0
+# .xlsx 报价附件解析（轻量纯 Python）
+openpyxl>=3.1
+# 扫描件 PDF 的 OCR 回退（可选，缺失时扫描件自动跳过，不影响其他功能）
+pymupdf>=1.24
+rapidocr-onnxruntime>=1.3
