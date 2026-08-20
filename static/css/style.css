@@ -1381,6 +1381,349 @@ details > summary::marker { color: var(--accent); }
   .footer-legal { font-size: 11px; }
 }
 
+/* ════════════════════════════════════════════════════════
+   v5 视觉升级层 · 更轻盈的层级 / 更强的品牌质感
+   说明：以下样式仅调整视觉表现，不改变任何 DOM 结构或业务逻辑。
+   ════════════════════════════════════════════════════════ */
+
+/* ── 页面氛围：更丰富的渐变光晕与点阵 ── */
+body::before {
+  background:
+    radial-gradient(1150px 540px at 50% -180px, rgba(37, 99, 235, .14), transparent 64%),
+    radial-gradient(820px 430px at 92% -70px, rgba(99, 102, 241, .10), transparent 62%),
+    radial-gradient(760px 400px at 0% 12%, rgba(14, 165, 233, .07), transparent 56%),
+    radial-gradient(520px 360px at 72% 32%, rgba(37, 99, 235, .035), transparent 70%);
+}
+body::after {
+  background-image: radial-gradient(rgba(30, 64, 175, .075) 1px, transparent 1.25px);
+  background-size: 24px 24px;
+  opacity: .72;
+  -webkit-mask-image: linear-gradient(to bottom, rgba(0,0,0,.95), transparent 68%);
+          mask-image: linear-gradient(to bottom, rgba(0,0,0,.95), transparent 68%);
+}
+
+/* ── 顶部分隔线更柔和 ── */
+.scanline {
+  height: 3px;
+  background: linear-gradient(90deg, transparent 0%, rgba(37,99,235,.25) 18%, rgba(99,102,241,.78) 50%, rgba(37,99,235,.25) 82%, transparent 100%);
+  box-shadow: 0 1px 18px rgba(37,99,235,.42);
+}
+
+.app-container { padding-top: 26px; }
+
+/* ── 顶部导航：浮动胶囊 ── */
+.site-nav {
+  top: 12px;
+  padding: 0 20px;
+  background: transparent;
+  border-bottom: none;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+          backdrop-filter: none;
+}
+.site-nav-inner {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 9px 14px;
+  border: 1px solid rgba(255, 255, 255, .88);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, .78);
+  -webkit-backdrop-filter: blur(18px) saturate(1.45);
+          backdrop-filter: blur(18px) saturate(1.45);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, .04), 0 12px 36px rgba(15, 23, 42, .075);
+  transition: box-shadow .25s, background .25s;
+}
+.site-nav.scrolled {
+  box-shadow: none;
+}
+.site-nav.scrolled .site-nav-inner {
+  background: rgba(255, 255, 255, .88);
+  box-shadow: 0 16px 48px rgba(15, 23, 42, .12), 0 1px 2px rgba(15, 23, 42, .05);
+}
+.nav-logo-img {
+  height: 30px;
+  filter: drop-shadow(0 4px 8px rgba(37,99,235,.16));
+}
+.nav-link {
+  padding: 7px 16px;
+  border-radius: 11px;
+}
+.nav-link.active {
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.7), 0 4px 12px rgba(37,99,235,.10);
+}
+
+/* ── 首页标题区升级为玻璃卡片 ── */
+.app-header {
+  position: relative;
+  overflow: hidden;
+  padding: 30px 28px 28px;
+  margin-bottom: 22px;
+  background:
+    linear-gradient(135deg, rgba(255,255,255,.98), rgba(248,251,255,.94));
+  border: 1px solid rgba(255, 255, 255, .92);
+  border-radius: 24px;
+  box-shadow: 0 1px 2px rgba(15,23,42,.04), 0 18px 44px rgba(37,99,235,.08);
+}
+.app-header::before {
+  content: '';
+  position: absolute;
+  top: -110px;
+  right: -90px;
+  width: 250px;
+  height: 250px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(37,99,235,.12), rgba(99,102,241,0) 70%);
+  pointer-events: none;
+}
+.app-header::after {
+  content: '';
+  position: absolute;
+  bottom: -130px;
+  left: -80px;
+  width: 240px;
+  height: 240px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(14,165,233,.09), rgba(14,165,233,0) 70%);
+  pointer-events: none;
+}
+.header-badge,
+.header-brand,
+.header-legal {
+  position: relative;
+  z-index: 1;
+}
+.header-badge {
+  background: rgba(239, 246, 255, .88);
+  border-color: rgba(37, 99, 235, .12);
+  box-shadow: 0 6px 16px rgba(37,99,235,.08);
+}
+
+/* ── 主卡片与上传区：更细腻的层次 ── */
+.upload-section,
+.results-section {
+  border-radius: 22px;
+  border-color: rgba(255, 255, 255, .88);
+  box-shadow: 0 1px 2px rgba(15,23,42,.04), 0 16px 38px rgba(15,23,42,.065);
+}
+.upload-section {
+  padding: 30px 32px;
+  background: linear-gradient(180deg, #ffffff, #fcfdff);
+}
+.col-label {
+  font-size: 12px;
+  color: #334155;
+  letter-spacing: .65px;
+}
+.upload-area {
+  border-radius: 18px;
+  background: linear-gradient(145deg, #ffffff, #f8fbff);
+  border-color: #d6e0f0;
+}
+.upload-area:hover,
+.upload-area:focus-visible {
+  box-shadow: 0 16px 34px rgba(37,99,235,.12), 0 0 0 4px rgba(37,99,235,.06);
+}
+.upload-icon {
+  width: 60px;
+  height: 60px;
+  border-radius: 18px;
+  background: linear-gradient(135deg, #eff6ff, #dbeafe);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.9), 0 8px 18px rgba(37,99,235,.08);
+}
+.upload-area-ref .upload-icon {
+  background: linear-gradient(135deg, #ecfdf5, #d1fae5);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.9), 0 8px 18px rgba(5,150,105,.08);
+}
+.format-chips span {
+  background: rgba(255,255,255,.8);
+  border-color: rgba(148,163,184,.16);
+  box-shadow: 0 2px 6px rgba(15,23,42,.035);
+}
+.file-tag {
+  background: linear-gradient(135deg, #eff6ff, #e6f0ff);
+  border-color: rgba(37,99,235,.18);
+  box-shadow: 0 3px 9px rgba(37,99,235,.06);
+}
+
+/* ── 按钮 ── */
+.btn {
+  border-radius: 12px;
+  padding: 11px 24px;
+}
+.btn-primary {
+  background: linear-gradient(135deg, #1d4ed8 0%, #2563eb 46%, #4f46e5 100%);
+  box-shadow: 0 10px 24px rgba(37,99,235,.30), inset 0 1px 0 rgba(255,255,255,.22);
+}
+.btn-primary:hover:not(:disabled) {
+  background: linear-gradient(135deg, #1e40af 0%, #1d4ed8 46%, #4338ca 100%);
+  box-shadow: 0 14px 32px rgba(37,99,235,.36), 0 0 0 4px rgba(37,99,235,.10), inset 0 1px 0 rgba(255,255,255,.22);
+}
+.btn-ghost {
+  background: rgba(255,255,255,.76);
+  border-color: #dce3ed;
+  box-shadow: 0 1px 2px rgba(15,23,42,.04);
+}
+.btn-ghost:hover {
+  background: #ffffff;
+  border-color: #c3cddb;
+  box-shadow: 0 6px 16px rgba(15,23,42,.07);
+}
+.btn-outline {
+  background: linear-gradient(135deg, #eff6ff, #e8f1ff);
+  border-color: rgba(37,99,235,.18);
+}
+
+/* ── 分析标签页：胶囊式 tab ── */
+.tabs-nav {
+  gap: 6px;
+  padding: 10px 14px 8px;
+  background: rgba(248, 250, 253, .88);
+}
+.tab-btn {
+  padding: 9px 17px;
+  border-radius: 11px;
+  border: 1px solid transparent;
+}
+.tab-btn:hover {
+  background: rgba(255,255,255,.84);
+  box-shadow: 0 4px 12px rgba(15,23,42,.045);
+}
+.tab-btn.active {
+  background: #ffffff;
+  border-color: rgba(226,232,240,.9);
+  box-shadow: 0 7px 18px rgba(15,23,42,.08), inset 0 1px 0 rgba(255,255,255,.9);
+}
+.tab-btn.active::after {
+  display: none;
+}
+.tab-content {
+  padding: 28px 32px;
+}
+
+/* ── 通用卡片层级 ── */
+.clause-card,
+.score-card,
+.meta-match-card,
+.match-card,
+.text-match-item,
+.pair-section,
+.subitem-card,
+.chart-card,
+.history-item {
+  border-radius: 16px;
+  border-color: rgba(226,232,240,.92);
+  box-shadow: 0 1px 2px rgba(15,23,42,.035), 0 8px 22px rgba(15,23,42,.05);
+}
+.clause-card:hover,
+.meta-match-card:hover,
+.match-card:hover,
+.text-match-item:hover,
+.pair-section:hover,
+.subitem-card:hover {
+  box-shadow: 0 14px 30px rgba(15,23,42,.085);
+}
+
+/* ── 数据表格 ── */
+.data-table {
+  border-radius: 16px;
+  box-shadow: 0 8px 24px rgba(15,23,42,.055);
+}
+.data-table th {
+  background: linear-gradient(180deg, #f8fafc, #f1f5f9);
+  color: #64748b;
+  font-size: 10px;
+  letter-spacing: .8px;
+}
+.data-table td {
+  padding: 12px 14px;
+}
+.data-table tbody tr:hover {
+  background: linear-gradient(90deg, rgba(37,99,235,.045), rgba(37,99,235,0) 78%);
+}
+
+/* ── 统计页标题卡片 ── */
+.stats-header {
+  padding: 26px 28px 22px;
+  margin-bottom: 20px;
+  background: linear-gradient(135deg, rgba(255,255,255,.98), rgba(248,251,255,.94));
+  border: 1px solid rgba(255,255,255,.92);
+  border-radius: 22px;
+  box-shadow: 0 1px 2px rgba(15,23,42,.04), 0 14px 34px rgba(37,99,235,.07);
+}
+
+/* ── KPI 卡片：彩色顶线 + 更轻盈的渐变 ── */
+.kpi-card {
+  padding: 20px 20px 18px;
+  border-radius: 18px;
+  border-top: 3px solid var(--kpi-icon-fg, var(--accent));
+  background: linear-gradient(180deg, #ffffff, #fbfdff);
+  box-shadow: 0 1px 2px rgba(15,23,42,.04), 0 12px 28px rgba(15,23,42,.065);
+}
+.kpi-card::before {
+  opacity: .9;
+}
+.kpi-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 13px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.85), 0 7px 16px rgba(15,23,42,.06);
+}
+.kpi-num {
+  font-size: 32px;
+}
+
+/* ── 图表卡片 ── */
+.chart-card {
+  padding: 22px 24px;
+  border-radius: 20px;
+  background: linear-gradient(180deg, #ffffff, #fbfdff);
+  box-shadow: 0 1px 2px rgba(15,23,42,.04), 0 12px 28px rgba(15,23,42,.06);
+}
+.chart-card-title {
+  font-size: 15px;
+}
+
+/* ── 最近分析记录操作按钮 ── */
+.recent-open-btn {
+  background: linear-gradient(135deg, #eff6ff, #e6f0ff);
+  border-color: rgba(37,99,235,.18);
+  box-shadow: 0 4px 10px rgba(37,99,235,.07);
+}
+
+/* ── 弹窗 ── */
+.modal-container {
+  border-radius: 22px;
+  border-color: rgba(255,255,255,.92);
+  box-shadow: 0 22px 70px rgba(15,23,42,.18);
+}
+.modal-header {
+  background: linear-gradient(180deg, #f8fafc, #f1f5f9);
+}
+
+/* ── 页脚 ── */
+.site-footer {
+  margin-top: 44px;
+  padding: 0 12px 16px;
+}
+.footer-rule {
+  max-width: 640px;
+  background: linear-gradient(90deg, transparent, rgba(37,99,235,.28), rgba(99,102,241,.34), rgba(37,99,235,.28), transparent);
+}
+
+/* ── 移动端微调 ── */
+@media (max-width: 700px) {
+  .app-container { padding-top: 16px; }
+  .site-nav { top: 8px; padding: 0 12px; }
+  .site-nav-inner { padding: 8px 10px; border-radius: 15px; }
+  .app-header { padding: 24px 18px 22px; border-radius: 20px; }
+  .upload-section { padding: 22px 16px; }
+  .tab-content { padding: 20px 16px; }
+  .stats-header { padding: 20px 16px 18px; }
+  .chart-card { padding: 18px 16px; }
+  .chart-card { min-width: 0; overflow-x: auto; }
+  .btn { padding: 10px 18px; }
+}
+
 /* ── Responsive ── */
 @media (max-width: 980px) {
   .kpi-grid { grid-template-columns: repeat(3, 1fr); }

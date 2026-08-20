@@ -1,76 +1,93 @@
 ```mermaid
-%%{init: {"theme":"base","themeVariables":{"fontFamily":"PingFang SC, Microsoft YaHei, sans-serif","fontSize":"14px","lineColor":"#8a9bb5","primaryTextColor":"#22303f"},"flowchart":{"nodeSpacing":32,"rankSpacing":42,"curve":"basis"}}}%%
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"PingFang SC, Microsoft YaHei, sans-serif","fontSize":"18px","lineColor":"#8a9bb5","primaryTextColor":"#22303f"},"flowchart":{"nodeSpacing":45,"rankSpacing":85,"curve":"basis"}}}%%
 flowchart TD
-    subgraph IN["📥 输入"]
-        A["📄 多份标书（PDF / Word）"]
-        B["📋 参照文件（招标文件 · 可选）"]
+    subgraph IN["📥 输入层"]
+        A["📄 多份标书<br/>docx · doc · pdf · txt · xlsx"]
+        A1["🔗 多卷标书按组合并（file_groups）"]
+        B["📋 参照文件：招标文件 / 技术要求（可选）"]
     end
+    A --> A1
+    A1 --> C
+    B -. "模板过滤 + 参照命中自动降权" .-> T4
 
-    subgraph EX["🔧 文本提取"]
-        C["📝 提取正文 + 表格 + 元数据<br/>多卷标书按组合并"]
-    end
-
-    A --> C
-    B -. "仅用于查重模板过滤" .-> T4
-
-    subgraph MD["🖥️ 元数据交叉比对"]
+    subgraph EX["🔧 提取与预处理层"]
         direction TB
-        M1["创建者 / 最后保存者 / 编辑程序 / 模板"]
-        M2["WPS 保存记录（硬件ID+用户ID） / ICV / 版本号"]
-        M3["软件名与默认模板过滤 · 避免误报"]
+        C["📝 文本 + 表格提取<br/>docx/txt 原生 · pdf 文字层 · xlsx 工作表（openpyxl）"]
+        C1["🧠 扫描件 OCR 回退<br/>pymupdf 渲染 + RapidOCR · 图文混合页<br/>OCR 预算可配（默认放开）"]
+        C2["🏷️ 元数据提取<br/>OOXML · PDF Info · OLE2+KSO（硬件ID/ICV）"]
+        C3["⏹️ 取消检查点：逐页 / 逐行 / 各阶段"]
     end
-    C --> M1
+    C --> C1
+    C --> C2
+    C1 -. "OCR 文本并入" .-> C
+    C3 -. "中断控制" .-> C
 
-    subgraph PS["👥 人员交叉比对"]
+    subgraph ANALYSIS["🧩 分析模块"]
         direction TB
-        P1["章节限定提取：法定代表人 / 授权代表<br/>项目成员 / 电话 / 身份证号"]
-        P2["精确同名：同角色 high · 不同角色 medium"]
-        P3["电话相同 high · 身份证相同 critical"]
-        P4["授权代表=创建者 · 授权代表同名<br/>最后修改人相同（软件名不计分）"]
-        P5["人员重叠率 ≥ 50% → medium"]
+        subgraph MD["🖥️ 元数据比对"]
+            M1["创建者 / 最后保存者 / 编辑程序 / 模板 / ICV"]
+            M2["WPS 保存记录（硬件ID+用户ID）<br/>多卷元数据聚合"]
+            M3["软件名与默认模板过滤 · 避免误报"]
+        end
+        subgraph PS["👥 人员交叉比对"]
+            P1["章节限定提取 + 管道表解析<br/>姓名容错 · 职称黑名单"]
+            P2["多值联系池：phones / id_numbers / emails"]
+            P3["6 层交叉：同名 · 共享手机 · 共享身份证<br/>共享邮箱 · 授权代表=创建者 · 修改人 · 重叠率≥50%"]
+        end
+        subgraph TX["📖 文本查重"]
+            T1["归一化：去空白 / 折叠大小写<br/>目录点线剥离"]
+            T2["精确共段：15-gram 哈希索引"]
+            T3["近似段落：difflib 80%–98%"]
+            T4["三层模板过滤：参照 / 规则库 / 全局共现"]
+            T5["实质性评分：长度30% + 术语30%<br/>数值25% + 套话惩罚15%"]
+            T6["🔴 ≥0.6 实质异常 · 🟡 0.3–0.6 疑似<br/>⚪ &lt;0.3 模板"]
+        end
+        subgraph PR["💰 报价分析"]
+            R1["多通道提取 + 置信度校验<br/>含税/不含税/税率推导 · 中文大写金额<br/>费率 bidRate · 成本明细"]
+            R2["docx/pdf 报价表动态列解析<br/>xlsx 报价附件 · 税务分解"]
+            R3["分项模糊聚类：LCS + Jaccard 2-gram"]
+            R4["规律检测：完全一致 / 高度接近 / 等差序列"]
+        end
+        subgraph ST["📑 文档结构"]
+            S1["标题正则：章节 / Section / 附录 / 字母编号"]
+        end
     end
-    C --> P1
+    C -- "元数据" --> M1
+    C -- "人员" --> P1
+    C -- "文本查重" --> T1
+    C -- "报价" --> R1
+    C -- "结构" --> S1
 
-    subgraph TX["📖 文本查重（相似度）"]
-        direction TB
-        T1["归一化：去空白 / 统一标点 / 折叠大小写"]
-        T2["精确共段：15-gram 哈希索引 → 双向扩展"]
-        T3["近似段落：difflib 相似度 80%–98%<br/>捕捉少量改动的共谋"]
-        T4["三层模板过滤：参照文件 / 规则库<br/>全局共现（≥max(3, N×50%) 份文件）"]
-        T5["实质性评分：长度30% + 术语密度30%<br/>数值特异性25% + 套话惩罚15%"]
-        T6["🔴 ≥0.6 实质性异常 → 参与结论"]
-        T7["🟡 0.3–0.6 疑似模板 → 降级展示"]
-        T8["⚪ <0.3 模板 → 过滤"]
-    end
-    C --> T1
-    T1 --> T2 & T3
-    T2 & T3 --> T4
-    T4 --> T5
-    T5 --> T6 & T7 & T8
+    M3 --> CL1["⚖️ 第（一）项<br/>同一单位或个人编制"]
+    P3 --> CL2["⚖️ 第（二）项<br/>同一人办理投标事宜"]
+    P3 --> CL3["⚖️ 第（三）项<br/>项目管理成员同一人"]
+    T6 --> CL4["⚖️ 第（四）项-a<br/>投标文件异常一致"]
+    R4 --> CL5["⚖️ 第（四）项-b<br/>报价异常一致或规律性差异"]
 
-    subgraph PR["💰 报价分析"]
-        direction TB
-        R1["金额提取：数字 / 中文大写金额解析"]
-        R2["分项名称模糊匹配：归一化 →<br/>LCS≥6 或 Jaccard 2-gram≥0.55"]
-        R3["聚类比价：完全一致 / 差异&lt;2% / 等差序列"]
-    end
-    C --> R1
-    R1 --> R2
-    R2 --> R3
-
-    M3 --> C1["⚖️ 第（一）项<br/>同一单位或个人编制"]
-    P2 & P3 & P4 --> C2["⚖️ 第（二）项<br/>同一人办理投标事宜"]
-    P2 & P5 --> C3["⚖️ 第（三）项<br/>项目管理成员同一人"]
-    T6 --> C4["⚖️ 第（四）项-a<br/>投标文件异常一致"]
-    R3 --> C5["⚖️ 第（四）项-b<br/>报价异常一致或规律性差异"]
-
-    C1 & C2 & C3 & C4 & C5 --> S["🎯 加权评分<br/>证据强度 强1.0 / 中0.3 / 弱0.15<br/>权重 50 · 25 · 15 · 5 · 4"]
-    S --> B1["协同加分：软证据同为强 +1<br/>硬证据（一+二）同为强 +5<br/>总分封顶 100"]
-    B1 --> V{结论分级}
-    V -->|"总分 ≥ 50"| H["🔴 高度嫌疑"]
-    V -->|"总分 15–49"| M["🟠 可疑 · 建议进一步核查"]
-    V -->|"总分 &lt; 15"| L["🟢 未发现明显异常"]
+    CL1 & CL2 & CL3 & CL4 & CL5 --> SC["🎯 加权评分<br/>强1.0 / 中0.3 / 弱0.15<br/>权重 50 · 25 · 15 · 5 · 4"]
+    SC --> SY["协同加分：软证据强 +1<br/>硬证据（一+二）强 +5 · 封顶 100"]
+    SY --> V{"三级结论"}
+    V -->|"≥ 50"| H["🔴 高度嫌疑"]
+    V -->|"15–49"| ME["🟠 可疑 · 建议核查"]
+    V -->|"&lt; 15"| L["🟢 未发现明显异常"]
     V -.->|"仅 1 份 / 数据不足"| U["⚪ 无法判定"]
+
+    subgraph OUT["📤 输出与外围能力"]
+        O1["📄 综合报告 .docx<br/>含分项比对 + 评分规则"]
+        O2["🕘 历史记录<br/>轻量存储 · 重载 / 重生成报告 / 删除"]
+        O3["📊 数据统计页 /api/stats<br/>KPI · 结论环图 · 评分趋势 · 维度条形"]
+        O4["⚡ 流式 NDJSON 进度 · 一键分析 API<br/>取消机制 /api/cancel"]
+        O5["🚀 部署形态：Flask Web / Docker<br/>桌面便携包 Win · Linux · macOS · 离线可用"]
+    end
+    H & ME & L & U --> O1
+    V --> O2
+    O2 --> O3
+
+    linkStyle 7 stroke:#d28a8a,stroke-width:2px
+    linkStyle 8 stroke:#d4a26a,stroke-width:2px
+    linkStyle 9 stroke:#5fa88c,stroke-width:2px
+    linkStyle 10 stroke:#b07fd0,stroke-width:2px
+    linkStyle 11 stroke:#7fb0d4,stroke-width:2px
 
     classDef inp fill:#eef3fb,stroke:#7b93c4,stroke-width:1.5px,color:#22303f
     classDef ext fill:#f0eefb,stroke:#9688d0,stroke-width:1.5px,color:#22303f
@@ -78,22 +95,26 @@ flowchart TD
     classDef ps fill:#fdf3e7,stroke:#d4a26a,stroke-width:1.5px,color:#5b4226
     classDef tx fill:#e8f7f0,stroke:#5fa88c,stroke-width:1.5px,color:#1f4a3a
     classDef pr fill:#f5e9fa,stroke:#b07fd0,stroke-width:1.5px,color:#4b2a5b
+    classDef st fill:#eef6fb,stroke:#7fb0d4,stroke-width:1.5px,color:#24506e
     classDef cl fill:#eef4fd,stroke:#6d8fc9,stroke-width:1.5px,color:#1f3a66
     classDef sc fill:#fff7e0,stroke:#d9b24a,stroke-width:1.5px,color:#5b4a16
     classDef hi fill:#fde2e2,stroke:#d64545,stroke-width:2px,color:#7a1f1f
     classDef me fill:#ffe9cc,stroke:#e08a2e,stroke-width:2px,color:#6b3d0f
     classDef lo fill:#e2f7e2,stroke:#4aa84a,stroke-width:2px,color:#1f5b1f
     classDef un fill:#f0f0f0,stroke:#9aa0a8,stroke-width:1.5px,color:#444
-    class A,B inp
-    class C ext
+    classDef out fill:#f3f5f7,stroke:#8b98a8,stroke-width:1.5px,color:#33404d
+    class A,A1,B inp
+    class C,C1,C2,C3 ext
     class M1,M2,M3 md
-    class P1,P2,P3,P4,P5 ps
-    class T1,T2,T3,T4,T5,T6,T7,T8 tx
-    class R1,R2,R3 pr
-    class C1,C2,C3,C4,C5 cl
-    class S,B1 sc
+    class P1,P2,P3 ps
+    class T1,T2,T3,T4,T5,T6 tx
+    class R1,R2,R3,R4 pr
+    class S1 st
+    class CL1,CL2,CL3,CL4,CL5 cl
+    class SC,SY sc
     class H hi
-    class M me
+    class ME me
     class L lo
     class U un
+    class O1,O2,O3,O4,O5 out
 ```
