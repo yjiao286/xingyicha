@@ -70,6 +70,15 @@ jobs:
           if (-not (Test-Path $iscc)) { $iscc = "${env:ProgramFiles}\Inno Setup 6\ISCC.exe" }
           & $iscc 'packaging/星易查.iss'
 
+      - name: Copy release files to ASCII names
+        # GitHub Release 上传工具（softprops action / gh CLI）都会剥掉
+        # 非 ASCII 文件名（星易查-Setup.exe -> -Setup.exe），复制为 ASCII
+        # 名再上传最稳；Actions artifact 层中文名不受影响。
+        shell: pwsh
+        run: |
+          Copy-Item 'dist/星易查-Setup.exe' 'dist/XingYiCha-Setup.exe'
+          Copy-Item 'dist/星易查-便携版.zip' 'dist/XingYiCha-portable.zip'
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -84,6 +93,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/星易查-Setup.exe
-            dist/星易查-便携版.zip
+            dist/XingYiCha-Setup.exe
+            dist/XingYiCha-portable.zip
           generate_release_notes: true

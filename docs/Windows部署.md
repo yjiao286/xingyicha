@@ -4,8 +4,11 @@
 
 | 形式 | 文件 | 适用 |
 |------|------|------|
-| 安装包 | `星易查-Setup.exe` | 双击安装，桌面快捷方式，带卸载程序 |
-| 便携版 | `星易查-便携版.zip` | 解压即用，U 盘拷贝、内网离线机 |
+| 安装包 | `XingYiCha-Setup.exe`（Release 页）/<br>`星易查-Setup.exe`（Actions 产物） | 双击安装，桌面快捷方式，带卸载程序 |
+| 便携版 | `XingYiCha-portable.zip`（Release 页）/<br>`星易查-便携版.zip`（Actions 产物） | 解压即用，U 盘拷贝、内网离线机 |
+
+> 说明：GitHub Release 附件不支持中文文件名（会被截断），所以 Release 页面
+> 上是 ASCII 名（`XingYiCha-*`），内容与 Actions 产物中的中文名完全一致。
 
 ## 一、获取安装包（云端构建，无需 Windows 机器）
 
@@ -14,6 +17,7 @@
 3. 等待约 15-20 分钟构建完成（绿色 ✓）
 4. 点进本次运行，页面底部 **Artifacts** 区域下载 `星易查-Windows` 压缩包，
    解压得到 `星易查-Setup.exe` 与 `星易查-便携版.zip`
+   （Release 页面则为 ASCII 名 `XingYiCha-*`）
 
 > 打 tag（如 `v1.0.0`）再 push，会自动创建 GitHub Release 并把两个文件挂在
 > Release 页面上，方便长期分发。
@@ -23,7 +27,7 @@
 
 ## 二、安装与使用
 
-**安装包版**：双击 `星易查-Setup.exe` → 一路下一步（可勾选创建桌面快捷方式）→
+**安装包版**：双击 `XingYiCha-Setup.exe`（或中文名 `星易查-Setup.exe`）→ 一路下一步（可勾选创建桌面快捷方式）→
 完成页勾选"立即启动"或双击桌面图标。
 
 **便携版**：解压 zip 到任意可写目录 → 双击 `星易查.exe`。
