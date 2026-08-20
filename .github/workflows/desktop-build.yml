@@ -30,7 +30,9 @@ jobs:
           - os: ubuntu-22.04
             platform: linux
             suffix: linux-x86_64
-          - os: macos-13
+          # 注：GitHub 的 Intel macOS runner 已退役，x86_64 版在 arm64
+          # runner 上用 Rosetta + universal2 Python 强制 x86_64 构建。
+          - os: macos-14
             platform: macos
             arch: x86_64
             suffix: macos-x86_64
@@ -43,7 +45,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Python 3.11
+      - name: Setup Python 3.11 (native arch)
+        if: matrix.arch != 'x86_64'
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -56,7 +59,19 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgl1 libegl1 libglib2.0-0
 
-      - name: Install dependencies
+      - name: Install x86_64 Python (macOS Intel via Rosetta)
+        if: matrix.arch == 'x86_64'
+        run: |
+          # python.org 的 pkg 是 universal2 双架构：arch -x86_64 运行即取
+          # x86_64 slice，pip 解析到的 wheels 也是 x86_64
+          curl -fsSL -o python-3.11.pkg https://www.python.org/ftp/python/3.11.9/python-3.11.9-macos11.pkg
+          sudo installer -pkg python-3.11.pkg -target /
+          arch -x86_64 /Library/Frameworks/Python.framework/Versions/3.11/bin/python3.11 -m venv x86venv
+          arch -x86_64 x86venv/bin/python -m pip install --upgrade pip
+          arch -x86_64 x86venv/bin/python -m pip install -r packaging/requirements-desktop.txt
+
+      - name: Install dependencies (native arch)
+        if: matrix.arch != 'x86_64'
         run: |
           python -m pip install --upgrade pip
           pip install -r packaging/requirements-desktop.txt
@@ -80,7 +95,12 @@ jobs:
           }
 
       - name: PyInstaller build
-        run: pyinstaller packaging/star.spec --noconfirm --distpath dist --workpath build/pyinstaller
+        run: |
+          if [ "${{ matrix.arch }}" = "x86_64" ]; then
+            arch -x86_64 x86venv/bin/python -m PyInstaller packaging/star.spec --noconfirm --distpath dist --workpath build/pyinstaller
+          else
+            pyinstaller packaging/star.spec --noconfirm --distpath dist --workpath build/pyinstaller
+          fi
 
       - name: Smoke test (Windows)
         if: matrix.platform == 'windows'
@@ -92,8 +112,10 @@ jobs:
         run: |
           if [ "${{ matrix.platform }}" = "linux" ]; then
             dist/XingYiCha/XingYiCha --check
+          elif [ "${{ matrix.arch }}" = "x86_64" ]; then
+            arch -x86_64 dist/XingYiCha.app/Contents/MacOS/XingYiCha --check
           else
-            dist/XingYiCha/XingYiCha.app/Contents/MacOS/XingYiCha --check
+            dist/XingYiCha.app/Contents/MacOS/XingYiCha --check
           fi
 
       - name: Package Windows (installer + portable zip)
@@ -126,14 +148,14 @@ jobs:
         if: matrix.platform == 'macos'
         run: |
           # ad-hoc 签名（无证书）：避免 M 系芯片直接拒绝运行未签名二进制
-          codesign --force --deep --sign - dist/XingYiCha/XingYiCha.app
+          codesign --force --deep --sign - dist/XingYiCha.app
           # dmg：app + Applications 拖拽链接
           mkdir -p dmg_staging
-          cp -R dist/XingYiCha/XingYiCha.app dmg_staging/
+          cp -R dist/XingYiCha.app dmg_staging/
           ln -s /Applications dmg_staging/Applications
           hdiutil create -volname 星易查 -srcfolder dmg_staging -ov -format UDZO dist/XingYiCha-macOS-${{ matrix.arch }}.dmg
           # zip 便携版
-          ditto -c -k --keepParent dist/XingYiCha/XingYiCha.app dist/XingYiCha-macOS-${{ matrix.arch }}.zip
+          ditto -c -k --keepParent dist/XingYiCha.app dist/XingYiCha-macOS-${{ matrix.arch }}.zip
 
       - name: Copy release files to ASCII names (Windows)
         if: matrix.platform == 'windows'
