@@ -5698,11 +5698,12 @@ if __name__ == '__main__':
 
     def _pick_free_port(preferred):
         """Return `preferred` if bindable, else preferred+1..+9 (double-click
-        relaunch while a stale instance holds the port should still work)."""
+        relaunch while a stale instance holds the port should still work).
+        No SO_REUSEADDR: on Windows it allows hijacking a port another
+        process is actively listening on, defeating the probe."""
         import socket
         for cand in range(preferred, preferred + 10):
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 try:
                     s.bind((host, cand))
                     return cand
