@@ -77,7 +77,13 @@ jobs:
           pip install -r packaging/requirements-desktop.txt
 
       - name: Generate icons
-        run: python packaging/make_icon.py
+        shell: bash
+        run: |
+          if [ "${{ matrix.arch }}" = "x86_64" ]; then
+            arch -x86_64 x86venv/bin/python packaging/make_icon.py
+          else
+            python packaging/make_icon.py
+          fi
 
       - name: Build macOS .icns
         if: matrix.platform == 'macos'
@@ -95,6 +101,7 @@ jobs:
           }
 
       - name: PyInstaller build
+        shell: bash
         run: |
           if [ "${{ matrix.arch }}" = "x86_64" ]; then
             arch -x86_64 x86venv/bin/python -m PyInstaller packaging/star.spec --noconfirm --distpath dist --workpath build/pyinstaller
