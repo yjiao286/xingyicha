@@ -17,7 +17,7 @@ call ".venv-win\Scripts\activate.bat" || goto :fail
 
 echo [2/6] Installing dependencies (this may take a few minutes)...
 python -m pip install --upgrade pip || goto :fail
-pip install -r packaging\requirements-win.txt || goto :fail
+pip install -r packaging\requirements-desktop.txt || goto :fail
 
 echo [3/6] Generating app icon...
 python packaging\make_icon.py || goto :fail

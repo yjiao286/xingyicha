@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=星易查
+Comment=围串标风险识别分析系统
+Exec=XingYiCha
+Icon=star
+Terminal=true
+Type=Application
+Categories=Office;Utility;
+StartupWMClass=XingYiCha

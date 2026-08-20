@@ -83,11 +83,25 @@ logging.basicConfig(
 )
 logger = logging.getLogger('xingyicha')
 
-# Desktop (frozen) build: keep uploads/history under %LOCALAPPDATA%\星易查 so
-# they survive reinstalls and work even when installed under Program Files.
-# Env vars (UPLOAD_FOLDER / HISTORY_DIR) still take precedence everywhere.
+# Desktop (frozen) build: keep uploads/history in the per-user data dir so
+# they survive reinstalls and work even when the app bundle itself is
+# read-only (Program Files, /Applications, AppImage mount point). Env vars
+# (UPLOAD_FOLDER / HISTORY_DIR) still take precedence everywhere.
 if IS_FROZEN:
-    _DATA_DIR = os.path.join(os.environ.get('LOCALAPPDATA') or _BASE_DIR, '星易查')
+    if sys.platform == 'darwin':
+        # ~/Library/Application Support/星易查 (standard macOS location)
+        _DATA_DIR = os.path.join(os.path.expanduser('~'), 'Library',
+                                 'Application Support', '星易查')
+    elif os.name == 'nt':
+        # %LOCALAPPDATA%\星易查
+        _DATA_DIR = os.path.join(os.environ.get('LOCALAPPDATA') or _BASE_DIR, '星易查')
+    else:
+        # $XDG_DATA_HOME/星易查, fallback ~/.local/share/星易查 (AppImage
+        # mount point under /tmp is read-only, so never write next to the exe)
+        _DATA_DIR = os.path.join(
+            os.environ.get('XDG_DATA_HOME')
+            or os.path.join(os.path.expanduser('~'), '.local', 'share'),
+            '星易查')
 else:
     _DATA_DIR = _BASE_DIR
 

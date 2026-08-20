@@ -28,3 +28,10 @@ dist/
 
 # 备份文件
 *.bak
+
+# 构建期生成的图标/语言包
+packaging/star.ico
+packaging/star.png
+packaging/star.icns
+packaging/star.iconset/
+packaging/ChineseSimplified.isl

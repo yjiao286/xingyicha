@@ -1,0 +1,6 @@
+#!/bin/sh
+# AppImage 入口：定位 AppDir 内 onedir 可执行文件并启动。
+# AppImage 运行时挂载在只读 squashfs，数据目录由 app.py 落到
+# ~/.local/share/星易查，无需在此处理。
+HERE="$(dirname "$(readlink -f "$0")")"
+exec "$HERE/usr/bin/XingYiCha/XingYiCha" "$@"

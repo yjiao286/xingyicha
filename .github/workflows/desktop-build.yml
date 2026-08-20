@@ -1,0 +1,178 @@
+name: 桌面版三平台构建
+
+# 云端构建 Windows / Linux / macOS 桌面版（无需本地各平台机器）。
+# 触发方式：
+#   1. 手动：Actions 页面 -> 桌面版三平台构建 -> Run workflow
+#   2. 打 tag（v*）：构建完成后自动发布 GitHub Release 并附上所有产物
+# 产物（构建约 15-25 分钟，在 run 页面底部 Artifacts 下载；Release 页为 ASCII 名）：
+#   Windows: 星易查-Setup.exe + 星易查-便携版.zip   (XingYiCha-Setup.exe / XingYiCha-portable.zip)
+#   Linux:   星易查-linux-x86_64.tar.gz + XingYiCha-x86_64.AppImage
+#   macOS:   XingYiCha-macOS-arm64.dmg/.zip + XingYiCha-macOS-x86_64.dmg/.zip
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows
+            suffix: windows
+          - os: ubuntu-22.04
+            platform: linux
+            suffix: linux-x86_64
+          - os: macos-13
+            platform: macos
+            arch: x86_64
+            suffix: macos-x86_64
+          - os: macos-14
+            platform: macos
+            arch: arm64
+            suffix: macos-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: packaging/requirements-desktop.txt
+
+      - name: Install system libs (Linux, opencv runtime)
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1 libegl1 libglib2.0-0
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r packaging/requirements-desktop.txt
+
+      - name: Generate icons
+        run: python packaging/make_icon.py
+
+      - name: Build macOS .icns
+        if: matrix.platform == 'macos'
+        run: iconutil -c icns packaging/star.iconset -o packaging/star.icns
+
+      - name: Download Inno Setup Chinese language file (Windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          try {
+            Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/jrsoftware/issrc/main/Files/Languages/Unofficial/ChineseSimplified.isl' -OutFile 'packaging/ChineseSimplified.isl'
+            Write-Host 'ChineseSimplified.isl downloaded'
+          } catch {
+            Write-Host 'download failed - installer UI falls back to English'
+          }
+
+      - name: PyInstaller build
+        run: pyinstaller packaging/star.spec --noconfirm --distpath dist --workpath build/pyinstaller
+
+      - name: Smoke test (Windows)
+        if: matrix.platform == 'windows'
+        shell: cmd
+        run: '"dist\星易查\星易查.exe" --check'
+
+      - name: Smoke test (Linux / macOS)
+        if: matrix.platform != 'windows'
+        run: |
+          if [ "${{ matrix.platform }}" = "linux" ]; then
+            dist/XingYiCha/XingYiCha --check
+          else
+            dist/XingYiCha/XingYiCha.app/Contents/MacOS/XingYiCha --check
+          fi
+
+      - name: Package Windows (installer + portable zip)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          if (Test-Path 'dist/星易查-便携版.zip') { Remove-Item 'dist/星易查-便携版.zip' }
+          Compress-Archive -Path 'dist/星易查' -DestinationPath 'dist/星易查-便携版.zip'
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { $iscc = "${env:ProgramFiles}\Inno Setup 6\ISCC.exe" }
+          & $iscc 'packaging/星易查.iss'
+
+      - name: Package Linux (tar.gz + AppImage)
+        if: matrix.platform == 'linux'
+        run: |
+          # 便携版 tar.gz
+          tar -czf dist/XingYiCha-linux-x86_64.tar.gz -C dist XingYiCha
+          # AppImage: AppDir = AppRun + .desktop + 图标 + onedir
+          mkdir -p AppDir/usr/bin
+          cp -r dist/XingYiCha AppDir/usr/bin/
+          cp packaging/star.png AppDir/star.png
+          cp packaging/linux/XingYiCha.desktop AppDir/XingYiCha.desktop
+          cp packaging/linux/AppRun AppDir/AppRun
+          chmod +x AppDir/AppRun
+          curl -fsSL -o appimagetool https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+          ./appimagetool --appimage-extract-and-run AppDir dist/XingYiCha-x86_64.AppImage
+
+      - name: Package macOS (.app ad-hoc sign + dmg + zip)
+        if: matrix.platform == 'macos'
+        run: |
+          # ad-hoc 签名（无证书）：避免 M 系芯片直接拒绝运行未签名二进制
+          codesign --force --deep --sign - dist/XingYiCha/XingYiCha.app
+          # dmg：app + Applications 拖拽链接
+          mkdir -p dmg_staging
+          cp -R dist/XingYiCha/XingYiCha.app dmg_staging/
+          ln -s /Applications dmg_staging/Applications
+          hdiutil create -volname 星易查 -srcfolder dmg_staging -ov -format UDZO dist/XingYiCha-macOS-${{ matrix.arch }}.dmg
+          # zip 便携版
+          ditto -c -k --keepParent dist/XingYiCha/XingYiCha.app dist/XingYiCha-macOS-${{ matrix.arch }}.zip
+
+      - name: Copy release files to ASCII names (Windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          Copy-Item 'dist/星易查-Setup.exe' 'dist/XingYiCha-Setup.exe'
+          Copy-Item 'dist/星易查-便携版.zip' 'dist/XingYiCha-portable.zip'
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: 星易查-${{ matrix.suffix }}
+          if-no-files-found: error
+          path: |
+            dist/XingYiCha-Setup.exe
+            dist/XingYiCha-portable.zip
+            dist/XingYiCha-linux-x86_64.tar.gz
+            dist/XingYiCha-x86_64.AppImage
+            dist/XingYiCha-macOS-arm64.dmg
+            dist/XingYiCha-macOS-arm64.zip
+            dist/XingYiCha-macOS-x86_64.dmg
+            dist/XingYiCha-macOS-x86_64.zip
+
+  release:
+    # tag 构建时聚合所有平台产物发布到 GitHub Release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: '星易查-*'
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" release-assets/* \
+            --title "$GITHUB_REF_NAME" --generate-notes
