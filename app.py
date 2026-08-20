@@ -31,6 +31,15 @@ import threading
 # behaviour is unchanged.
 IS_FROZEN = bool(getattr(sys, 'frozen', False))
 if IS_FROZEN:
+    # PyInstaller console exe: stdout/stderr may default to the legacy ANSI
+    # codepage (cp1252 etc.), where printing Chinese crashes with
+    # UnicodeEncodeError. Force UTF-8 with replacement chars instead.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding='utf-8', errors='replace')
+        except Exception:
+            pass
+if IS_FROZEN:
     _BASE_DIR = os.path.dirname(os.path.abspath(sys.executable))
     # _MEIPASS: onedir -> .../星易查/_internal, onefile -> temp extraction dir
     _RESOURCE_DIR = getattr(sys, '_MEIPASS', _BASE_DIR)
