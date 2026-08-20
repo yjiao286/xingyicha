@@ -1,0 +1,89 @@
+name: Windows 构建打包
+
+# 云端构建 Windows 安装包与便携版（无需本地 Windows 机器）。
+# 触发方式：
+#   1. 手动：Actions 页面 -> Windows 构建打包 -> Run workflow
+#   2. 打 tag（v*）：构建完成后自动发布 GitHub Release 并附上产物
+# 产物（构建约 15-20 分钟，在 run 页面底部 Artifacts 下载）：
+#   星易查-Setup.exe     安装包
+#   星易查-便携版.zip    免安装版
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: packaging/requirements-win.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r packaging/requirements-win.txt
+
+      - name: Generate app icon
+        run: python packaging/make_icon.py
+
+      - name: Download Inno Setup Chinese language file
+        # 官方未随 Inno Setup 附带中文语言包；下载失败时安装器回退英文界面
+        shell: pwsh
+        run: |
+          try {
+            Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/jrsoftware/issrc/main/Files/Languages/Unofficial/ChineseSimplified.isl' -OutFile 'packaging/ChineseSimplified.isl'
+            Write-Host 'ChineseSimplified.isl downloaded'
+          } catch {
+            Write-Host 'download failed - installer UI falls back to English'
+          }
+
+      - name: PyInstaller build
+        run: pyinstaller packaging/star.spec --noconfirm --distpath dist --workpath build/pyinstaller-win
+
+      - name: Smoke test (frozen --check)
+        # 冻结版自检：验证关键模块在 exe 内可正常导入
+        shell: cmd
+        run: '"dist\星易查\星易查.exe" --check'
+
+      - name: Package portable zip
+        shell: pwsh
+        run: |
+          if (Test-Path 'dist/星易查-便携版.zip') { Remove-Item 'dist/星易查-便携版.zip' }
+          Compress-Archive -Path 'dist/星易查' -DestinationPath 'dist/星易查-便携版.zip'
+
+      - name: Build installer (Inno Setup)
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { $iscc = "${env:ProgramFiles}\Inno Setup 6\ISCC.exe" }
+          & $iscc 'packaging/星易查.iss'
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: 星易查-Windows
+          if-no-files-found: error
+          path: |
+            dist/星易查-Setup.exe
+            dist/星易查-便携版.zip
+
+      - name: Create GitHub Release (tag builds only)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/星易查-Setup.exe
+            dist/星易查-便携版.zip
+          generate_release_notes: true

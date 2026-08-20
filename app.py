@@ -1,4 +1,5 @@
 import os
+import sys
 import re
 import json
 import base64
@@ -23,7 +24,25 @@ from pypdf import PdfReader
 import olefile
 import threading
 
-app = Flask(__name__)
+# ── Frozen (PyInstaller) detection ──────────────────────────────
+# When bundled as a desktop exe, templates/static live inside the bundle
+# (_MEIPASS) and user data must NOT be written next to the exe (Program Files
+# is read-only) — it goes to %LOCALAPPDATA%\星易查 instead. Non-frozen
+# behaviour is unchanged.
+IS_FROZEN = bool(getattr(sys, 'frozen', False))
+if IS_FROZEN:
+    _BASE_DIR = os.path.dirname(os.path.abspath(sys.executable))
+    # _MEIPASS: onedir -> .../星易查/_internal, onefile -> temp extraction dir
+    _RESOURCE_DIR = getattr(sys, '_MEIPASS', _BASE_DIR)
+else:
+    _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    _RESOURCE_DIR = _BASE_DIR
+
+app = Flask(
+    __name__,
+    template_folder=os.path.join(_RESOURCE_DIR, 'templates'),
+    static_folder=os.path.join(_RESOURCE_DIR, 'static'),
+)
 # Secret key from environment (fallback to a per-process random key so a missing
 # env var never leaves the session signer predictable). Never commit a real key.
 app.secret_key = os.environ.get('SECRET_KEY') or os.urandom(24)
@@ -55,10 +74,21 @@ logging.basicConfig(
 )
 logger = logging.getLogger('xingyicha')
 
-UPLOAD_FOLDER = os.environ.get('UPLOAD_FOLDER', tempfile.mkdtemp(prefix='bid_uploads_'))
+# Desktop (frozen) build: keep uploads/history under %LOCALAPPDATA%\星易查 so
+# they survive reinstalls and work even when installed under Program Files.
+# Env vars (UPLOAD_FOLDER / HISTORY_DIR) still take precedence everywhere.
+if IS_FROZEN:
+    _DATA_DIR = os.path.join(os.environ.get('LOCALAPPDATA') or _BASE_DIR, '星易查')
+else:
+    _DATA_DIR = _BASE_DIR
+
+UPLOAD_FOLDER = os.environ.get('UPLOAD_FOLDER') or (
+    os.path.join(_DATA_DIR, 'uploads') if IS_FROZEN
+    else tempfile.mkdtemp(prefix='bid_uploads_')
+)
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-HISTORY_DIR = os.environ.get('HISTORY_DIR') or os.path.join(os.path.dirname(os.path.abspath(__file__)), 'history')
+HISTORY_DIR = os.environ.get('HISTORY_DIR') or os.path.join(_DATA_DIR, 'history')
 os.makedirs(HISTORY_DIR, exist_ok=True)
 
 # ── Cancellation ─────────────────────────────────────────────────
@@ -116,10 +146,21 @@ def sanitize_text(text):
     return re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]', '', text)
 
 def _find_tool(*names):
-    """Find first available command-line tool"""
-    for name in names:
-        if shutil.which(name):
-            return name
+    """Find first available command-line tool.
+
+    Returns the executable's full path (shutil.which resolves names on PATH;
+    on Windows LibreOffice is never on PATH so we probe the standard install
+    locations - the full path also works in subprocess calls on every
+    platform)."""
+    candidates = list(names)
+    if os.name == 'nt':
+        for progdir in (os.environ.get('PROGRAMFILES', r'C:\Program Files'),
+                        os.environ.get('ProgramFiles(x86)', r'C:\Program Files (x86)')):
+            candidates.append(os.path.join(progdir, 'LibreOffice', 'program', 'soffice.exe'))
+    for name in candidates:
+        path = shutil.which(name)
+        if path:
+            return path
     return None
 
 
@@ -254,6 +295,21 @@ def _is_within_upload_folder(path):
 # ── .doc Conversion ─────────────────────────────────────────────
 _DOC_CONVERTER = _find_tool('libreoffice', 'soffice', 'antiword', 'catdoc')
 
+
+def _doc_converter_kind():
+    """Classify the resolved _DOC_CONVERTER path: 'antiword' | 'catdoc' |
+    'libreoffice' | None. _DOC_CONVERTER may be a full path (Windows
+    soffice.exe), so matching on the basename keeps the old command-name
+    semantics working."""
+    if not _DOC_CONVERTER:
+        return None
+    base = os.path.basename(_DOC_CONVERTER).lower()
+    if base.startswith('antiword'):
+        return 'antiword'
+    if base.startswith('catdoc'):
+        return 'catdoc'
+    return 'libreoffice'
+
 # Cache: {filepath: (mtime, docx_path)} so a .doc is converted at most once per
 # process (LibreOffice takes ~2-5s per launch). Without this, extract_doc_text_raw()
 # and the extract_text_with_tables() fallback both launch LibreOffice for the same
@@ -281,7 +337,7 @@ def convert_doc_to_docx(filepath):
     docx_path = None
     try:
         subprocess.run(
-            ['libreoffice', '--headless', '--convert-to', 'docx', '--outdir', outdir, filepath],
+            [_DOC_CONVERTER, '--headless', '--convert-to', 'docx', '--outdir', outdir, filepath],
             capture_output=True, timeout=60, check=True
         )
         for f in os.listdir(outdir):
@@ -304,17 +360,18 @@ def convert_doc_to_docx(filepath):
     return docx_path
 
 def extract_doc_text_raw(filepath):
-    """Extract text from .doc using antiword or catdoc"""
+    """Extract text from .doc using antiword, catdoc or LibreOffice"""
     tool = _DOC_CONVERTER
     if not tool:
         return None
+    kind = _doc_converter_kind()
 
     try:
-        if tool in ('antiword', 'catdoc'):
+        if kind in ('antiword', 'catdoc'):
             result = subprocess.run([tool, filepath], capture_output=True, text=True, timeout=30)
             if result.returncode == 0:
                 return result.stdout.strip()
-        elif tool in ('libreoffice', 'soffice'):
+        else:
             # Convert .doc -> .docx first (cached: no repeat LibreOffice launch)
             docx_path = convert_doc_to_docx(filepath)
             if docx_path:
@@ -5619,7 +5676,7 @@ def _nocache(response):
 
 
 if __name__ == '__main__':
-    import sys
+    import webbrowser
     if '--check' in sys.argv:
         # 离线自检：验证关键依赖可正常导入（用于便携包目标机校验）
         import flask  # noqa: F401
@@ -5635,9 +5692,50 @@ if __name__ == '__main__':
         sys.exit(0)
     port = int(sys.argv[1]) if len(sys.argv) > 1 else int(os.environ.get('PORT', 5001))
     debug = os.environ.get('DEBUG', '0') == '1'
-    host = os.environ.get('HOST', '0.0.0.0')
+    # Desktop (frozen) build defaults to loopback: binding 0.0.0.0 would pop the
+    # Windows firewall prompt on first launch. Set HOST=0.0.0.0 to share on LAN.
+    host = os.environ.get('HOST') or ('127.0.0.1' if IS_FROZEN else '0.0.0.0')
+
+    def _pick_free_port(preferred):
+        """Return `preferred` if bindable, else preferred+1..+9 (double-click
+        relaunch while a stale instance holds the port should still work)."""
+        import socket
+        for cand in range(preferred, preferred + 10):
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                try:
+                    s.bind((host, cand))
+                    return cand
+                except OSError:
+                    continue
+        return preferred
+
+    if not debug:
+        requested_port = port
+        port = _pick_free_port(port)
+        if port != requested_port:
+            print(f'  端口 {requested_port} 已被占用，自动改用 {port}')
+    url = f'http://{"127.0.0.1" if host in ("127.0.0.1", "localhost") else host}:{port}'
     print('=' * 60)
     print('  星易查 - 围串标风险识别分析系统')
-    print(f'  访问地址: http://{host}:{port}')
+    print(f'  访问地址: {url}')
     print('=' * 60)
-    app.run(debug=debug, host=host, port=port, threaded=True)
+
+    # Desktop build: pop the default browser once the server is up. Delayed so
+    # the listener exists first; only when frozen (launch.sh already opens the
+    # browser on macOS, avoid opening twice).
+    if IS_FROZEN and not debug:
+        threading.Timer(1.5, lambda: webbrowser.open(url)).start()
+
+    if debug:
+        app.run(debug=debug, host=host, port=port, threaded=True)
+    else:
+        try:
+            # waitress: production-grade pure-Python WSGI server, the only
+            # option on Windows (gunicorn is Unix-only). Long analyses rely on
+            # threaded request handling, same as the Flask dev server.
+            from waitress import serve
+            print('  服务器: waitress (threads=8)')
+            serve(app, host=host, port=port, threads=8)
+        except ImportError:
+            app.run(debug=debug, host=host, port=port, threaded=True)
