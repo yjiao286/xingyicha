@@ -545,6 +545,90 @@ def t_history_prep_modifies_copy_only():
     assert src['pricing']['subItemCompare'][0]['items'][0]['extras'] is not None
 
 
+# ── Company-name / authorized-rep cleanliness regressions ──
+def t_company_strips_detached_label():
+    # '（投标人名称' had the closing paren consumed by a wider capture — the
+    # detached fragment must be cleaned away, not left on the company name.
+    assert m._clean_company('北京某某大学 （投标人名称') == '北京某某大学'
+    assert m._clean_company('北京某某大学（盖单位章）') == '北京某某大学'
+    assert m._clean_company('北京某某大学（盖单位章') == '北京某某大学'
+    assert m._clean_company('___北京某某大学___（盖单位章）') == '北京某某大学'
+    assert m._clean_company('北京某某航天技术有限公司') == '北京某某航天技术有限公司'
+
+
+def t_auth_xianweituo_split_newline():
+    # '现委托刘某某为我方代理\n人' — 代理人 split across a PDF line wrap must
+    # still be recognized (pattern 8 tolerates the newline).
+    info = {'legal_rep': None, 'authorized_rep': None, 'company_name': None, 'all_persons': []}
+    m._extract_from_auth_section(
+        '本人王某某系北京某某大学的法定代表人（单位负责人），现委托刘某某为我方代理\n人。'
+        '代理人根据授权，以我方名义签署、澄明确认。', info)
+    assert info['authorized_rep'] == '刘某某', info
+    assert info['legal_rep'] == '王某某', info
+    assert info['company_name'] == '北京某某大学', info
+
+
+def t_history_prep_keeps_name():
+    r = m._prepare_history_data(_fake_results())
+    assert r['personnel']['files'][0]['name'] == 'A.docx', r['personnel']['files'][0]['name']
+    assert r['pricing']['files'][0]['name'] == 'A.docx'
+    assert r['metadata']['files'][0]['name'] == 'A.docx'
+
+
+def _glue(text):
+    return m._glue_phrases(text)
+
+
+def t_glue_phrases_multi_position():
+    # 法定\n代\n表\n人 split across several line breaks -> one keyword.
+    assert _glue('本人王某某系北京交\n通大学的法定\n代\n表\n人（单位负责人）') == \
+        '本人王某某系北京交\n通大学的法定代表人（单位负责人）'
+    # 委托代\n理人
+    assert _glue('现委托刘某某为我方委托代\n理人。代理人行使签署权。') == \
+        '现委托刘某某为我方委托代理人。代理人行使签署权。'
+    # absent keyword is untouched
+    assert _glue('这是一段普通文字，没有关键词') == '这是一段普通文字，没有关键词'
+
+
+def t_glue_cleans_auth_extraction():
+    # A whole-keyword word wrap inside the auth letter must not lose the agent.
+    info = {'legal_rep': None, 'authorized_rep': None, 'company_name': None, 'all_persons': []}
+    m._extract_from_auth_section(
+        '本人王某某系北京某某大学的法定代表人（单位负责人），现委托刘某某为我方代理\n人。', info)
+    assert info['authorized_rep'] == '刘某某', info
+    assert info['company_name'] == '北京某某大学', info
+
+
+def t_cjk_ws_normalized():
+    assert m._normalize_cjk_whitespace('投标人 ： 张三（ 盖单位章 ）') == '投标人： 张三（盖单位章）'
+    assert m._normalize_cjk_whitespace('电话 ：　010-51683081') == '电话： 010-51683081'
+
+
+def t_join_split_names():
+    # 换行拆词拼接
+    assert m._join_split_names('本人王\n稼琼系的法人') == '本人王某某系的法人'
+    # 空格列间距不得拼接（否则 '国 联系' / '建国 联系' 吞掉标签）
+    assert m._join_split_names('王 稼琼') == '王 稼琼'
+    assert m._join_split_names('职务：项目经理 姓名：王某某 联系电话：13800000000') == \
+        '职务：项目经理 姓名：王某某 联系电话：13800000000'
+
+
+def t_glue_new_phrases():
+    assert m._glue_phrases('投标\n文件：开标一览表') == '投标文件：开标一览表'
+    assert m._glue_phrases('授权\n委托\n书') == '授权委托书'
+
+
+def t_company_prefix_strip():
+    assert m._clean_company('投标人：北京某某大学') == '北京某某大学'
+    assert m._clean_company('单位名称：北京某某大学') == '北京某某大学'
+    assert m._clean_company('企业名称　某省未来网络创新研究院') == '某省未来网络创新研究院'
+
+
+def t_clean_phone_junk():
+    assert m._clean_phone('_021-12345678') == '021-12345678'
+    assert m._clean_phone('010-51683081；') == '010-51683081'
+
+
 def main():
     for name, fn in sorted(globals().items()):
         if name.startswith('t_') and callable(fn):

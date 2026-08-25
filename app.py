@@ -1331,9 +1331,9 @@ def _extract_from_auth_section(section_text, info):
 
     # Pattern 8: "兹委托 XXX（同志）为我(方/公司)…代理人" / "现授权/特授权"
     if not info['authorized_rep']:
-        m = re.search(r'(?:兹委托|兹授权|现授权|特授权|特此委托)\s*'
+        m = re.search(r'(?:兹委托|现委托|兹授权|现授权|特授权|特此委托)\s*'
                       r'([一-鿿]{2,4}(?:[·•・][一-鿿]{2,4}){0,2})\s*(?:同志)?\s*'
-                      r'(?:为|作为)[^。]{0,40}?代理人', section_text)
+                      r'(?:为|作为)[^。]{0,40}?代理\s*人', section_text)
         if m and _is_person_name(m.group(1).strip()):
             info['authorized_rep'] = m.group(1).strip()
             info['all_persons'].append({'name': info['authorized_rep'], 'role': 'authorized_rep', 'confidence': 0.85})
@@ -1579,9 +1579,26 @@ def _infer_role_label(role_str):
 
 
 def _clean_company(name):
-    """Clean company name from parenthetical annotations."""
-    name = re.sub(r'[（(]投标人名称[）)]|[（(]单位负责人[）)]|[（(]供应商名称[）)]', '', name)
+    """Clean company name from parenthetical annotations / label fragments.
+
+    PDF tabs and table cells can split a label across a boundary, leaving a
+    detached open parenthesis (e.g. '北京某某大学 （投标人名称' where the
+    closing '）' was consumed by a wider capture). Strip both complete labels
+    and unterminated trailing fragments, plus the '（盖单位章）' style at the
+    end of a cover line and PDF form blank-fill underscores.
+    """
+    if not name:
+        return name
+    name = re.sub(r'[（(]\s*(?:投标人名称|供应商名称|单位名称|公司名称|企业名称|单位负责人|'
+                  r'盖单位章|盖章|公章|单位章|签章|签字|全称)\s*[）)]', '', name)
+    # Detached label fragment ('（投标人名称' / '（盖单位章' with no close paren).
+    name = re.sub(r'[（(][^）)]*$', '', name)
     name = re.sub(r'^[（(]|[）)]$', '', name).strip()
+    # Leading label + form fill ('投标人：___北京某某大学___（盖单位章）').
+    name = re.sub(r'^(?:投标人|供应商|招标人)(?:名称)?\s*[（(：:＿_\s]*|'
+                  r'^(?:单位|公司|企业)名称\s*[（(：:＿_\s]*', '', name)
+    name = re.sub(r'^[_\s＿]+', '', name).strip()
+    name = re.sub(r'[_\s＿]+$', '', name).strip()
     return name
 
 
@@ -1594,10 +1611,109 @@ def _cleanup_name(info, key):
     val = re.sub(r'^我(?=[一-鿿])', '', val)
     val = re.sub(r'\s*[（(](?:姓名|签字|盖章|单位负责人|法定代表人)[）)]\s*$', '', val)
     val = re.sub(r'^\s*[（(](?:姓名|签字|盖章|单位负责人|法定代表人)[）)]\s*', '', val)
+    # A name may still carry extra whitespace from a PDF (single-char blocks).
+    val = re.sub(r'\s+', '', val)
     if len(val) < 2 or any(w in val for w in ['注册', '签字', '盖章', '地址', '电话', '投标人', '姓名', '职务', '授权']):
         info[key] = None
     else:
         info[key] = val
+
+
+def _clean_phone(v):
+    """Strip junk around a captured phone number (leading '_' form-label
+    fill, trailing punctuation) — defensive for OCR/form-wide captures."""
+    if not v:
+        return v
+    v = re.sub(r'^[^\d]+', '', str(v).strip())
+    v = re.sub(r'[^0-9\-]+$', '', v).strip()
+    return v
+
+
+# ── PDF line-wrap gluing ──
+# PDF text extraction frequently breaks a CJK word in the middle of a line
+# (e.g. 法定代\n表人, 委托代\n理人, 投标\n报价). Downstream section detection and
+# label-anchored regexes need the keyword contiguous, so re-join internal
+# whitespace for a set of sensitive phrases. Whitespace BETWEEN distinct lines
+# (not inside one of these phrases) is preserved, so section boundaries and
+# table rows stay intact.
+_GLUE_PHRASES = [
+    # 人员 / 文档结构 / 角色
+    '法定代表人身份证明', '法定代表人证明', '法定代表人', '单位负责人',
+    '授权委托书', '授权委托', '委托书', '授权书', '授权代表', '授权代表人',
+    '委托代理人', '被授权人', '受托人', '代理人', '签字代表', '投标代表',
+    '签字', '签章', '盖章', '公章', '单位章', '盖单位章',
+    '项目负责人', '项目经理', '技术负责人', '采购负责人', '项目副经理',
+    '联系电话', '联系方式', '身份证号', '身份证',
+    '供应商名称', '投标人名称', '单位名称', '公司名称', '企业名称',
+    '招标人名称', '项目名称', '人员配备表', '技术标', '商务标', '资信标',
+    '投标文件', '投标人',
+    # 报价（同源拆分，防御性覆盖）
+    '开标一览表', '报价一览表', '投标报价表', '分项报价表', '报价明细表',
+    '分项明细表', '投标总价', '含税总价', '不含税总价', '投标函',
+    '人民币', '人民币大写', '报价函', '报价单',
+]
+
+
+def _glue_phrases(text):
+    """Re-join sensitive phrases that PDF extraction split across a line break.
+
+    For every known phrase present in the text, remove any whitespace that has
+    crept in BETWEEN its characters ('法\\n定\\n代\\n表\\n人' -> '法定代表人').
+    A keyword already contiguous is a no-op; words absent from the text are
+    skipped so the loop stays cheap on large documents.
+    """
+    if not text or len(text) < 2:
+        return text
+    flat = re.sub(r'\s+', '', text)
+    for kw in _GLUE_PHRASES:
+        if len(kw) < 2 or kw not in flat:
+            continue
+        # '\s*' between each character joins across any whitespace-only gap.
+        pat = re.compile(r'\s*'.join(re.escape(c) for c in kw))
+        text = pat.sub(kw, text)
+    return text
+
+
+def _normalize_cjk_whitespace(text):
+    """Tighten whitespace PDF/OCR extraction introduces around CJK text.
+
+    Covers the '投标人 ： 张三' / '（ 盖单位章 ）' style — spaces pushed between
+    a label and its punctuation (PDF column padding, OCR spacing). Unicode
+    space variants (\xa0, ideographic 　) become plain, and runs of 2+
+    spaces collapse to one so pipe-table rows ('a | b') stay aligned.
+    """
+    text = text.replace(' ', ' ').replace('　', ' ')
+    # Spaces before/after CJK punctuation: '投标人 ： 张三' -> '投标人： 张三'.
+    text = re.sub(r'\s+([：:，,。；;、）)])', r'\1', text)
+    # Spaces immediately after an opening paren: '（ 姓名）' -> '（姓名）'.
+    text = re.sub(r'([（(])\s+', r'\1', text)
+    text = re.sub(r' {2,}', ' ', text)
+    return text
+
+
+# Surname characters for the name-split re-join — a curated COMMON-surname
+# string (the full 百家姓 includes rare single-char surnames like 国, which
+# in '国 联系' style column-separated text would wrongly merge into a name).
+# Only newline breaks are joined, never plain spaces: column padding would
+# otherwise swallow the next label ('王某某 联系电话').
+_SURNAMES = '王李张刘陈杨黄赵周吴徐孙马胡朱郭何罗高林郑梁谢唐宋韩冯于董萧程曹袁邓许傅沈曾彭吕苏卢蒋蔡贾丁魏薛叶阎余潘杜戴夏钟汪田任姜范方石姚谭廖邹熊金陆郝孔白崔康毛邱秦江史顾侯邵孟龙万段雷钱汤尹易常武乔贺赖龚文'
+
+
+def _join_split_names(text):
+    """Re-join a person name split at a LINE BREAK right after the surname.
+
+    '王\\n稼琼' -> '王某某'. Two passes because re.sub does not rescan a
+    replacement, so a name whose pieces re-join twice settles on the second
+    pass. Deliberately newline-only: space-separated '王 建国 联系' must not
+    be re-glued (column padding would swallow label fragments).
+    """
+    pat = re.compile(rf'([{_SURNAMES}])\s*\n\s*([一-鿿]{{1,2}})')
+    for _ in range(2):
+        nxt = pat.sub(r'\1\2', text)
+        if nxt == text:
+            break
+        text = nxt
+    return text
 
 
 def extract_personnel(text):
@@ -1633,16 +1749,26 @@ def extract_personnel(text):
     # Full-width digits break the ASCII-digit regexes ('１３９…' phones)
     text = _fw_digits_to_ascii(text)
 
+    # Re-join keyword phrases that PDF extraction split across a line break
+    # (法\n定\n代\n表\n人, 委托代\n理人 …). Kept as a first pass; the explicit
+    # hardcoded re.subs below remain as a targeted fallback.
+    text = _glue_phrases(text)
+
     # Normalize line breaks within key phrases
     text = re.sub(r'法定代\s*\n\s*表人', '法定代表人', text)
     text = re.sub(r'法定\s*\n\s*代表人', '法定代表人', text)
     text = re.sub(r'法\s*\n\s*定代表人', '法定代表人', text)
     text = re.sub(r'授权委\s*\n\s*托书', '授权委托书', text)
     text = re.sub(r'供应\s*\n\s*商名称', '供应商名称', text)
-    # Fix common name splits: "王\n稼琼" → "王某某" (only when first char is a surname)
-    # Limit to common Chinese surnames to avoid false joins
-    _SURNAMES = '王李张刘陈杨黄赵周吴徐孙马胡朱郭何罗高林郑梁谢唐宋韩冯于董萧程曹袁邓许傅沈曾彭吕苏卢蒋蔡贾丁魏薛叶阎余潘杜戴夏钟汪田任姜范方石姚谭廖邹熊金陆郝孔白崔康毛邱秦江史顾侯邵孟龙万段雷钱汤尹易常武乔贺赖龚文'
-    text = re.sub(rf'([{_SURNAMES}])\s*\n\s*([一-鿿]{{1,2}})', r'\1\2', text)
+    # Fix common name splits: "王\n稼琼" → "王某某" (only when first char is a
+    # surname; the source module-level constant covers the full 百家姓). Two
+    # passes so a name broken at two whitespace boundaries settles on the 2nd.
+    text = _join_split_names(text)
+
+    # Tighten whitespace inserted between labels and CJK punctuation
+    # ('投标人 ： 张三' / '（ 盖单位章 ）'), after the glues above so the
+    # label-anchored regexes and section detection match.
+    text = _normalize_cjk_whitespace(text)
 
     # ── Section Detection ──
     sections = _find_personnel_sections(text)
@@ -1670,12 +1796,16 @@ def extract_personnel(text):
     # ── 5. Pipe-table personnel (docx/xlsx tables, appended at text end) ──
     _parse_personnel_pipe_table(text, info)
 
-    # ── 6. Section-less fallback ──
+    # ── 6. Section-less / empty-result fallback ──
     # Documents without any recognized section marker (short response letters,
     # OCR output, unusual structures) would otherwise yield zero personnel.
     # The label-anchored patterns are specific enough to run on the full text
-    # as a last resort; only fire when no section was found at all.
-    if not (auth_sections or personnel_sections or sig_sections or cover_sections):
+    # as a last resort — also when section detection fired but the scoped
+    # extraction STILL produced nothing (headers split across page breaks,
+    # tables mis-detected as sections). Guarded on all of company/legal/auth
+    # being empty, so a partial result is never overwritten or duplicated.
+    if not (auth_sections or personnel_sections or sig_sections or cover_sections) \
+            or (not info.get('company_name') and not info['legal_rep'] and not info['authorized_rep']):
         _extract_from_auth_section(text, info)
         _extract_from_cover(text, info)
 
@@ -1717,10 +1847,13 @@ def extract_personnel(text):
     if info['phones'] and not info.get('phone'):
         info['phone'] = info['phones'][0]
 
-    for sec in auth_sections + personnel_sections + sig_sections:
+    # Cover/bid-letter block (投标函) commonly carries the bidder's own
+    # 地址/电话/传真 lines ("投标人：X（盖单位章）…电话：010-51683081") —
+    # include cover_sections so a landline there is not missed.
+    for sec in auth_sections + personnel_sections + sig_sections + cover_sections:
         m = re.search(r'(?:电话|手机|联系电话|联系方式)[：:]\s*(\d[\d\-]{6,15})', sec['text'])
         if m:
-            phone = m.group(1).strip()
+            phone = _clean_phone(m.group(1))
             if not info.get('phone'):
                 info['phone'] = phone
             if not info['contacts'].get('phone'):
@@ -2003,6 +2136,8 @@ def extract_prices(text):
     if not text:
         return result
     text = _fw_digits_to_ascii(text)
+    text = _glue_phrases(text)
+    text = _normalize_cjk_whitespace(text)
 
     # Track whether the accepted price came from Chinese numerals only (no
     # Arabic digits in the source). Validation then skips the "value must
@@ -5369,15 +5504,15 @@ def report():
 # to the corresponding keep list here or it silently disappears from history
 # and from report regeneration on loaded records.
 _HISTORY_KEEP = {
-    'metadata': ('creator', 'last_modified_by', 'created', 'modified',
+    'metadata': ('name', 'creator', 'last_modified_by', 'created', 'modified',
                  'application', 'template', 'revision', 'total_edit_time',
                  'pages', 'words', 'company',
                  'KSOProductBuildVer', 'KSOTemplateDocerSaveRecord', 'ICV'),
-    'personnel': ('legal_rep', 'authorized_rep', 'id_number', 'phone',
+    'personnel': ('name', 'legal_rep', 'authorized_rep', 'id_number', 'phone',
                   'address', 'response_date', 'company_name',
                   'phones', 'id_numbers', 'emails', 'bank_accounts',
                   'all_persons'),
-    'pricing': ('totalPriceInTax', 'totalPrice', 'taxRate',
+    'pricing': ('name', 'totalPriceInTax', 'totalPrice', 'taxRate',
                 'bidRate', 'revenue', 'cost', 'warnings'),
 }
 
