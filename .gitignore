@@ -36,3 +36,6 @@ packaging/star.icns
 packaging/star.iconset/
 packaging/ChineseSimplified.isl
 .playwright-cli/
+
+# mimosa code-review hook runtime state
+.mimosa/
