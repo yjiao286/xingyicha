@@ -1753,3 +1753,252 @@ body::after {
   .donut-wrap { flex-direction: column; }
   .trend-svg { height: 190px; }
 }
+
+/* ══════════════════════════════════════════════════════════════
+   人员交叉 / 报价分析页 v2 展示层（KPI 条、交叉矩阵、报价条形图）
+   ══════════════════════════════════════════════════════════════ */
+
+/* ── KPI strip（人员交叉概览） ── */
+.kpi-strip {
+  display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px;
+}
+.kpi-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 12px; color: var(--text-secondary);
+  background: var(--bg-surface); border: 1px solid var(--border-light);
+  border-radius: 20px; padding: 5px 13px;
+  box-shadow: var(--shadow);
+}
+.kpi-chip b { font-size: 14px; color: var(--text); font-variant-numeric: tabular-nums; }
+.kpi-chip.danger { background: var(--danger-soft); border-color: var(--danger-border); }
+.kpi-chip.danger b { color: var(--danger); }
+.kpi-chip.warn { background: var(--warn-soft); border-color: var(--warn-border); }
+.kpi-chip.warn b { color: var(--warn); }
+.kpi-chip.ok { background: var(--success-soft); border-color: var(--success-border); }
+
+/* ── 共享值高亮（表格单元格 / 标记） ── */
+.cell-same {
+  background: var(--danger-soft) !important;
+  color: var(--danger); font-weight: 700;
+  box-shadow: inset 0 0 0 1px var(--danger-border);
+}
+.same-flag { color: var(--danger); font-style: normal; font-size: 11px; margin-left: 2px; }
+.data-table td.num, .data-table th.num-col {
+  font-family: var(--font-mono); font-variant-numeric: tabular-nums;
+  text-align: right; font-size: 12px;
+}
+.data-table td.dim { color: var(--text-dim); }
+.unit-note {
+  display: block; font-size: 10px; color: var(--text-muted);
+  font-weight: 400; line-height: 1.3;
+}
+.pool-more { color: var(--text-muted); font-size: 11px; }
+
+/* ── 人员交叉矩阵 ── */
+.matrix-wrap { overflow-x: auto; }
+.matrix-table {
+  border-collapse: separate; border-spacing: 0; width: 100%;
+  font-size: 12.5px; background: var(--bg-surface);
+  border: 1px solid var(--border-light); border-radius: var(--radius-sm);
+  overflow: hidden; box-shadow: var(--shadow);
+}
+.matrix-table th, .matrix-table td {
+  padding: 8px 12px; text-align: left;
+  border-bottom: 1px solid var(--border-light);
+  white-space: nowrap;
+}
+.matrix-table thead th {
+  background: var(--bg-subtle); color: var(--text-secondary);
+  font-size: 11px; font-weight: 700; letter-spacing: .3px;
+}
+.matrix-table tbody tr:last-child td { border-bottom: none; }
+.matrix-table tbody tr:hover { background: var(--bg-hover); }
+.matrix-label b { color: var(--text); margin-left: 4px; }
+.matrix-cell { text-align: center !important; }
+.matrix-dot {
+  display: inline-block; width: 11px; height: 11px; border-radius: 50%;
+  box-shadow: 0 0 0 3px rgba(15, 23, 42, .05);
+}
+.matrix-dot.t-id, .matrix-dot.t-bank { background: var(--danger); }
+.matrix-dot.t-phone { background: var(--warn); }
+.matrix-dot.t-name { background: var(--accent); }
+.matrix-dot.t-email { background: #94a3b8; }
+
+/* ── 人员 chips ── */
+.team-block { margin-bottom: 6px; }
+.person-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  margin: 0 8px 8px 0; padding: 4px 11px;
+  background: var(--bg-surface); border: 1px solid var(--border-light);
+  border-radius: 18px; font-size: 12.5px; color: var(--text);
+  box-shadow: var(--shadow); transition: all .15s;
+}
+.person-chip:hover { border-color: var(--accent); transform: translateY(-1px); }
+.person-chip i {
+  font-style: normal; font-size: 10.5px; color: var(--text-muted);
+  background: var(--bg-subtle); border-radius: 10px; padding: 1px 7px;
+}
+.person-chip.core { border-color: rgba(37,99,235,.25); background: var(--accent-soft); }
+.person-chip.core i { color: var(--accent-dim); background: rgba(255,255,255,.7); }
+
+/* ── 严重度分组（人员交叉异常） ── */
+.sev-group {
+  border: 1px solid var(--border-light); border-radius: var(--radius);
+  padding: 12px 14px; margin-bottom: 12px; background: var(--bg-surface);
+  box-shadow: var(--shadow);
+}
+.sev-group.sev-critical { border-color: #fbcfe8; background: #fdf8fb; }
+.sev-group.sev-high { border-color: #fecaca; background: #fffbfb; }
+.sev-group-title {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12px; color: var(--text-secondary); margin-bottom: 10px;
+}
+.sev-group .match-card {
+  display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap;
+  padding: 8px 10px; border-radius: var(--radius-sm); margin-bottom: 6px;
+  background: var(--bg-surface); border: 1px solid var(--border-light);
+}
+.sev-group .match-card:last-child { margin-bottom: 0; }
+.sev-group.sev-critical .match-card { border-left: 3px solid #be185d; }
+.sev-group.sev-high .match-card { border-left: 3px solid var(--danger); }
+.sev-group.sev-medium .match-card { border-left: 3px solid var(--warn); }
+.sev-group.sev-info .match-card { border-left: 3px solid var(--border); }
+
+/* ── 报价条形图 ── */
+.price-bars {
+  display: flex; flex-direction: column; gap: 9px;
+  padding: 14px 16px; background: var(--bg-surface);
+  border: 1px solid var(--border-light); border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+.price-bar-row {
+  display: grid; grid-template-columns: 110px 1fr 190px;
+  align-items: center; gap: 10px;
+}
+.price-bar-label {
+  font-size: 12px; color: var(--text-secondary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.price-bar-track {
+  position: relative; display: block; height: 18px;
+  background: var(--bg-subtle); border-radius: 9px; overflow: hidden;
+  border: 1px solid var(--border-light);
+}
+.price-bar-fill {
+  position: absolute; inset: 0 auto 0 0;
+  border-radius: 9px;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  transition: width .4s cubic-bezier(.25,.8,.35,1);
+}
+.price-bar-fill.low { background: linear-gradient(90deg, #0e9f6e, #34d399); }
+.price-bar-fill.same { background: linear-gradient(90deg, #dc2626, #f87171); }
+.price-bar-val {
+  font-size: 12px; font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums; color: var(--text);
+  white-space: nowrap;
+}
+.price-bar-val .same-flag { font-family: var(--font); }
+.bar-note {
+  margin-top: 6px; font-size: 12px; color: var(--danger);
+  background: var(--danger-soft); border: 1px solid var(--danger-border);
+  border-radius: var(--radius-sm); padding: 6px 12px;
+}
+.warn-line { color: #b45309; background: var(--warn-soft); border-color: var(--warn-border); }
+
+/* ── 分项卡片头部 ── */
+.subitem-head {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-bottom: 2px;
+}
+.subitem-head strong { font-size: 14px; }
+.subitem-badge {
+  font-size: 10.5px; font-weight: 700; padding: 2px 9px;
+  border-radius: 20px; white-space: nowrap;
+}
+.subitem-badge.danger { background: var(--danger-soft); color: var(--danger); border: 1px solid var(--danger-border); }
+.subitem-badge.ok { background: var(--bg-subtle); color: var(--text-muted); border: 1px solid var(--border-light); }
+
+@media (max-width: 720px) {
+  .price-bar-row { grid-template-columns: 84px 1fr; }
+  .price-bar-val { grid-column: 2; margin-top: -4px; }
+}
+
+/* ══════════════════════════════════════════════════════════════
+   人员交叉 / 报价分析页 v3 交互层（KPI stat-cards、共享值标记、
+   打码显隐、矩阵列高亮、分项卡折叠）
+   ══════════════════════════════════════════════════════════════ */
+
+/* ── stat-num 弱化态（无数据 KPI） ── */
+.stat-num.muted { color: var(--text-muted); }
+
+/* ── kpi-chip 选中态（矩阵类型过滤 chips） ── */
+.kpi-chip.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent-dim);
+  font-weight: 600;
+}
+
+/* ── 共享值行内标记（span 级；.cell-same 保留给整格） ── */
+.val-shared {
+  background: var(--danger-soft);
+  border-radius: 4px;
+  padding: 0 3px;
+  box-shadow: inset 0 0 0 1px var(--danger-border);
+}
+
+/* ── 打码值点击显示（身份证/银行账号） ── */
+.mask-toggle { cursor: pointer; border-radius: 4px; padding: 0 2px; }
+.mask-toggle:hover { background: var(--bg-hover); }
+.mask-toggle .m-full { display: none; }
+.mask-toggle.revealed .m-short { display: none; }
+.mask-toggle.revealed .m-full { display: inline; }
+.mask-toggle .m-btn { font-size: 10px; opacity: .5; margin-left: 1px; pointer-events: none; }
+
+/* ── 矩阵列高亮（悬停共享行 → 引用文件列） ── */
+.matrix-table td.matrix-cell.matrix-col-hl,
+.matrix-table th.matrix-col-hl {
+  background: var(--accent-soft);
+  transition: background .15s;
+}
+
+/* ── 报价条形图：缺失值行 ── */
+.price-bar-val.di { color: var(--text-muted); }
+
+/* ── 分项卡折叠（<details>） ── */
+.subitem-card > summary.subitem-head {
+  cursor: pointer; list-style: none; user-select: none;
+}
+.subitem-card > summary.subitem-head::-webkit-details-marker { display: none; }
+.subitem-card > summary.subitem-head:hover strong { color: var(--accent-dim); }
+.subitem-chev {
+  display: inline-flex; width: 16px; height: 16px;
+  align-items: center; justify-content: center;
+  color: var(--text-muted); margin-right: 2px;
+  transition: transform .15s;
+}
+.subitem-chev::before {
+  content: '';
+  display: block; width: 0; height: 0;
+  border-left: 5px solid currentColor;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  margin-left: 1px;
+}
+.subitem-card[open] .subitem-chev { transform: rotate(90deg); }
+.subitem-card > .subitem-body { margin-top: 8px; }
+
+/* ── 团队块展开按钮 ── */
+.team-more-btn { margin: 0 8px 8px 0; }
+
+/* ── 信息提示条（无共享值时的说明，取代纯灰 empty-note） ── */
+.info-note {
+  display: flex; align-items: flex-start; gap: 8px;
+  font-size: 12.5px; color: var(--text-secondary);
+  background: var(--accent-soft);
+  border: 1px solid rgba(37, 99, 235, .18);
+  border-radius: var(--radius-sm);
+  padding: 9px 12px; margin: 2px 0 12px; line-height: 1.7;
+}
+.info-note b { color: var(--text); font-weight: 700; }
+.info-note-icon { flex: none; line-height: 1.5; }

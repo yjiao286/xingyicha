@@ -539,6 +539,11 @@ btnAnalyze.addEventListener('click', async () => {
             }
           } else if (event.type === 'result') {
             analysisResult = event.data;
+            // Reset chip-selector filters so a new analysis never renders
+            // under the previous one's stale filtering.
+            _currentSimFilter = 'all';
+            _currentSevFilter = 'all';
+            _matrixTypeFilter = 'all';
             // Show warnings from result if any
             if (event.data._warnings && event.data._warnings.length > 0) {
               event.data._warnings.forEach(function(w) {
@@ -860,101 +865,388 @@ function renderMetadata() {
 }
 
 // ── Personnel Tab ──
+const ROLE_LABELS = {
+  'legal_rep': '法定代表人', 'authorized_rep': '授权代表',
+  'project_manager': '项目经理', 'tech_lead': '技术负责人',
+  'bid_contact': '投标联系人', 'team_member': '团队成员',
+  'signatory': '签署人', 'other': '其他人员'
+};
+
+function _sevInfo(sev) {
+  switch (sev) {
+    case 'critical': return { label: '致命', cls: 'badge-critical', rank: 0 };
+    case 'high': return { label: '严重', cls: 'badge-high', rank: 1 };
+    case 'medium': return { label: '一般', cls: 'badge-medium', rank: 2 };
+    default: return { label: '信息', cls: 'badge-info', rank: 3 };
+  }
+}
+
+function _maskTail(v, head, tail) {
+  v = String(v);
+  if (v.length <= head + tail) return v;
+  return v.slice(0, head) + '****' + v.slice(-tail);
+}
+
+// Click-to-reveal masked values (身份证号/银行账号): the cell carries both the
+// masked and the full (escaped) form; toggling a class swaps them. No user
+// data ever goes into an inline handler.
+function maskToggle(el) {
+  el.classList.toggle('revealed');
+}
+
+// Expand/collapse the overflow chips of a team block.
+function toggleTeamMore(id, btn, total) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  if (el.style.display === 'none' || !el.style.display) {
+    el.style.display = 'block';
+    btn.textContent = '收起';
+  } else {
+    el.style.display = 'none';
+    btn.textContent = '展开其余 ' + total + ' 人';
+  }
+}
+
+// Matrix column highlight: hovering a shared row lights up the columns of the
+// involved files. One delegated listener — #personnelMatrix is a static
+// container, only its innerHTML is replaced on re-render.
+function _matrixClearColHl() {
+  document.querySelectorAll('#personnelMatrix .matrix-col-hl').forEach(function(el) {
+    el.classList.remove('matrix-col-hl');
+  });
+}
+document.getElementById('personnelMatrix').addEventListener('mouseover', function(e) {
+  _matrixClearColHl();
+  var tr = e.target.closest('tr');
+  if (!tr) return;
+  var cols = [];
+  for (var i = 0; i < tr.cells.length; i++) {
+    var cell = tr.cells[i];
+    if (cell.classList.contains('matrix-cell') && cell.querySelector('.matrix-dot')) {
+      cols.push(i + 1);
+    }
+  }
+  if (!cols.length) return;
+  document.querySelectorAll('#personnelMatrix tr').forEach(function(r) {
+    cols.forEach(function(c) {
+      var cell = r.cells[c - 1];
+      if (cell) cell.classList.add('matrix-col-hl');
+    });
+  });
+});
+document.getElementById('personnelMatrix').addEventListener('mouseleave', _matrixClearColHl);
+
+// Shared person / contact values across >= 2 files (display mirror of the
+// backend cross-match pools; environmental noise was already demoted there).
+function _personnelSharedRows(p) {
+  var files = p.files || [];
+  var rows = [];
+  function collect(type, typeLabel, icon, iter) {
+    var map = {};
+    files.forEach(function(f) {
+      (iter(f) || []).forEach(function(v) {
+        if (!v) return;
+        if (!map[v]) map[v] = [];
+        if (map[v].indexOf(f.name) < 0) map[v].push(f.name);
+      });
+    });
+    Object.keys(map).forEach(function(v) {
+      if (map[v].length >= 2) {
+        rows.push({ type: type, typeLabel: typeLabel, icon: icon,
+                    value: v, files: map[v], count: map[v].length });
+      }
+    });
+  }
+  collect('id', '身份证号', '🪪', function(f) {
+    return (f.id_numbers && f.id_numbers.length) ? f.id_numbers : (f.id_number ? [f.id_number] : []);
+  });
+  collect('bank', '银行账号', '🏦', function(f) { return f.bank_accounts || []; });
+  collect('phone', '联系电话', '📞', function(f) {
+    return (f.phones && f.phones.length) ? f.phones : (f.phone ? [f.phone] : []);
+  });
+  collect('name', '同名人员', '👤', function(f) {
+    return (f.all_persons || []).map(function(x) { return x.name; });
+  });
+  collect('email', '邮箱', '✉️', function(f) { return f.emails || []; });
+  var typeOrder = { id: 0, bank: 1, phone: 2, name: 3, email: 4 };
+  rows.sort(function(a, b) {
+    return (typeOrder[a.type] - typeOrder[b.type]) || (b.count - a.count);
+  });
+  return rows;
+}
+
+// Severity filter for the cross-match cards / type filter for the cross
+// matrix — chip-selector state, same pattern as _currentSimFilter.
+let _currentSevFilter = 'all';
+let _matrixTypeFilter = 'all';
+
 function renderPersonnel() {
   const p = analysisResult.personnel;
   if (!p) return;
 
-  // Role display labels
-  const ROLE_LABELS = {
-    'legal_rep': '法定代表人', 'authorized_rep': '授权代表',
-    'project_manager': '项目经理', 'tech_lead': '技术负责人',
-    'bid_contact': '投标联系人', 'team_member': '团队成员',
-    'signatory': '签署人', 'other': '其他人员'
+  var shared = _personnelSharedRows(p);
+  var files = p.files || [];
+  var matches = p.cross_matches || [];
+  var sevCount = { critical: 0, high: 0, medium: 0, info: 0 };
+  matches.forEach(function(m) { sevCount[m.severity in sevCount ? m.severity : 'info']++; });
+  // A stale filter whose severity no longer has findings must not blank the
+  // anomalies section.
+  if (_currentSevFilter !== 'all' && !sevCount[_currentSevFilter]) _currentSevFilter = 'all';
+
+  // ── KPI summary strip (stat-card chips; severity cards double as filters) ──
+  var filesWithData = files.filter(function(f) {
+    return f.legal_rep || f.authorized_rep || f.company_name ||
+      (f.all_persons && f.all_persons.length) || (f.phones && f.phones.length) ||
+      (f.id_numbers && f.id_numbers.length) || (f.emails && f.emails.length) ||
+      (f.bank_accounts && f.bank_accounts.length) || f.address || f.response_date;
+  }).length;
+  var shtml = '<div class="summary-stat" style="margin:0;">';
+  var kchip = function(num, cls, label) {
+    return '<div class="stat-card"><div class="stat-num' + (cls ? ' ' + cls : '') + '">' + num +
+      '</div><div class="stat-label">' + label + '</div></div>';
   };
+  shtml += kchip(filesWithData + '/' + files.length,
+    filesWithData > 0 ? '' : 'muted', '标书提取到人员');
+  shtml += kchip(shared.length, shared.length ? 'danger' : '',
+    shared.length ? '共享人员/联系方式' : '共享交叉项');
+  if (matches.length > 0) {
+    // Filter chips: clicking a severity pinpoints that group; clicking the
+    // active one (or 全部) resets.
+    var sevChips = [
+      ['critical', '致命', 'danger'],
+      ['high', '严重', 'danger'],
+      ['medium', '一般', 'warn'],
+    ].filter(function(d) { return sevCount[d[0]] > 0; });
+    shtml += sevChips.map(function(d) {
+      return '<div class="stat-card' + (_currentSevFilter === d[0] ? ' active' : '') + '"' +
+        ' onclick="_currentSevFilter=\'' + d[0] + '\';renderPersonnel()"' +
+        ' title="点击筛选交叉异常列表（再次点击返回全部）">' +
+        '<div class="stat-num ' + d[2] + '">' + sevCount[d[0]] + '</div>' +
+        '<div class="stat-label">' + d[1] + '</div></div>';
+    }).join('');
+    shtml += '<div class="stat-card' + (_currentSevFilter === 'all' ? ' active' : '') + '"' +
+      ' onclick="_currentSevFilter=\'all\';renderPersonnel()"' +
+      ' title="显示全部严重度的异常">' +
+      '<div class="stat-num">' + matches.length + '</div><div class="stat-label">全部</div></div>';
+  }
+  shtml += '</div>';
+  if (!shared.length) {
+    // No shared pools — but the cross-match rules may still hit (同角色人员
+    // 重叠、授权/修改人交叉…): must NOT claim "无交叉" and contradict them.
+    shtml += '<div class="info-note"><span class="info-note-icon">💡</span><div>' +
+      (matches.length
+        ? '未发现跨标书<b>完全相同</b>的共享人员/联系方式。下方异常为规则比对命中（同角色人员重叠、授权/修改人交叉等），并非共享值重复'
+        : '未发现跨标书人员/联系方式交叉') + '</div></div>';
+  }
+  document.getElementById('personnelSummary').innerHTML = shtml;
 
-  let html = '';
-  let hasAnyData = false;
-
-  p.files.forEach(f => {
-    // Multi-value contact pools: show all collected phones / IDs / emails
-    // (a bid volume usually lists several contacts across its documents)
-    const phones = (f.phones && f.phones.length > 0) ? f.phones.join('、') : (f.phone || null);
-    const ids = (f.id_numbers && f.id_numbers.length > 0) ? f.id_numbers.join('、') : (f.id_number || null);
-    const emails = (f.emails && f.emails.length > 0) ? f.emails.join('、') : null;
-    const rows = [
-      ['公司名称', f.company_name],
-      ['法定代表人', f.legal_rep], ['授权代表', f.authorized_rep],
-      ['身份证号', ids], ['联系电话', phones], ['邮箱', emails],
-      ['联系地址', f.address], ['响应日期', f.response_date],
-    ];
-    const filled = rows.filter(r => r[1]);
-
-    // Check for project team members
-    const allPersons = f.all_persons || [];
-    const teamMembers = allPersons.filter(function(p) {
-      return ['project_manager', 'tech_lead', 'team_member', 'bid_contact'].indexOf(p.role) >= 0;
-    });
-
-    if (filled.length === 0 && teamMembers.length === 0) return;
-
-    hasAnyData = true;
-    html += '<h3 class="section-subtitle">' + escapeHtml(f.name) + '</h3>';
-
-    // Basic info table
-    if (filled.length > 0) {
-      html += '<table class="data-table"><thead><tr><th>属性</th><th>值</th></tr></thead><tbody>';
-      filled.forEach(function(row) {
-        html += '<tr><td>' + row[0] + '</td><td>' + escapeHtml(String(row[1])) + '</td></tr>';
-      });
-      html += '</tbody></table>';
-    }
-
-    // Project team members table
-    if (teamMembers.length > 0) {
-      html += '<h4 class="section-subtitle">项目团队成员</h4>';
-      html += '<table class="data-table"><thead><tr><th>姓名</th><th>角色</th><th>置信度</th></tr></thead><tbody>';
-      teamMembers.forEach(function(m) {
-        var roleLabel = ROLE_LABELS[m.role] || m.role;
-        var conf = m.confidence ? Math.round(m.confidence * 100) + '%' : '-';
-        html += '<tr><td>' + escapeHtml(m.name) + '</td><td>' + roleLabel + '</td><td>' + conf + '</td></tr>';
-      });
-      html += '</tbody></table>';
-    }
+  // ── Merged per-attribute comparison table (one row per attribute,
+  //    one column per file — same orientation as the pricing tab) ──
+  var chtml = '';
+  function poolList(pool, single) {
+    return (pool && pool.length) ? pool : (single ? [single] : []);
+  }
+  var attrRows = [
+    { label: '公司名称', vals: function(f) { return f.company_name ? [String(f.company_name)] : []; } },
+    { label: '法定代表人', vals: function(f) { return f.legal_rep ? [String(f.legal_rep)] : []; } },
+    { label: '授权代表', vals: function(f) { return f.authorized_rep ? [String(f.authorized_rep)] : []; } },
+    { label: '联系电话', vals: function(f) { return poolList(f.phones, f.phone); }, max: 3 },
+    { label: '身份证号', vals: function(f) { return poolList(f.id_numbers, f.id_number); }, max: 2,
+      display: function(v) { return _maskTail(v, 6, 2); }, reveal: true },
+    { label: '银行账号', vals: function(f) { return f.bank_accounts || []; }, max: 2,
+      display: function(v) { return _maskTail(v, 4, 4); }, reveal: true },
+    { label: '邮箱', vals: function(f) { return f.emails || []; }, max: 3 },
+    { label: '联系地址', vals: function(f) { return f.address ? [String(f.address).slice(0, 40)] : []; } },
+    { label: '响应日期', vals: function(f) { return f.response_date ? [String(f.response_date)] : []; } },
+  ];
+  var hasAnyAttr = attrRows.some(function(r) {
+    return files.some(function(f) { return r.vals(f).length; });
   });
-
-  if (!hasAnyData) {
-    html = '<p class="empty-note">未从标书中提取到人员信息（法定代表人、授权代表、项目成员等）</p>';
-  }
-  document.getElementById('personnelTables').innerHTML = html;
-
-  // Cross-match findings
-  var mhtml = '';
-  if (p.cross_matches && p.cross_matches.length > 0) {
-    p.cross_matches.forEach(function(m) {
-      var sevClass = 'badge-medium';
-      var sevLabel = '一般';
-      if (m.severity === 'high') { sevClass = 'badge-high'; sevLabel = '严重'; }
-      if (m.severity === 'critical') { sevClass = 'badge-critical'; sevLabel = '致命'; }
-      if (m.severity === 'info') { sevClass = 'badge-info'; sevLabel = '信息'; }
-      mhtml += '<div class="match-card">';
-      mhtml += '<span class="match-badge ' + sevClass + '">' + sevLabel + '</span>';
-      mhtml += '<strong>' + escapeHtml(m.type) + '</strong>';
-      mhtml += '<p class="match-detail">' + escapeHtml(m.detail) + '</p>';
-      mhtml += '</div>';
+  if (files.length) {
+    var rowsHtml = '';
+    attrRows.forEach(function(row) {
+      var raws = files.map(function(f) { return row.vals(f); });
+      if (!raws.some(function(l) { return l.length; })) return;
+      // Shared-value detection on RAW values (before masking/truncation):
+      // a shared 4th phone or a coincidentally-equal masked ID must not
+      // decide — or miss — the highlight.
+      var freq = {};
+      raws.forEach(function(list) {
+        list.forEach(function(v) { freq[v] = (freq[v] || 0) + 1; });
+      });
+      var rowHasShared = Object.keys(freq).some(function(v) { return freq[v] >= 2; });
+      var isPoolRow = !!(row.max || row.display);
+      rowsHtml += '<tr><td>' + row.label + '</td>';
+      raws.forEach(function(list) {
+        if (!list.length) { rowsHtml += '<td class="dim">—</td>'; return; }
+        var shown = list.slice(0, row.max || list.length);
+        rowsHtml += '<td' + (!isPoolRow && rowHasShared ? ' class="cell-same"' : '') + '>';
+        shown.forEach(function(v, vi) {
+          var shared = freq[v] >= 2;
+          if (row.reveal) {
+            rowsHtml += '<span class="mask-toggle" onclick="maskToggle(this)"' +
+              (shared ? ' title="跨' + freq[v] + '份标书共享 · 点击显示完整号码"' : ' title="点击显示完整号码"') + '>' +
+              '<span class="m-short">' + escapeHtml(row.display(v)) + '</span>' +
+              '<span class="m-full">' + escapeHtml(String(v)) + '</span>' +
+              '<span class="m-btn">👁</span></span>';
+            if (shared) rowsHtml += ' <span class="same-flag">⚠</span>';
+          } else {
+            rowsHtml += '<span class="val' + (shared ? ' val-shared' : '') + '"' +
+              (shared ? ' title="跨' + freq[v] + '份标书共享"' : '') + '>' +
+              escapeHtml(String(v)) +
+              (shared ? ' <span class="same-flag">⚠</span>' : '') + '</span>';
+          }
+          if (vi < shown.length - 1) rowsHtml += '、';
+        });
+        if (list.length > (row.max || list.length)) {
+          rowsHtml += ' <span class="pool-more">等' + list.length + '项</span>';
+        }
+        rowsHtml += '</td>';
+      });
+      rowsHtml += '</tr>';
     });
+    if (rowsHtml) {
+      chtml += '<div class="section-title">🧾 各标书人员信息对比</div>';
+      chtml += '<div style="overflow-x:auto;"><table class="data-table"><thead><tr><th>属性</th>';
+      files.forEach(function(f) {
+        chtml += '<th title="' + escapeHtml(f.name) + '">' + escapeHtml(shortenName(f.name, 16)) + '</th>';
+      });
+      chtml += '</tr></thead><tbody>' + rowsHtml + '</tbody></table></div>';
+    }
   }
 
-  if (p.findings && p.findings.length > 0) {
-    if (mhtml) mhtml += '<div style="margin-top:12px;"></div>';
+  // ── Team members as compact chips per file ──
+  var teamHtml = '';
+  files.forEach(function(f, fi) {
+    var members = (f.all_persons || []).filter(function(m) {
+      return ['project_manager', 'tech_lead', 'team_member', 'bid_contact', 'signatory'].indexOf(m.role) >= 0;
+    });
+    if (!members.length) return;
+    teamHtml += '<div class="team-block">';
+    teamHtml += '<div class="section-subtitle">' + escapeHtml(shortenName(f.name, 24)) +
+      '<span class="file-chip">' + members.length + ' 人</span></div>';
+    var shown = members.slice(0, 12);
+    shown.forEach(function(m) {
+      var roleLabel = ROLE_LABELS[m.role] || '人员';
+      var isCore = m.role === 'project_manager' || m.role === 'tech_lead';
+      teamHtml += '<span class="person-chip' + (isCore ? ' core' : '') + '">' +
+        escapeHtml(m.name) + '<i>' + roleLabel + '</i></span>';
+    });
+    var rest = members.slice(12);
+    if (rest.length) {
+      teamHtml += '<span id="team-more-' + fi + '" style="display:none;">';
+      rest.forEach(function(m) {
+        var roleLabel = ROLE_LABELS[m.role] || '人员';
+        var isCore = m.role === 'project_manager' || m.role === 'tech_lead';
+        teamHtml += '<span class="person-chip' + (isCore ? ' core' : '') + '">' +
+          escapeHtml(m.name) + '<i>' + roleLabel + '</i></span>';
+      });
+      teamHtml += '</span>';
+      teamHtml += '<button class="btn btn-sm btn-outline team-more-btn" ' +
+        'onclick="toggleTeamMore(\'team-more-' + fi + '\', this, ' + rest.length + ')">' +
+        '展开其余 ' + rest.length + ' 人</button>';
+    }
+    teamHtml += '</div>';
+  });
+  if (teamHtml) chtml += '<div class="section-title" style="margin-top:18px;">👥 项目团队</div>' + teamHtml;
+
+  document.getElementById('personnelTables').innerHTML =
+    chtml || '<p class="empty-note">未从标书中提取到人员信息（法定代表人、授权代表、项目成员等）</p>';
+
+  // ── Cross matrix: shared values × files ──
+  var mhtml2 = '';
+  if (shared.length && files.length >= 2) {
+    mhtml2 += '<div class="section-title">🔀 人员交叉矩阵</div>';
+    var typeDefs = [
+      ['all', '全部'], ['id', '🪪 身份证'], ['bank', '🏦 账号'],
+      ['phone', '📞 电话'], ['name', '👤 姓名'], ['email', '✉️ 邮箱'],
+    ];
+    var typeFilter = '<div class="kpi-strip" style="margin-bottom:10px;">' +
+      typeDefs.map(function(t) {
+        return '<span class="kpi-chip' + (_matrixTypeFilter === t[0] ? ' active' : '') + '"' +
+          ' onclick="_matrixTypeFilter=\'' + t[0] + '\';renderPersonnel()"' +
+          ' style="cursor:pointer;">' + t[1] +
+          (t[0] === 'all' ? ' ' + shared.length : '') + '</span>';
+      }).join('') + '</div>';
+    var shownShared = shared.filter(function(s) {
+      return _matrixTypeFilter === 'all' || s.type === _matrixTypeFilter;
+    });
+    mhtml2 += typeFilter;
+    if (!shownShared.length) {
+      mhtml2 += '<p class="empty-note">该类型暂无跨标书共享项</p>';
+    } else {
+      mhtml2 += '<div class="matrix-wrap"><table class="matrix-table"><thead><tr><th>交叉项</th>';
+      files.forEach(function(f) {
+        mhtml2 += '<th title="' + escapeHtml(f.name) + '">' + escapeHtml(shortenName(f.name, 8)) + '</th>';
+      });
+      mhtml2 += '</tr></thead><tbody>';
+      shownShared.forEach(function(s) {
+        var display = s.value;
+        if (s.type === 'id') display = _maskTail(s.value, 6, 2);
+        if (s.type === 'bank') display = _maskTail(s.value, 4, 4);
+        if (s.type === 'name') display = '「' + s.value + '」';
+        mhtml2 += '<tr><td class="matrix-label" title="' + escapeHtml(s.value) + '">' + s.icon + ' ' + s.typeLabel +
+          ' <b>' + escapeHtml(display) + '</b></td>';
+        files.forEach(function(f) {
+          var hit = s.files.indexOf(f.name) >= 0;
+          mhtml2 += '<td class="matrix-cell"' +
+            (hit ? ' title="' + escapeHtml(s.value) + ' 出现于 ' + escapeHtml(f.name) + '"' : '') + '>' +
+            (hit ? '<span class="matrix-dot t-' + s.type + '"></span>' : '') + '</td>';
+        });
+        mhtml2 += '</tr>';
+      });
+      mhtml2 += '</tbody></table></div>';
+    }
+  } else if (files.length >= 2) {
+    if (matches.length) {
+      mhtml2 = '<div class="info-note"><span class="info-note-icon">💡</span><div>' +
+        '无共享值可展示 — 下方异常为规则比对命中（同角色人员重叠、授权/修改人交叉等）</div></div>';
+    } else {
+      mhtml2 = '<div class="info-note"><span class="info-note-icon">💡</span><div>' +
+        '未发现跨标书共享的人员/联系方式（无矩阵数据）</div></div>';
+    }
+  }
+  document.getElementById('personnelMatrix').innerHTML = mhtml2;
+
+  // ── Cross-match findings grouped by severity ──
+  var mhtml = '';
+  if (matches.length > 0) {
+    mhtml += '<div class="section-title" style="margin-top:18px;">🔎 交叉异常' +
+      (_currentSevFilter !== 'all' ? '（已筛选: ' + _sevInfo(_currentSevFilter).label + '）' : '') +
+      '</div>';
+    var groups = {};
+    matches.forEach(function(m) {
+      var sev = m.severity in sevCount ? m.severity : 'info';
+      (groups[sev] = groups[sev] || []).push(m);
+    });
+    Object.keys(groups)
+      .filter(function(s) { return _currentSevFilter === 'all' || _currentSevFilter === s; })
+      .sort(function(a, b) {
+        return _sevInfo(a).rank - _sevInfo(b).rank;
+      }).forEach(function(sev) {
+        var info = _sevInfo(sev);
+        mhtml += '<div class="sev-group sev-' + sev + '">';
+        mhtml += '<div class="sev-group-title"><span class="match-badge ' + info.cls + '">' + info.label +
+          '</span><span>' + groups[sev].length + ' 项</span></div>';
+        groups[sev].forEach(function(m) {
+          var mi = _sevInfo(m.severity);
+          mhtml += '<div class="match-card">';
+          mhtml += '<span class="match-badge ' + mi.cls + '">' + mi.label + '</span>';
+          mhtml += '<strong>' + escapeHtml(m.type) + '</strong>';
+          mhtml += '<p class="match-detail">' + escapeHtml(m.detail) + '</p>';
+          mhtml += '</div>';
+        });
+        mhtml += '</div>';
+      });
+  } else if (p.findings && p.findings.length > 0) {
     mhtml += '<ul class="finding-list">';
     p.findings.forEach(function(f) { mhtml += '<li>' + escapeHtml(f) + '</li>'; });
     mhtml += '</ul>';
   }
 
-  if (!mhtml && !hasAnyData) {
-    document.getElementById('personnelMatches').innerHTML = '';
-  } else if (!mhtml) {
-    document.getElementById('personnelMatches').innerHTML = '<p class="empty-note">未发现人员交叉异常</p>';
+  if (!mhtml) {
+    document.getElementById('personnelMatches').innerHTML =
+      hasAnyAttr ? '<p class="empty-note">未发现人员交叉异常</p>' : '';
   } else {
     document.getElementById('personnelMatches').innerHTML = mhtml;
   }
@@ -1180,6 +1472,16 @@ function renderSimilarity() {
 }
 
 // ── Pricing Tab ──
+function _fmtMoney(v) {
+  if (v == null || !isFinite(Number(v))) return null;
+  return Number(v).toLocaleString('zh-CN', { maximumFractionDigits: 2 });
+}
+
+function _wanNote(v) {
+  if (v == null || isNaN(v) || Math.abs(v) < 10000) return '';
+  return '<span class="unit-note">≈ ' + (v / 10000).toLocaleString('zh-CN', { maximumFractionDigits: 2 }) + ' 万</span>';
+}
+
 function renderPricing() {
   if (!analysisResult) return;
   const p = analysisResult.pricing;
@@ -1187,62 +1489,176 @@ function renderPricing() {
 
   // ── Total Price Comparison ──
   let tableHtml = '';
-  if (p.files && p.files.length > 0) {
-    tableHtml += '<div class="section-title">💰 总价对比</div>';
+  var files = p.files || [];
+  if (files.length > 0) {
+    var pricedFiles = files.filter(function(f) { return f.totalPriceInTax != null || f.totalPrice != null; });
+    var rateFiles = files.filter(function(f) { return f.bidRate != null; });
+    // Majority price key: 含税总价 when it covers >= half of the priced files,
+    // else 不含税总价. Never compare 含税 against 不含税 in one chart.
+    var withTaxCount = pricedFiles.filter(function(f) { return f.totalPriceInTax != null; }).length;
+    var priceKey = (pricedFiles.length === 0 || withTaxCount >= Math.ceil(pricedFiles.length / 2))
+      ? 'totalPriceInTax' : 'totalPrice';
+    var priceLabel = priceKey === 'totalPriceInTax' ? '含税总价' : '不含税总价';
+    var keyVals = pricedFiles.filter(function(f) { return f[priceKey] != null; });
+
+    // ── KPI overview (stat-card chips, same language as the similarity tab) ──
+    var pchip = function(num, cls, label) {
+      return '<div class="stat-card"><div class="stat-num' + (cls ? ' ' + cls : '') + '">' + num +
+        '</div><div class="stat-label">' + label + '</div></div>';
+    };
+    var kpi = '<div class="summary-stat" style="margin:0;">';
+    kpi += pchip(pricedFiles.length + '/' + files.length,
+      pricedFiles.length === 0 && rateFiles.length > 0 ? 'warn' : '',
+      pricedFiles.length ? '报价文件数' : (rateFiles.length ? '报价文件数（费率报价）' : '报价文件数'));
+    if (keyVals.length > 0) {
+      var maxV = Math.max.apply(null, keyVals.map(function(f) { return f[priceKey]; }));
+      var minV = Math.min.apply(null, keyVals.map(function(f) { return f[priceKey]; }));
+      var identicalAll = keyVals.length >= 2 && maxV === minV;
+      kpi += pchip(_fmtMoney(maxV), '', '最高' + priceLabel);
+      if (keyVals.length >= 2) kpi += pchip(_fmtMoney(minV), '', '最低' + priceLabel);
+      if (keyVals.length >= 2 && minV > 0) {
+        var spread = ((maxV - minV) / minV * 100);
+        kpi += pchip(identicalAll ? '一致' : spread.toFixed(1) + '%',
+          identicalAll ? 'danger' : (spread < 2 ? 'warn' : ''),
+          '价差 (' + keyVals.length + '家)');
+      }
+    }
+    kpi += '</div>';
+    tableHtml += kpi;
+    if (keyVals.length < pricedFiles.length) {
+      tableHtml += '<p class="empty-note" style="margin:2px 0 10px;">' +
+        (pricedFiles.length - keyVals.length) + ' 份文件未提取到' + priceLabel + '，以 — 展示</p>';
+    }
+
+    // ── Visual bars (majority price horizontal comparison) ──
+    if (keyVals.length >= 2) {
+      var maxV = Math.max.apply(null, keyVals.map(function(f) { return f[priceKey]; }));
+      var minV = Math.min.apply(null, keyVals.map(function(f) { return f[priceKey]; }));
+      // group identical values ( collusion signal → danger color )
+      var groups = {};
+      keyVals.forEach(function(f) { var v = f[priceKey]; groups[v] = (groups[v] || 0) + 1; });
+      tableHtml += '<div class="section-title">💰 报价直观对比</div>';
+      tableHtml += '<div class="price-bars">';
+      pricedFiles.forEach(function(f) {
+        var v = f[priceKey];
+        if (v == null) {
+          // No majority-key value (e.g. 含税缺失但有不含税) — dim row, never
+          // grouped as "identical" or drawn as a bar.
+          tableHtml += '<div class="price-bar-row">';
+          tableHtml += '<span class="price-bar-label" title="' + escapeHtml(f.name || '') + '">' +
+            escapeHtml(shortenName(f.name, 12)) + '</span>';
+          tableHtml += '<span class="price-bar-track"></span>';
+          tableHtml += '<span class="price-bar-val di">—</span>';
+          tableHtml += '</div>';
+          return;
+        }
+        var identical = groups[v] >= 2;
+        var pct = maxV > 0 ? Math.max(3, Math.round(v / maxV * 100)) : 0;
+        var diffPct = (maxV > minV && minV > 0 && v > minV) ? ' +' + ((v - minV) / minV * 100).toFixed(1) + '%' : '';
+        tableHtml += '<div class="price-bar-row">';
+        tableHtml += '<span class="price-bar-label" title="' + escapeHtml(f.name || '') + '">' +
+          escapeHtml(shortenName(f.name, 12)) + '</span>';
+        tableHtml += '<span class="price-bar-track"><span class="price-bar-fill' +
+          (identical ? ' same' : (maxV > minV && v === minV ? ' low' : '')) +
+          '" style="width:' + pct + '%"></span></span>';
+        tableHtml += '<span class="price-bar-val">' + _fmtMoney(v) +
+          (identical ? ' <i class="same-flag">⚠ 一致</i>' : diffPct) + '</span>';
+        tableHtml += '</div>';
+      });
+      tableHtml += '</div>';
+      if (Object.keys(groups).length < keyVals.length) {
+        tableHtml += '<p class="bar-note">⚠ 存在完全相同的报价数值 —— 报价异常一致是围串标的典型特征</p>';
+      }
+    }
+
+    // ── Detail table ──
+    tableHtml += '<div class="section-title" style="margin-top:16px;">📋 总价明细</div>';
     tableHtml += '<div style="overflow-x:auto;"><table class="data-table"><thead><tr><th>报价项</th>';
-    p.files.forEach(f => {
-      const s = (f.name || '').length > 20 ? (f.name || '').substring(0, 20) + '...' : (f.name || '');
-      tableHtml += '<th>' + escapeHtml(s) + '</th>';
+    files.forEach(f => {
+      tableHtml += '<th title="' + escapeHtml(f.name || '') + '">' + escapeHtml(shortenName(f.name, 16)) + '</th>';
     });
     tableHtml += '</tr></thead><tbody>';
 
     var priceRows = [
-      { label: '含税总价（元）', key: 'totalPriceInTax' },
-      { label: '不含税总价（元）', key: 'totalPrice' },
+      { label: '含税总价（元）', key: 'totalPriceInTax', money: true },
+      { label: '不含税总价（元）', key: 'totalPrice', money: true },
       { label: '税率', key: 'taxRate' },
-      { label: '收入（元）', key: 'revenue' },
-      { label: '成本（元）', key: 'cost' },
+      { label: '费率/下浮率', key: 'bidRate' },
+      { label: '收入（元）', key: 'revenue', money: true },
+      { label: '成本（元）', key: 'cost', money: true },
     ];
     var hasPriceRow = false;
     priceRows.forEach(function(row) {
-      if (p.files.some(function(f) { return f[row.key] != null; })) {
+      if (files.some(function(f) { return f[row.key] != null; })) {
         hasPriceRow = true;
-        tableHtml += '<tr><td>' + row.label + '</td>';
-        p.files.forEach(function(f) {
+        // identical-value highlight: rows sharing the exact value across >=2 files
+        var freq = {};
+        files.forEach(function(f) {
           var v = f[row.key];
-          tableHtml += '<td>' + (v != null ? (typeof v === 'number' ? v.toLocaleString() : escapeHtml(String(v))) : '<span style="color:#9ca3af;">—</span>') + '</td>';
+          if (v != null) freq[v] = (freq[v] || 0) + 1;
+        });
+        tableHtml += '<tr><td>' + row.label + '</td>';
+        files.forEach(function(f) {
+          var v = f[row.key];
+          if (v == null) {
+            tableHtml += '<td class="dim">—</td>';
+          } else if (typeof v === 'number') {
+            var shared = freq[v] >= 2;
+            tableHtml += '<td class="num' + (shared ? ' cell-same' : '') + '">' + _fmtMoney(v) +
+              (shared ? ' <span class="same-flag">⚠</span>' : '') + _wanNote(v) + '</td>';
+          } else {
+            var strShared = freq[v] >= 2;
+            tableHtml += '<td' + (strShared ? ' class="cell-same"' : '') + '>' + escapeHtml(String(v)) +
+              (strShared ? ' <span class="same-flag">⚠</span>' : '') + '</td>';
+          }
         });
         tableHtml += '</tr>';
       }
     });
-    // Rate-based bids (费率/下浮率) carry no price amounts — surface them
-    // instead of reporting "no price data"
-    var rateFiles = p.files.filter(function(f) { return f.bidRate != null; });
-    if (!hasPriceRow && rateFiles.length > 0) {
-      tableHtml += '<tr><td>费率/下浮率</td>';
-      p.files.forEach(function(f) {
-        tableHtml += '<td>' + (f.bidRate != null ? escapeHtml(String(f.bidRate)) : '<span style="color:#9ca3af;">—</span>') + '</td>';
-      });
-      tableHtml += '</tr>';
-      tableHtml += '</tbody></table></div>';
-      tableHtml += '<p class="empty-note" style="margin-top:8px;">该报价为费率形式（服务类项目），不涉及总价金额</p>';
-    } else {
-      tableHtml += '</tbody></table></div>';
-      if (!hasPriceRow) tableHtml += '<p class="empty-note">暂无报价数据</p>';
+    tableHtml += '</tbody></table></div>';
+    var hasAmountRow = files.some(function(f) {
+      return f.totalPriceInTax != null || f.totalPrice != null || f.revenue != null || f.cost != null;
+    });
+    if (!hasAmountRow) {
+      tableHtml += rateFiles.length > 0
+        ? '<p class="empty-note" style="margin-top:8px;">该报价为费率形式（服务类项目），不涉及总价金额</p>'
+        : '<p class="empty-note">暂无报价数据</p>';
     }
 
     if (p.comparison && Object.keys(p.comparison).length > 0) {
+      var fileCount = Object.keys(p.comparison[Object.keys(p.comparison)[0]]).length - 1;
       tableHtml += '<div style="margin-top:12px;font-size:13px;">';
       Object.entries(p.comparison).forEach(function(entry) {
         var label = entry[0];
         var data = entry[1];
         var sameAll = data._same_all;
-        var vals = Object.entries(data).filter(function(kv) { return kv[0] !== '_same_all'; }).map(function(kv) { return kv[1]; }).filter(function(v) { return v != null; });
+        var vals = Object.entries(data).filter(function(kv) { return kv[0] !== '_same_all'; })
+          .map(function(kv) { return kv[1]; }).filter(function(v) { return v != null; });
+        var fmtV = function(v) { return (typeof v === 'number') ? v.toLocaleString('zh-CN') : String(v); };
+        var yuan = function(v) { return typeof v === 'number' ? ' 元' : ''; };
         if (sameAll === true && vals.length >= 2) {
-          tableHtml += '<p class="price-compare-line same">📌 <strong>' + escapeHtml(label) + '</strong>: 全部一致 (' + vals[0].toLocaleString() + ' 元)</p>';
+          var fullCover = vals.length === fileCount;
+          tableHtml += '<p class="price-compare-line same">📌 <strong>' + escapeHtml(label) + '</strong>: ' +
+            (fullCover ? '全部一致' : vals.length + '/' + fileCount + ' 份一致') +
+            ' (' + fmtV(vals[0]) + yuan(vals[0]) + ')</p>';
         } else if (sameAll === false && vals.length >= 2) {
-          tableHtml += '<p class="price-compare-line diff">⚠️ <strong>' + escapeHtml(label) + '</strong>: 存在差异 — ' + vals.map(function(v) { return v.toLocaleString(); }).join(' / ') + ' 元</p>';
+          tableHtml += '<p class="price-compare-line diff">⚠️ <strong>' + escapeHtml(label) + '</strong>: 存在差异 — ' +
+            vals.map(function(v) { return fmtV(v) + yuan(v); }).join(' / ') + '</p>';
         }
+      });
+      tableHtml += '</div>';
+    }
+
+    // Extraction warnings from backend validation (大写/小写不一致已修正、
+    // 分项汇总差异、全文兜底低置信) — surfaced so users can double-check
+    // instead of silently trusting a wrong value.
+    var warnFiles = p.files.filter(function(f) { return f.warnings && f.warnings.length; });
+    if (warnFiles.length) {
+      tableHtml += '<div style="margin-top:10px;font-size:13px;">';
+      warnFiles.forEach(function(f) {
+        f.warnings.forEach(function(w) {
+          tableHtml += '<p class="price-compare-line warn-line">⚠️ <strong>' + escapeHtml(shortenName(f.name, 16)) + '</strong>：' + escapeHtml(w) + '</p>';
+        });
       });
       tableHtml += '</div>';
     }
@@ -1256,29 +1672,58 @@ function renderPricing() {
   if (p.subItemCompare && p.subItemCompare.length > 0) {
     subHtml += '<div class="section-title" style="margin-top:20px;">📊 分项明细比对</div>';
     p.subItemCompare.forEach(function(c, ci) {
-      subHtml += '<div class="subitem-card">';
-      subHtml += '<strong style="font-size:14px;">' + escapeHtml(c.name || ('分项 ' + (ci + 1))) + '</strong>';
+      // strong findings → badge on the card header
+      var strongBadges = [];
+      (c.findings || []).forEach(function(f) {
+        if (!f) return;
+        if (f.indexOf('完全一致') >= 0 && strongBadges.indexOf('完全一致') < 0) strongBadges.push('完全一致');
+        if (f.indexOf('等差数列') >= 0 && strongBadges.indexOf('等差数列') < 0) strongBadges.push('等差数列');
+        if (f.indexOf('高度接近') >= 0 && strongBadges.indexOf('高度接近') < 0) strongBadges.push('高度接近');
+      });
+      // Flagged cards open by default; the rest are collapsed past the first 3
+      // so the section stays scannable.
+      var openByDefault = strongBadges.length > 0 || ci < 3;
+      subHtml += '<details class="subitem-card"' + (openByDefault ? ' open' : '') + '>';
+      subHtml += '<summary class="subitem-head"><span class="subitem-chev" aria-hidden="true"></span><strong>' +
+        escapeHtml(c.name || ('分项 ' + (ci + 1))) + '</strong>';
+      strongBadges.forEach(function(b) {
+        subHtml += '<span class="subitem-badge danger">' + escapeHtml(b) + '</span>';
+      });
+      if (!strongBadges.length && c.items && c.items.length > 1) {
+        subHtml += '<span class="subitem-badge ok">' + c.items.length + ' 家报价</span>';
+      }
+      subHtml += '</summary>';
+      subHtml += '<div class="subitem-body">';
       if (c.items && c.items.length > 1) {
         // Check if any item has manufacturer/model extras
         var hasExtras = c.items.some(function(it) { return it.extras && it.extras['厂家/型号']; });
         var hasType = c.items.some(function(it) { return it.type; });
 
+        // identical 含税总价 within this sub-item → highlight
+        var freq = {};
+        c.items.forEach(function(it) {
+          var v = it.totalPriceInTax != null ? it.totalPriceInTax : it.totalPrice;
+          if (v != null) freq[v] = (freq[v] || 0) + 1;
+        });
+
         var headerCols = '<th>投标人</th>';
         if (hasType) headerCols += '<th>来源</th>';
         if (hasExtras) headerCols += '<th>厂家/型号</th>';
-        headerCols += '<th>单价</th><th>数量</th><th>不含税总价</th><th>含税总价</th><th>税率</th>';
+        headerCols += '<th class="num-col">单价</th><th>数量</th><th class="num-col">不含税总价</th><th class="num-col">含税总价</th><th>税率</th>';
 
         subHtml += '<table class="data-table" style="margin-top:8px;"><thead><tr>' + headerCols + '</tr></thead><tbody>';
         c.items.forEach(function(it) {
-          var sf = (it.file || '').length > 25 ? (it.file || '').substring(0, 25) + '...' : (it.file || '');
+          var itTotal = it.totalPriceInTax != null ? it.totalPriceInTax : it.totalPrice;
+          var itShared = itTotal != null && freq[itTotal] >= 2;
           subHtml += '<tr>';
-          subHtml += '<td>' + escapeHtml(sf) + '</td>';
+          subHtml += '<td>' + escapeHtml(shortenName(it.file || '', 20)) + '</td>';
           if (hasType) subHtml += '<td>' + escapeHtml(it.type || '—') + '</td>';
           if (hasExtras) subHtml += '<td>' + escapeHtml((it.extras && it.extras['厂家/型号']) || '—') + '</td>';
-          subHtml += '<td>' + (it.unitPrice != null ? it.unitPrice.toLocaleString() : '—') + '</td>';
+          subHtml += '<td class="num">' + (it.unitPrice != null ? _fmtMoney(it.unitPrice) : '—') + '</td>';
           subHtml += '<td>' + (it.count != null ? it.count : '—') + '</td>';
-          subHtml += '<td>' + (it.totalPrice != null ? it.totalPrice.toLocaleString() : '—') + '</td>';
-          subHtml += '<td>' + (it.totalPriceInTax != null ? it.totalPriceInTax.toLocaleString() : '—') + '</td>';
+          subHtml += '<td class="num">' + (it.totalPrice != null ? _fmtMoney(it.totalPrice) : '—') + '</td>';
+          subHtml += '<td class="num' + (itShared ? ' cell-same' : '') + '">' + (itTotal != null ? _fmtMoney(itTotal) : '—') +
+            (itShared ? ' <span class="same-flag">⚠</span>' : '') + '</td>';
           subHtml += '<td>' + (it.tax != null ? escapeHtml(String(it.tax)) : '—') + '</td>';
           subHtml += '</tr>';
         });
@@ -1290,6 +1735,7 @@ function renderPricing() {
         subHtml += '</ul>';
       }
       subHtml += '</div>';
+      subHtml += '</details>';
     });
   }
   document.getElementById('subItemTable').innerHTML = subHtml;
@@ -1587,6 +2033,9 @@ async function loadHistory(id) {
     const data = await resp.json();
     if (data.error) { alert(data.error); return; }
     analysisResult = data;
+    _currentSimFilter = 'all';
+    _currentSevFilter = 'all';
+    _matrixTypeFilter = 'all';
     resultsSection.style.display = 'block';
     try {
       renderAllTabs();

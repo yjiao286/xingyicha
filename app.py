@@ -823,6 +823,41 @@ def extract_text(filepath):
             paragraphs.append(text)
     return '\n'.join(paragraphs)
 
+
+# ── PDF table extraction via PyMuPDF (optional structural channel) ──
+# pypdf's plain text layer flattens tables into space-separated runs, which
+# the heuristic PDF parsers can only partially recover. When pymupdf is
+# importable (it is already an optional OCR dependency), page.find_tables()
+# recovers cell structure; rows are emitted as ' | '-joined lines — the same
+# convention docx/xlsx use — so the pipe-table personnel/price parsers work
+# on PDFs unchanged. Only pages whose text mentions table-relevant keywords
+# are processed, bounding the cost on large documents.
+_PDF_TABLE_TRIGGER = re.compile(
+    r'(?:报价|价格|费用|金额|总价|合计|一览|开标|单价|费率|'
+    r'姓名|人员|职务|职称|电话|身份证|授权|账号)')
+MAX_PDF_TABLE_PAGES = 300
+
+
+def _fitz_page_tables_as_pipes(page):
+    """Extract tables from one PyMuPDF page as pipe-separated lines."""
+    rows_out = []
+    try:
+        finder = page.find_tables()
+    except Exception:
+        return ''
+    for tbl in getattr(finder, 'tables', []):
+        try:
+            rows = tbl.extract()
+        except Exception:
+            continue
+        for row in rows:
+            cells = ['' if c is None else str(c).replace('\n', ' ').strip()
+                     for c in row]
+            if any(cells):
+                rows_out.append(' | '.join(cells))
+    return '\n'.join(rows_out)
+
+
 def extract_text_with_tables(filepath, max_pages=MAX_PDF_PAGES, on_progress=None,
                              cancel_event=None):
     """Extract text including tables from .docx, .doc, .pdf, or .txt.
@@ -853,6 +888,11 @@ def extract_text_with_tables(filepath, max_pages=MAX_PDF_PAGES, on_progress=None
         ocr_started = False
         ocr_pages_done = 0
         ocr_time_spent = 0.0
+
+        # Structural table state (PyMuPDF, lazily opened on first trigger page)
+        fitz_doc = None
+        fitz_tried = False
+        table_pages_done = 0
 
         for i, page in enumerate(reader.pages):
             # Cancellation check (per page — an OCR page itself is ~1-3s)
@@ -901,8 +941,35 @@ def extract_text_with_tables(filepath, max_pages=MAX_PDF_PAGES, on_progress=None
                         on_progress('pdf_ocr', i + 1, total_pages, True,
                                     f'"{fname}" OCR已达页数上限 {OCR_MAX_PAGES} 页，剩余图片页跳过')
 
-            if has_text:
-                lines.append(text)
+            # ── Structural table channel (PyMuPDF) ──
+            # Runs only on text-bearing pages that mention table-relevant
+            # keywords, so cost stays bounded on long documents. The recovered
+            # pipe rows are appended to the page text; pypdf's flattened run
+            # stays too (duplicate content is harmless — same convention as
+            # the docx path, which appends tables after paragraphs).
+            tbl_text = ''
+            if has_text and table_pages_done < MAX_PDF_TABLE_PAGES \
+                    and _PDF_TABLE_TRIGGER.search(text):
+                if not fitz_tried:
+                    fitz_tried = True
+                    try:
+                        import fitz
+                        fitz_doc = fitz.open(filepath)
+                    except Exception as e:
+                        logger.info('PyMuPDF unavailable, PDF tables keep the '
+                                    'flattened-text heuristic only: %s', e)
+                if fitz_doc is not None:
+                    _check_cancelled(cancel_event)
+                    try:
+                        tbl_text = _fitz_page_tables_as_pipes(fitz_doc[i])
+                    except Exception as e:
+                        logger.warning('PDF table extraction failed on %s '
+                                       'page %d: %s', fname, i + 1, e)
+                    if tbl_text:
+                        table_pages_done += 1
+
+            if has_text or tbl_text:
+                lines.append(text + ('\n' + tbl_text if tbl_text else ''))
                 pages_with_text += 1
                 empty_streak = 0
             else:
@@ -933,6 +1000,8 @@ def extract_text_with_tables(filepath, max_pages=MAX_PDF_PAGES, on_progress=None
                 on_progress('pdf_done', total_pages, total_pages, True,
                           f'"{fname}" 提取完成：{pages_with_text}页有文字{suffix}')
 
+        if fitz_doc is not None:
+            fitz_doc.close()
         return '\n'.join(lines)
 
     if ftype == 'doc':
@@ -974,7 +1043,10 @@ def _find_personnel_sections(text):
         'personnel_table': [
             '项目管理机构', '项目组成员', '主要人员', '项目成员',
             '拟投入人员', '拟派人员', '项目团队', '组织机构',
-            '人员配备', '人员配置', '岗位人员', '主要管理人员'
+            '人员配备', '人员配置', '岗位人员', '主要管理人员',
+            '人员一览表', '主要人员一览', '项目人员', '关键人员',
+            '人员简历', '劳动力计划', '技术人员情况', '管理人员情况',
+            '人员与分工'
         ],
         'qualification': [
             '投标人基本情况表', '资格审查资料', '投标人资格',
@@ -1009,6 +1081,32 @@ def _find_personnel_sections(text):
                 found.append({'type': section_type, 'text': sec_text, 'start': start, 'end': end})
                 idx = text.find(marker, idx + len(marker))
     return found
+
+
+# Chinese surname dictionary for name validation. A 2-4 char pure-CJK string
+# whose first character is not a known surname (and has no compound-surname
+# prefix) is almost always a table fragment, not a person. The full 百家姓
+# plus common extended surnames keeps false negatives near zero; the check
+# can only REJECT candidates, never accept new ones, so precision strictly
+# improves. Minority transliterated names (阿不来提·买买提) skip this check.
+_CHINESE_SURNAMES = set(
+    '赵钱孙李周吴郑王冯陈蒋沈韩杨朱秦尤许何吕施张孔曹严华金魏陶姜戚谢邹喻柏水窦章云苏潘葛奚范彭郎'
+    '鲁韦昌马苗凤花方俞任袁柳鲍史唐费廉岑薛雷贺倪汤殷罗毕安常乐于时傅皮卞齐康伍余元卜顾孟平黄和穆'
+    '萧尹姚邵汪祁毛禹狄米贝明臧计伏成戴谈宋茅庞熊纪舒屈项祝董梁杜阮蓝闵席季麻强贾路娄危江童颜郭'
+    '梅盛林刁钟徐邱骆高夏蔡田樊胡凌霍虞万支柯管卢莫经房裘缪干解应宗丁宣邓郁杭洪包诸左石崔吉钮龚'
+    '程嵇邢滑裴陆荣翁荀羊於惠甄曲家封芮羿储靳汲邴糜松井段富巫乌焦巴弓牧隗山谷车侯宓蓬全郗班仰秋'
+    '仲伊宫宁仇栾暴甘钭厉戎祖武符刘景詹束龙叶幸司韶郜黎蓟薄印宿白怀蒲邰从鄂索咸籍赖卓蔺屠蒙池乔'
+    '阴胥能苍双闻莘党翟谭贡劳逄姬申扶堵冉宰郦雍却璩桑桂濮牛寿通边扈燕冀郏浦尚农温别庄晏柴瞿阎充'
+    '慕连茹习宦艾鱼容向古易慎戈廖庾终暨居衡步都耿满弘匡国文寇广禄阙东欧殳沃利蔚越夔隆师巩厍聂晁'
+    '勾敖融冷訾辛阚那简饶空曾毋沙乜养鞠须丰巢关蒯相查后荆红游竺权逯盖益桓公'
+    '覃佘区冼招植苟代阿牟漆付兰单岳滕肖郝闫'
+)
+_COMPOUND_SURNAMES = (
+    '欧阳', '上官', '司马', '诸葛', '夏侯', '皇甫', '尉迟', '公孙', '长孙',
+    '慕容', '司徒', '司空', '端木', '独孤', '南宫', '万俟', '闻人', '东郭',
+    '宇文', '呼延', '鲜于', '赫连', '澹台', '淳于', '太叔', '申屠', '公冶',
+    '宗政', '濮阳', '钟离', '令狐', '轩辕', '百里', '第五',
+)
 
 
 def _is_person_name(name):
@@ -1114,6 +1212,11 @@ def _is_person_name(name):
     # Must consist of Chinese characters only
     if not re.match(r'^[一-鿿]+$', name_lower):
         return False
+    # Surname check: first char must be a known (possibly compound) surname.
+    # Transliterated minority names reach the dotted path above and skip this.
+    if name_stripped[0] not in _CHINESE_SURNAMES \
+            and not name_stripped.startswith(_COMPOUND_SURNAMES):
+        return False
     # Reject names starting with function/grammar characters
     # (these are prepositions, particles, etc. — never start a Chinese person name)
     if name_lower[0] in _FUNCTION_CHARS:
@@ -1124,11 +1227,26 @@ def _is_person_name(name):
 def _extract_from_auth_section(section_text, info):
     """Extract legal rep, authorized rep from authorization letter section."""
     # Pattern 0: "我张三（姓名）系四川某某电子科技有限公司（供应商名称）的法定代表人"
+    # company_name is captured even when the name fails validation — the two
+    # facts are independent, and a rare-surname miss must not also lose the
+    # company (observed: 兰某某 rejected → company disappeared too).
     m = re.search(r'(?:本人\s*)?我?\s*([一-鿿]{2,4}(?:[·•・][一-鿿]{2,4}){0,2})\s*[（(]姓名[）)]\s*系\s*(.{1,40}?)\s*[（(]供应商名称[）)]\s*的法定代表人', section_text)
-    if m and _is_person_name(m.group(1).strip()):
-        info['legal_rep'] = m.group(1).strip()
-        info['company_name'] = _clean_company(m.group(2).strip())
-        info['all_persons'].append({'name': info['legal_rep'], 'role': 'legal_rep', 'confidence': 0.95})
+    if m:
+        if not info.get('company_name'):
+            info['company_name'] = _clean_company(m.group(2).strip())
+        if _is_person_name(m.group(1).strip()):
+            info['legal_rep'] = m.group(1).strip()
+            info['all_persons'].append({'name': info['legal_rep'], 'role': 'legal_rep', 'confidence': 0.95})
+
+    # Pattern 0b: "（兰某某）系（北京某某航天技术有限公司）的法定代表人"
+    # 法定代表人资格证明书 form: name AND company in unlabeled parentheses.
+    m = re.search(r'[（(]\s*([一-鿿]{2,4}(?:[·•・][一-鿿]{2,4}){0,2})\s*[）)]\s*系\s*[（(]?\s*(.{2,40}?)\s*[）)]?\s*的法定代表人', section_text)
+    if m:
+        if not info.get('company_name'):
+            info['company_name'] = _clean_company(m.group(2).strip())
+        if not info['legal_rep'] and _is_person_name(m.group(1).strip()):
+            info['legal_rep'] = m.group(1).strip()
+            info['all_persons'].append({'name': info['legal_rep'], 'role': 'legal_rep', 'confidence': 0.92})
 
     # Pattern 1: "姓名：XXX 职务：XXX 系 XXX 的法定代表人"
     if not info['legal_rep']:
@@ -1139,16 +1257,19 @@ def _extract_from_auth_section(section_text, info):
             # fragments like '姓名：性别：男' where the colon survives.
             if _is_person_name(cand):
                 info['legal_rep'] = cand
-                info['company_name'] = _clean_company(m.group(2).strip())
+                if not info.get('company_name'):
+                    info['company_name'] = _clean_company(m.group(2).strip())
                 info['all_persons'].append({'name': cand, 'role': 'legal_rep', 'confidence': 0.90})
 
     # Pattern 2: "本人 XXX 系 XXX 的法定代表人"
     if not info['legal_rep']:
         m = re.search(r'(?:本人\s*)?([一-鿿]{2,4}(?:[·•・][一-鿿]{2,4}){0,2})\s*(?:[（(]姓名[）)])?\s*系\s*(.{1,30}?)\s*的法定代表人', section_text)
-        if m and _is_person_name(m.group(1).strip()):
-            info['legal_rep'] = m.group(1).strip()
-            info['company_name'] = _clean_company(m.group(2).strip())
-            info['all_persons'].append({'name': info['legal_rep'], 'role': 'legal_rep', 'confidence': 0.85})
+        if m:
+            if not info.get('company_name'):
+                info['company_name'] = _clean_company(m.group(2).strip())
+            if _is_person_name(m.group(1).strip()):
+                info['legal_rep'] = m.group(1).strip()
+                info['all_persons'].append({'name': info['legal_rep'], 'role': 'legal_rep', 'confidence': 0.85})
 
     # Pattern 3: "（王戈、董事长）代表本公司授权（赵凯、销售经理）"
     # NOTE: Some documents insert company name between the auth clause and agent name:
@@ -1208,6 +1329,22 @@ def _extract_from_auth_section(section_text, info):
                 info['legal_rep'] = name
                 info['all_persons'].append({'name': name, 'role': 'legal_rep', 'confidence': 0.80})
 
+    # Pattern 8: "兹委托 XXX（同志）为我(方/公司)…代理人" / "现授权/特授权"
+    if not info['authorized_rep']:
+        m = re.search(r'(?:兹委托|兹授权|现授权|特授权|特此委托)\s*'
+                      r'([一-鿿]{2,4}(?:[·•・][一-鿿]{2,4}){0,2})\s*(?:同志)?\s*'
+                      r'(?:为|作为)[^。]{0,40}?代理人', section_text)
+        if m and _is_person_name(m.group(1).strip()):
+            info['authorized_rep'] = m.group(1).strip()
+            info['all_persons'].append({'name': info['authorized_rep'], 'role': 'authorized_rep', 'confidence': 0.85})
+
+    # Pattern 9: "委托：XXX" / "代理人 XXX（签字）" — bare agent label without colon
+    if not info['authorized_rep']:
+        m = re.search(r'(?:委托|代理人)\s+([一-鿿]{2,4}(?:[·•・][一-鿿]{2,4}){0,2})\s*[（(]?(?:签字|签章|盖章|姓名)', section_text)
+        if m and _is_person_name(m.group(1).strip()):
+            info['authorized_rep'] = m.group(1).strip()
+            info['all_persons'].append({'name': info['authorized_rep'], 'role': 'authorized_rep', 'confidence': 0.75})
+
 
 # Known role/title strings that should NOT be treated as person names
 # (shared by section-scoped and pipe-table personnel extraction).
@@ -1241,6 +1378,12 @@ def _extract_from_personnel_table(section_text, info):
         r'([一-鿿]{2,4}(?:[·•・][一-鿿]{2,4}){0,2})\s+' + _TITLE_WORDS + r'\s*(项目经理|项目负责人|技术负责人|技术总监|总工程师|安全员|质量员|施工员|材料员|资料员|造价员|预算员)',
         r'(项目经理|项目负责人|技术负责人|技术总监|总工程师)[：:]\s*([一-鿿]{2,4}(?:[·•・][一-鿿]{2,4}){0,2})(?![一-鿿])',
         r'(项目经理|项目负责人|技术负责人|安全负责人)\s+([一-鿿]{2,4}(?:[·•・][一-鿿]{2,4}){0,2})(?![一-鿿])',
+        # Reversed label order: "职务：项目经理 ... 姓名：张三" (role first)
+        r'(?:职务|岗位|职称)[：:]\s*([一-鿿]{2,10})\s*[\s\S]{0,60}?姓名[：:]\s*([一-鿿]{2,4}(?:[·•・][一-鿿]{2,4}){0,2})',
+        # Bare "姓名：张三" without a role label (name-only tables, resumes).
+        # The lookahead rejects the next label ('姓名：性别：男' → '性别' is
+        # followed by a colon and never captured).
+        r'姓名[：:]\s*([一-鿿]{2,4}(?:[·•・][一-鿿]{2,4}){0,2})(?![一-鿿]|：|:)',
     ]
     for pat in patterns:
         for m in re.finditer(pat, section_text):
@@ -1280,7 +1423,7 @@ def _parse_personnel_pipe_table(text, info):
     scans pipe-table regions for headers like 姓名|职务|职称|电话 and maps
     columns explicitly instead of relying on inline sentence patterns.
     """
-    _NAME_HDR = re.compile(r'(?:姓\s*名|人员姓名|成员姓名|拟投入人员|人员名称)')
+    _NAME_HDR = re.compile(r'(?:姓\s*名|人员姓名|成员姓名|拟投入.{0,6}人员|人员名称|主要人员|关键人员|项目人员)')
     _ROLE_HDR = re.compile(r'(?:职\s*务|岗\s*位|职\s*称|角\s*色|担任职务|项?目?角色)')
     _PHONE_HDR = re.compile(r'(?:联?系?电话|手\s*机|移动电?话|联系方式)')
     _ID_HDR = re.compile(r'(?:身份证|证件号码|身份证明)')
@@ -1317,6 +1460,8 @@ def _parse_personnel_pipe_table(text, info):
             id_col = next((ci for ci, p in enumerate(parts) if _ID_HDR.search(p)), None)
 
             hdr_idx = region.index(hdr)
+            last_name = None  # merged-cell continuation: vertical merge leaves
+            # empty name cells that inherit the row above (docx merged cells).
             for row in region[hdr_idx + 1:]:
                 cells = [p.strip() for p in row.split('|')]
                 if len(cells) <= name_col:
@@ -1324,15 +1469,22 @@ def _parse_personnel_pipe_table(text, info):
                 name = cells[name_col]
                 # skip summary / continuation rows
                 if name.startswith(('合计', '小计', '总计', '备注', '注：')):
+                    last_name = None
                     continue
+                if not name:
+                    if last_name:
+                        name = last_name  # inherit from previous row (merged cell)
+                    else:
+                        continue
                 if not _is_person_name(name):
+                    last_name = None
                     continue
+                last_name = name
                 role_str = cells[role_col] if role_col is not None and role_col < len(cells) else ''
                 role = _infer_role_label(role_str) if role_str else 'team_member'
                 info['all_persons'].append({'name': name, 'role': role, 'confidence': 0.75})
                 if phone_col is not None and phone_col < len(cells):
-                    pm = re.search(r'1[3-9]\d{9}', cells[phone_col])
-                    if pm:
+                    for pm in re.finditer(r'1[3-9]\d{9}', cells[phone_col]):
                         _append_unique(info['phones'], pm.group(0))
                         if not info.get('phone'):
                             info['phone'] = pm.group(0)
@@ -1469,6 +1621,10 @@ def extract_personnel(text):
         'phones': [],
         'id_numbers': [],
         'emails': [],
+        # Bank account pool: a shared settlement account across bidders is
+        # strong collusion evidence (资金往来同一账户). Label-anchored to 账号
+        # to avoid harvesting project codes / contract numbers.
+        'bank_accounts': [],
         'contacts': {'phone': None, 'email': None, 'address': None}
     }
     if not text:
@@ -1533,14 +1689,29 @@ def extract_personnel(text):
     # Scan the whole document: table columns and signature blocks often carry
     # contact info without section headers. IDs tolerate internal whitespace
     # ('3201 23 19…') which PDF extraction frequently inserts.
-    for m in re.finditer(r'(?<!\d)1[3-9]\d{9}(?!\d)', text):
-        _append_unique(info['phones'], m.group(0))
+    for src in (text, _ocr_digit_normalize(text)):
+        for m in re.finditer(r'(?<!\d)1[3-9]\d{9}(?!\d)', src):
+            _append_unique(info['phones'], m.group(0))
     for m in re.finditer(r'(?<!\d)\d{6}(?:18|19|20)\d{2}'
                          r'(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])'
                          r'\d{3}[\dXx](?![\dXx])', text.replace(' ', '')):
         _append_unique(info['id_numbers'], m.group(0))
     for m in re.finditer(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', text):
         _append_unique(info['emails'], m.group(0).lower())
+    # Bank accounts: label-anchored '账号：1100923…' (9-25 digits). Whitespace
+    # tolerated inside the number (PDF cell wrapping). Exclude tender-side
+    # payment instructions (保证金汇入账号, 标书款/工本费收款账户): those are
+    # reprinted in EVERY bidder's document and would falsely pair all files.
+    # The bidder's own 基本户 account (开户行：X / 账号：Y in qualification
+    # pages) is the collusion-relevant signal and has no such context.
+    for m in re.finditer(r'[账帐]\s*户?\s*号[：:\s]+\d(?:[\d\s]{7,27}\d)?', text):
+        prefix = text[max(0, m.start() - 40):m.start()]
+        if re.search(r'(?:保证金|投标保证|汇[入至款]|缴[纳付交]|招标|代理|'
+                     r'工本费|标书[款费]|平台|收费)', prefix):
+            continue
+        acct = re.sub(r'\D', '', m.group(0))
+        if 9 <= len(acct) <= 25:
+            _append_unique(info['bank_accounts'], acct)
     if info['id_numbers'] and not info.get('id_number'):
         info['id_number'] = info['id_numbers'][0]
     if info['phones'] and not info.get('phone'):
@@ -1582,6 +1753,43 @@ def extract_personnel(text):
     info['all_persons'] = unique_persons
 
     return info
+
+
+def _demote_environmental_pool_values(all_personnel, group_names,
+                                      min_groups=3, ratio=0.8):
+    """Drop contact-pool values that appear in nearly EVERY document.
+
+    Tender-side data (招标代理联系电话, 保证金收款账号, platform notification
+    emails) is reprinted inside every bidder's document. A value shared by
+    ALL bidders cannot discriminate collusion — it only generates pairwise
+    false positives ("联系电话相同" for every file pair). A value must appear
+    in >= min_groups documents AND >= ratio of all documents to be treated
+    as environmental.
+
+    Filters all_personnel in place; returns the removed values (for logging
+    and tests). With fewer than min_groups documents nothing is removed:
+    with 2 files a shared phone is still genuine evidence.
+    """
+    n = len(group_names)
+    if n < min_groups:
+        return set()
+    removed = set()
+    for pool_key in ('phones', 'id_numbers', 'emails', 'bank_accounts'):
+        counts = {}
+        for gn in group_names:
+            for v in set(all_personnel.get(gn, {}).get(pool_key) or []):
+                counts[v] = counts.get(v, 0) + 1
+        env = {v for v, c in counts.items() if c >= min_groups and c / n >= ratio}
+        if not env:
+            continue
+        for gn in group_names:
+            pool = all_personnel.get(gn, {}).get(pool_key)
+            if pool:
+                all_personnel[gn][pool_key] = [v for v in pool if v not in env]
+        removed |= env
+    if removed:
+        logger.info('环境噪声降权：%d 项跨全部标书普遍出现的联系方式已从交叉比对剔除', len(removed))
+    return removed
 
 
 # ── Price Extraction ────────────────────────────────────────────
@@ -1677,6 +1885,12 @@ def _parse_amount(s):
     _FW = '０１２３４５６７８９'
     s = s.translate(str.maketrans(_FW, '0123456789'))
 
+    # OCR digit-letter confusions in otherwise-numeric strings
+    # ('￥1O9,800元' → 109800). Only fires when the string is composed
+    # solely of digits/letters/separators, so real words are untouched.
+    if re.search(r'\d', s) and re.fullmatch(r'[\dOoIl|.\s]+', s):
+        s = s.translate(str.maketrans('OoIl|', '00111'))
+
     has_cn = any(ch in _CN_NUM or ch in _CN_UNIT or ch in _CN_SECTION for ch in s)
 
     if has_cn:
@@ -1723,6 +1937,29 @@ _AMT_ARABIC = r'[\d,]+\.?\d*\s*(?:万|亿)?\s*元?'
 # Full Chinese uppercase / informal numeral string (incl. 元/角/分/整).
 _AMT_CN = r'[壹贰叁肆伍陆柒捌玖拾佰仟万亿零一二三四五六七八九十百千元整角分圆]+'
 _AMT = r'(?:' + _AMT_ARABIC + r'|' + _AMT_CN + r')'
+# Contexts that are amounts but NOT the bidder's own price. Shared by the
+# price channels and post-validation so an amount is judged consistently:
+# bid bonds / deposits, reference contract amounts, document prices, capital,
+# and tender-side ceilings (最高限价/控制价/预算) that every bidder reprints
+# with the SAME value — capturing one of those as "the bid price" would make
+# all bidders look identical.
+_NON_BID_AMOUNT_CTX = (r'(?:保证金|投标保证|押金|投标保函|银行保函|履约保证|'
+                       r'合同金额|合同价款|签约合同价|中标金额|结算金额|成交金额|'
+                       r'售价|注册[资]*金|出资|暂列金额|'
+                       r'最高限价|招标控制价|控制价|拦标价|暂估价|预算[金额财]*[额为]?)')
+
+
+def _amount_in_non_bid_context(search_text, pos):
+    """True when the amount at `pos` is in a non-bid-price context.
+
+    Judged on the CURRENT LINE's prefix only: a tender-ceiling line
+    ('最高限价：￥1,000,000元') frequently sits right above the real bid
+    price, and a wide look-behind window would let its label bleed into the
+    real price's context and exclude BOTH lines. Label and amount are on the
+    same visual line in essentially all extracted layouts (PDF/docx/plain).
+    """
+    line_start = search_text.rfind('\n', 0, pos) + 1
+    return bool(re.search(_NON_BID_AMOUNT_CTX, search_text[line_start:pos]))
 
 
 def _fw_digits_to_ascii(s):
@@ -1731,6 +1968,18 @@ def _fw_digits_to_ascii(s):
     PDF text layers occasionally emit full-width digits ('小写：１２３４５'),
     which the ASCII-digit regexes would silently skip."""
     return s.translate(str.maketrans('０１２３４５６７８９：，％％', '0123456789:,%%'))
+
+
+def _ocr_digit_normalize(s):
+    """Best-effort repair of OCR digit confusions in digit-heavy strings:
+    collapse spaces between digits ('139 1234 5678') and map common
+    letter/digit confusions (O/Q→0, l/I/|→1) only when directly between
+    digits. Used for contact-pool scanning; the primary text is never
+    rewritten with this."""
+    s = re.sub(r'(?<=\d)[ \t](?=\d)', '', s)
+    s = re.sub(r'(?<=\d)[OoQ](?=\d)', '0', s)
+    s = re.sub(r'(?<=\d)[lI|](?=\d)', '1', s)
+    return s
 
 
 def extract_prices(text):
@@ -1745,7 +1994,11 @@ def extract_prices(text):
         'revenue': None,
         'cost': None,
         'subItemPrice': [],
-        'costDetails': []
+        'costDetails': [],
+        # Provenance notes for the UI / report: consistency fixes applied,
+        # low-confidence provenance, sub-item sum mismatches. Populated by
+        # _validate_price_extraction.
+        'warnings': []
     }
     if not text:
         return result
@@ -1761,9 +2014,12 @@ def extract_prices(text):
 
     # Full-text fallback hits need extra validation even when a bid section
     # exists (a 合同金额/售价 line may precede the real price in the document).
-    def _mark_source(search_text):
-        if search_text is text:
-            result['_from_global'] = True
+    # NOTE: provenance is an explicit flag, NOT `search_text is text` — a
+    # full-range str slice (section == whole text, common for short docs)
+    # returns the SAME object in CPython, which would mislabel a bid-section
+    # hit as a global one.
+    def _mark_global():
+        result['_from_global'] = True
 
     # ── Channel 0: Bid summary section FIRST (开标一览表/投标报价表) ──
     # This is the MOST RELIABLE source for total price. Run it before global
@@ -1784,29 +2040,29 @@ def extract_prices(text):
         r'(?:CNY|RMB)\s*(' + _AMT_ARABIC + r')',
         r'USD\s*([\d,]+\.?\d*)',
     ]
-    sources = [bid_section] if bid_section else []
-    sources.append(text)
-    for search_text in sources:
+    sources = ([(bid_section, False)] if bid_section else []) + [(text, True)]
+    for search_text, _from_global_hit in sources:
         if result['totalPriceInTax'] is not None:
             break
         for pat in symbol_patterns:
-            m = re.search(pat, search_text)
-            if not m:
-                continue
-            # Skip non-bid contexts: bid bonds ('投标保证金...￥:500000元'),
-            # reference contract amounts ('合同金额：RMB2080000'), doc prices
-            # ('招标文件售价：人民币1000元')
-            if re.search(r'(?:保证金|投标保证|押金|投标保函|银行保函|合同金额|合同价款|'
-                         r'签约合同价|中标金额|结算金额|成交金额|售价|注册[资]*金|出资)',
-                         search_text[max(0, m.start() - 60):m.start()]):
-                continue
-            val = _parse_amount(m.group(1))
-            if val >= 100:
-                result['totalPriceInTax'] = val
-                result['totalPrice'] = val
-                _mark_cn_only(m.group(1))
-                _mark_source(search_text)
+            if result['totalPriceInTax'] is not None:
                 break
+            # Iterate ALL matches: an excluded context (保证金/最高限价…)
+            # earlier in the text must not hide the real price further down.
+            for m in re.finditer(pat, search_text):
+                # Skip non-bid contexts: bid bonds ('投标保证金...￥:500000元'),
+                # reference contract amounts ('合同金额：RMB2080000'), doc prices
+                # ('招标文件售价：人民币1000元'), tender ceilings ('最高限价…')
+                if _amount_in_non_bid_context(search_text, m.start()):
+                    continue
+                val = _parse_amount(m.group(1))
+                if val >= 100:
+                    result['totalPriceInTax'] = val
+                    result['totalPrice'] = val
+                    _mark_cn_only(m.group(1))
+                    if _from_global_hit:
+                        _mark_global()
+                    break
 
     # ── Channel 2: Label-based (标签通道) ── confidence: 0.90
     if result['totalPriceInTax'] is None:
@@ -1814,32 +2070,36 @@ def extract_prices(text):
             r'人民币[：:\s]+(' + _AMT + r')',
             r'小写[（(]?\s*[:：]?\s*[）)]?\s*(' + _AMT_ARABIC + r')',
             r'(?:投标总价|投标总报价|总报价|报价金额|投标报价|项目总价|投标总金额|总金额|'
-            r'最终报价|首轮报价|响应报价|谈判报价|含税总报价)[：:\s]+(' + _AMT + r')',
+            r'最终报价|首轮报价|响应报价|谈判报价|含税总报价|投标金额|响应文件总价|'
+            r'首次报价|最终投标报价|投标总价格)[：:\s]+(' + _AMT + r')',
+            # Label with unit in parentheses: "投标总价（元）：123000" /
+            # "合计（万元）：89.3" — the 万元 suffix keeps magnitude via _AMT.
+            r'(?:投标总价|投标总报价|总报价|报价金额|投标报价|项目总价|总金额|总价|总计|合计)'
+            r'[（(]\s*(?:万元?|元)\s*[）)]\s*[：:]?\s*(' + _AMT + r')',
             r'(?:总价|总计|合计)[：:]\s*(' + _AMT + r')',
             r'(?:金额|报价)[（(]元[）)][：:]\s*([\d,]+\.?\d*)',
         ]
-        for search_text in sources:
+        for search_text, _from_global_hit in sources:
             if result['totalPriceInTax'] is not None:
                 break
             for pat in label_patterns:
-                m = re.search(pat, search_text)
-                if not m:
-                    continue
-                if re.search(r'(?:保证金|投标保证|押金|合同金额|合同价款|签约合同价|'
-                             r'中标金额|结算金额|成交金额|售价|注册[资]*金|出资)',
-                             search_text[max(0, m.start() - 60):m.start()]):
-                    continue
-                val = _parse_amount(m.group(1))
-                if val >= 100:
-                    result['totalPriceInTax'] = val
-                    result['totalPrice'] = val
-                    _mark_cn_only(m.group(1))
-                    _mark_source(search_text)
+                if result['totalPriceInTax'] is not None:
                     break
+                for m in re.finditer(pat, search_text):
+                    if _amount_in_non_bid_context(search_text, m.start()):
+                        continue
+                    val = _parse_amount(m.group(1))
+                    if val >= 100:
+                        result['totalPriceInTax'] = val
+                        result['totalPrice'] = val
+                        _mark_cn_only(m.group(1))
+                        if _from_global_hit:
+                            _mark_global()
+                        break
 
     # ── Channel 3: 大写/小写 pair ── confidence: 0.88
     if result['totalPriceInTax'] is None:
-        for search_text in sources:
+        for search_text, _from_global_hit in sources:
             if result['totalPriceInTax'] is not None:
                 break
             m = re.search(r'大写[：:]?\s*[（(]?\s*' + _AMT_CN + r'\s*[）)]?[\s\S]{0,100}?'
@@ -1853,7 +2113,8 @@ def extract_prices(text):
                 if val >= 100:
                     result['totalPriceInTax'] = val
                     result['totalPrice'] = val
-                    _mark_source(search_text)
+                    if _from_global_hit:
+                        _mark_global()
                     break
 
     # ── Channel 3b: standalone 大写 amount (no 小写 pair) ── confidence: 0.82
@@ -1861,7 +2122,7 @@ def extract_prices(text):
     # Chinese numerals directly. Must precede a lone arabic-number fallback so
     # the magnitude survives even when the 小写 line was lost in extraction.
     if result['totalPriceInTax'] is None:
-        for search_text in sources:
+        for search_text, _from_global_hit in sources:
             if result['totalPriceInTax'] is not None:
                 break
             m = re.search(r'(?:大写|人民币\s*[（(]\s*大写\s*[）)])[：:]?\s*[（(]?\s*(' + _AMT_CN + r')', search_text)
@@ -1874,7 +2135,8 @@ def extract_prices(text):
                     # Arabic digits to appear in the text (they don't exist
                     # in a 大写-only document).
                     result['_cn_only'] = True
-                    _mark_source(search_text)
+                    if _from_global_hit:
+                        _mark_global()
                     break
 
     # ── Channel 4: Table-based (detailed search in bid section) ── confidence: 0.85
@@ -1886,8 +2148,13 @@ def extract_prices(text):
             r'小写[：:]?\s*(' + _AMT_ARABIC + r')',
             r'(?:总价|总计|合计|报价)[：:]?\s*(' + _AMT + r')',
         ]:
-            m = re.search(pat, bid_section)
-            if m:
+            if result['totalPriceInTax'] is not None:
+                break
+            for m in re.finditer(pat, bid_section):
+                # Same non-bid exclusion as channels 1/2 — without it a
+                # 最高限价 line inside the bid section would be captured here.
+                if _amount_in_non_bid_context(bid_section, m.start()):
+                    continue
                 val = _parse_amount(m.group(1))
                 if val >= 100:
                     result['totalPriceInTax'] = val
@@ -1901,13 +2168,16 @@ def extract_prices(text):
         # columns has a large number (>= 10000, to avoid matching small sub-totals)
         for m in re.finditer(r'合计\s*\|.+', text):
             row = m.group()
-            # Extract all pipe parts
+            # Extract all pipe parts; parse each with _parse_amount so cells
+            # like '89.3万元' keep their magnitude (plain [\d,]+ would read 89.3).
             parts = [p.strip() for p in row.split('|')]
             nums = []
             for p in parts:
-                nm = re.search(r'([\d,]+\.?\d*)', p.replace(',', '').replace('，', ''))
-                if nm:
-                    nums.append(float(nm.group(1)))
+                if not re.search(r'\d', p):
+                    continue
+                val = _parse_amount(p)
+                if val > 0:
+                    nums.append(val)
             # The total summary row has large numbers (>= 10000) in the last columns
             large_nums = [n for n in nums if n >= 10000]
             if len(large_nums) >= 2:
@@ -2012,11 +2282,21 @@ def extract_prices(text):
             r'(?:下浮率|下浮比例|下浮幅度)[（(]?[^）)：:\d]*[）)]?\s*[：:]?\s*([\d.]+)\s*([%％‰])',
             r'(?:投标|报价|评审)?费率[（(]?[^）)：:\d]*[）)]?\s*[：:]?\s*([\d.]+)\s*([%％‰])',
             r'投标报价\s*下浮\s*([\d.]+)\s*([%％])',
+            # Percent-quote format: "投标报价（%）：98.5" (price as % of 控制价)
+            r'投标报价\s*[（(]\s*[%％]\s*[）)]\s*[：:]?\s*([\d.]+)',
+            # Chinese-style discount wording: "下浮 6 个百分点"
+            r'(?:下浮|费率)\s*([\d.]+)\s*个?百分点',
         ]:
             m = re.search(pat, search_text)
-            if m and 0 < float(m.group(1)) < 100:
-                unit = '%' if m.group(2) in ('%', '％') else '‰'
-                result['bidRate'] = m.group(1) + unit
+            if m:
+                val = float(m.group(1))
+                unit = m.group(2) if m.lastindex and m.lastindex >= 2 else None
+                if not 0 < val < 100:
+                    continue
+                if unit is None:
+                    result['bidRate'] = m.group(1) + '%'
+                else:
+                    result['bidRate'] = m.group(1) + ('%' if unit in ('%', '％') else '‰')
                 break
 
     # ── Always try to extract subItemPrice and costDetails ──
@@ -2034,7 +2314,8 @@ def _find_bid_summary_section(text):
     """Find the bid summary / price overview section in text.
     Returns a section that actually contains price data (currency + numbers)."""
     keywords = ['开标一览表', '开标一览', '投标报价表', '报价一览表', '报价总表', '投标总价',
-                '报价汇总表', '报价单', '最高限价', '投标函']
+                '报价汇总表', '价格汇总表', '报价单', '最高限价', '投标函附录', '唱标单',
+                '开标记录表', '投标一览表', '投标函']
     for kw in keywords:
         idx = text.find(kw)
         while idx >= 0:
@@ -2389,10 +2670,9 @@ def _validate_price_extraction(text, result, bid_section):
                 ctx = text[ctx_start:ctx_end]
                 # Exclude non-price contexts BEFORE checking for price indicators
                 # "出资额为人民币XXX" / "注册资金XXX万元" / "合同金额：RMB2080000" /
-                # "招标文件售价：人民币1000元" → NOT the bid price
+                # "招标文件售价：人民币1000元" / "最高限价：￥XXX" → NOT the bid price
                 prefix = text[max(0, idx - 30):idx]
-                if re.search(r'(?:出资|注册[资]*金|保证金|投标保证|合同金额|合同价款|'
-                             r'签约合同价|中标金额|结算金额|成交金额|售价)'
+                if re.search(_NON_BID_AMOUNT_CTX +
                              r'\s*[额为]?\s*[：:]?\s*(?:人民币|RMB|CNY|￥|¥)?\s*$', prefix):
                     continue
                 if re.search(r'(?:万元|万)\s*$', prefix):
@@ -2476,6 +2756,73 @@ def _validate_price_extraction(text, result, bid_section):
         if cost_val > tp_val * 5 or cost_val < 100:
             # Cost far exceeds price or is trivially small
             result['cost'] = None
+
+    # ── 大写/小写 cross-consistency ──
+    # When both forms are printed and disagree (>1%), one of them is wrong.
+    # 小写 (Arabic) is authoritative — CN-numeral typos (壹/贰 mixups, dropped
+    # 万) are far more common than digit typos. If the CN value currently
+    # holds the slot, switch to the Arabic value and record a note. Scanning
+    # the pair directly (not the current value's position) also catches
+    # CN-derived totals whose Arabic form never appears elsewhere in text.
+    cur = result.get('totalPriceInTax')
+    if cur is not None:
+        # The 大写 label is optional in p1: layouts like '投标总价：壹佰万元整
+        # （小写：980000元）' pair a bare CN amount with its 小写 form. Paren
+        # placement varies ('大写：壹佰万' / '（大写）：壹佰万' / '（小写)：98万').
+        # Matches are validated before use: a lone '一' (e.g. '开标一览表')
+        # must not pair up as a 大写 amount.
+        # CN amount must END with a unit char (元/整/万…) so a lone '一'
+        # ('开标一览表') can never consume the pair span as a fake 大写.
+        _CN_UNIT_END = r'(?<=[元整角分圆万亿])'
+        for pat in (
+            r'(?:大写[）)]?\s*[：:]?\s*[（(]?\s*)?(' + _AMT_CN + r')' + _CN_UNIT_END +
+            r'\s*[）)]?\s*[\s\S]{0,120}?'
+            r'小写[）)]?\s*[：:]?\s*[（(]?\s*([\d,]+\.?\d*)',
+            r'小写[）)]?\s*[：:]?\s*[（(]?\s*([\d,]+\.?\d*)\s*[）)]?\s*[\s\S]{0,120}?'
+            r'大写[）)]?\s*[：:]?\s*[（(]?\s*(' + _AMT_CN + r')' + _CN_UNIT_END,
+        ):
+            matched = False
+            for m in re.finditer(pat, text):
+                if pat.startswith('小写'):
+                    ar_val, cn_str = _parse_amount(m.group(1)), m.group(2)
+                else:
+                    cn_str, ar_val = m.group(1), _parse_amount(m.group(2))
+                cn_val = _parse_amount(cn_str)
+                if cn_val <= 1000 or ar_val <= 1000 or len(cn_str) < 2 \
+                        or not re.search(r'[元圆整角分万亿拾佰仟]', cn_str):
+                    continue  # junk pair — try the next match
+                matched = True
+                tol = max(cn_val, ar_val) * 0.01
+                if abs(cn_val - ar_val) > tol:
+                    if abs(cur - cn_val) <= tol:
+                        # current value came from the (wrong) 大写 → adopt 小写
+                        result['totalPriceInTax'] = ar_val
+                        if result.get('totalPrice') is not None \
+                                and abs(result['totalPrice'] - cn_val) <= tol:
+                            scale = ar_val / cn_val
+                            result['totalPrice'] = round(result['totalPrice'] * scale, 2)
+                        result['warnings'].append(
+                            f'大写金额({cn_val:,.0f})与小写({ar_val:,.0f})不一致，已采用小写值，建议人工复核')
+                    else:
+                        result['warnings'].append(
+                            f'检测到大写({cn_val:,.0f})与小写({ar_val:,.0f})金额不一致，请人工复核')
+                break
+            if matched:
+                break
+
+    # ── Sub-item sum vs total ──
+    sub_sum = sum(it.get('totalPrice') or 0 for it in result.get('subItemPrice') or [])
+    total_now = result.get('totalPriceInTax') or result.get('totalPrice')
+    if sub_sum > 0 and total_now:
+        diff = abs(sub_sum - total_now) / total_now
+        if diff > 0.05:
+            result['warnings'].append(
+                f'分项合计({sub_sum:,.0f})与总价({total_now:,.0f})差异 {diff:.0%}，'
+                f'报价或分项可能提取不完整')
+
+    # ── Provenance note: total came from full-text fallback ──
+    if result.get('_from_global') and result.get('totalPriceInTax') is not None:
+        result['warnings'].append('总价来自全文兜底匹配（未定位到报价章节），置信度较低，建议人工复核')
 
     # ── Filter suspicious cost details ──
     if result.get('costDetails'):
@@ -4217,6 +4564,9 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
         persons = all_personnel.get(gn, {}).get('all_persons', [])
         all_persons_map[gn] = persons
 
+    # Environmental noise demotion BEFORE pairwise matching (see helper docstring)
+    _demote_environmental_pool_values(all_personnel, out_names)
+
     if len(out_names) >= 2:
         for i in range(len(out_names)):
             for j in range(i+1, len(out_names)):
@@ -4225,13 +4575,23 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
                 mi, mj = group_meta.get(gi, {}), group_meta.get(gj, {})
 
                 # ── Layer 1: Exact name match (shared personnel across files) ──
-                names_i = {p['name']: p for p in all_persons_map[gi]}
-                names_j = {p['name']: p for p in all_persons_map[gj]}
+                # Normalize minority-name separators (·/•/・) so the same
+                # person spelled with different middle dots still matches.
+                def _nkey(n):
+                    return re.sub(r'[•・]', '·', n).strip()
+
+                names_i = {}
+                for p in all_persons_map[gi]:
+                    names_i.setdefault(_nkey(p['name']), p)
+                names_j = {}
+                for p in all_persons_map[gj]:
+                    names_j.setdefault(_nkey(p['name']), p)
                 shared_names = set(names_i.keys()) & set(names_j.keys())
 
-                for name in shared_names:
-                    role_i = names_i[name].get('role', 'other')
-                    role_j = names_j[name].get('role', 'other')
+                for name_key in shared_names:
+                    name = names_i[name_key]['name']
+                    role_i = names_i[name_key].get('role', 'other')
+                    role_j = names_j[name_key].get('role', 'other')
                     if role_i == role_j:
                         key = f'same_person|{name}|{gi}|{gj}'
                         if key not in personnel_dedup:
@@ -4291,6 +4651,21 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
                             'type': '邮箱相同',
                             'detail': f'{gi} 和 {gj} 均出现邮箱 {em}',
                             'severity': 'medium'
+                        })
+
+                # ── Layer 3c: Bank account cross-match (ANY shared account) ──
+                # Same settlement account receiving/quoted by two bidders is
+                # direct evidence of 资金关联 (围标团伙常用同一账户走账).
+                accts_i = set(pi.get('bank_accounts') or [])
+                accts_j = set(pj.get('bank_accounts') or [])
+                for acct in accts_i & accts_j:
+                    key = f'same_bank_acct|{acct}'
+                    if key not in personnel_dedup:
+                        personnel_dedup.add(key)
+                        personnel_matches.append({
+                            'type': '银行账号相同',
+                            'detail': f'{gi} 和 {gj} 出现同一银行账号 {acct[:4]}******{acct[-4:]}',
+                            'severity': 'high'
                         })
 
                 # ── Layer 4: Auth rep vs document creator cross-match ──
@@ -4986,6 +5361,88 @@ def report():
         logger.exception('report generation failed')
         return jsonify({'error': str(e)}), 500
 
+# ── History persistence helpers (shared by analyze_stream and
+#    single_upload_and_analyze) ──
+# History entries are lightened for storage: text-similarity match bodies are
+# truncated to snippets, and per-file detail is reduced to the keep lists
+# below. When a new extraction field is added to the frontend/report, add it
+# to the corresponding keep list here or it silently disappears from history
+# and from report regeneration on loaded records.
+_HISTORY_KEEP = {
+    'metadata': ('creator', 'last_modified_by', 'created', 'modified',
+                 'application', 'template', 'revision', 'total_edit_time',
+                 'pages', 'words', 'company',
+                 'KSOProductBuildVer', 'KSOTemplateDocerSaveRecord', 'ICV'),
+    'personnel': ('legal_rep', 'authorized_rep', 'id_number', 'phone',
+                  'address', 'response_date', 'company_name',
+                  'phones', 'id_numbers', 'emails', 'bank_accounts',
+                  'all_persons'),
+    'pricing': ('totalPriceInTax', 'totalPrice', 'taxRate',
+                'bidRate', 'revenue', 'cost', 'warnings'),
+}
+
+
+def _prepare_history_data(results):
+    """Deep-copy analysis results and lighten heavy fields for history storage.
+
+    Text-similarity match bodies are truncated to fixed lengths (the frontend
+    renders a 200-char snippet + a locate modal). Per-file fields are reduced
+    to _HISTORY_KEEP; other keys are nulled with their type preserved
+    (str -> '' else None), matching how the frontend guards missing data.
+    Keys starting with '_' are always preserved (they carry provenance flags).
+    """
+    history_results = json.loads(json.dumps(results, ensure_ascii=False))
+
+    # Text-similarity matches: keep only lightweight fields + snippets
+    for pr in history_results.get('text_similarity', {}).get('pair_results', []):
+        light_matches = []
+        for m in pr.get('matches', []):
+            light_matches.append({
+                'index': m.get('index'), 'length': m.get('length'),
+                'text': m.get('text', '')[:200],
+                'abnormal': m.get('abnormal'),
+                'risk_level': m.get('risk_level'),
+                'score': m.get('score'),
+                'reasons': m.get('reasons', []),
+                'ctx1': m.get('ctx1', '')[:400],
+                'ctx2': m.get('ctx2', '')[:400],
+            })
+        pr['matches'] = light_matches
+
+    # Per-file fields: sub-item extras (厂家/型号) stay — small and rendered
+    # by the frontend; unknown/heavy keys are nulled instead.
+    for section in ('metadata', 'personnel', 'pricing'):
+        for f in history_results.get(section, {}).get('files', []):
+            keep = _HISTORY_KEEP[section]
+            for k in list(f.keys()):
+                if k not in keep and not k.startswith('_'):
+                    f[k] = '' if isinstance(f[k], str) else None
+    return history_results
+
+
+def _write_history_entry(history_results, saved, saved_refs):
+    """Serialize a lightened analysis record to HISTORY_DIR; returns its id."""
+    history_id = datetime.now().strftime('%Y%m%d_%H%M%S_') + uuid.uuid4().hex[:12]
+    history_entry = {
+        'id': history_id,
+        'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'bid_count': len(saved),
+        'ref_count': len(saved_refs),
+        'bid_files': [os.path.basename(s) for s in saved],
+        'ref_files': [os.path.basename(s) for s in saved_refs],
+        'verdict': history_results['verdict']['conclusion'],
+        'abnormal_matches': sum(
+            p.get('abnormal_count', 0)
+            for p in history_results['text_similarity']['pair_results']),
+        'template_matches': history_results['text_similarity'].get('template_matches', 0),
+        'total_pairs': history_results['text_similarity'].get('total_pairs', 0),
+        'data': history_results
+    }
+    with open(os.path.join(HISTORY_DIR, f'{history_id}.json'), 'w', encoding='utf-8') as f:
+        json.dump(history_entry, f, ensure_ascii=False)
+    return history_id
+
+
 @app.route('/api/analyze_stream', methods=['POST'])
 def analyze_stream():
     """Upload + analyze with streaming NDJSON progress events.
@@ -5244,57 +5701,8 @@ def analyze_stream():
 
         # Save to history
         try:
-            history_results = json.loads(json.dumps(results, ensure_ascii=False))
-            for pr in history_results.get('text_similarity', {}).get('pair_results', []):
-                light_matches = []
-                for m in pr.get('matches', []):
-                    light_matches.append({
-                        'index': m.get('index'), 'length': m.get('length'),
-                        'text': m.get('text', '')[:200],
-                        'abnormal': m.get('abnormal'),
-                        'risk_level': m.get('risk_level'),
-                        'score': m.get('score'),
-                        'reasons': m.get('reasons', []),
-                        'ctx1': m.get('ctx1', '')[:400],
-                        'ctx2': m.get('ctx2', '')[:400],
-                    })
-                pr['matches'] = light_matches
-            if 'subItemCompare' in history_results.get('pricing', {}):
-                for c in history_results['pricing']['subItemCompare']:
-                    for item in c.get('items', []):
-                        item.pop('extras', None)
-            for section in ['metadata', 'personnel', 'pricing']:
-                for f in history_results.get(section, {}).get('files', []):
-                    keep = ['name']
-                    if section == 'metadata':
-                        keep += ['creator', 'last_modified_by', 'created', 'modified',
-                                 'application', 'template', 'revision', 'total_edit_time',
-                                 'pages', 'words', 'company']
-                    elif section == 'personnel':
-                        keep += ['legal_rep', 'authorized_rep', 'id_number', 'phone',
-                                 'address', 'response_date', 'company_name']
-                    elif section == 'pricing':
-                        keep += ['totalPriceInTax', 'totalPrice', 'taxRate']
-                    for k in list(f.keys()):
-                        if k not in keep and not k.startswith('_'):
-                            f[k] = '' if isinstance(f[k], str) else None
-            # Keep all_abnormal / substantial_abnormal / suspicious_template for report regeneration
-            # uuid-based id: collision-free even when the same files are
-            # re-analyzed within the same second (timestamp+md5 would overwrite).
-            history_id = datetime.now().strftime('%Y%m%d_%H%M%S_') + uuid.uuid4().hex[:12]
-            history_entry = {
-                'id': history_id,
-                'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                'bid_count': len(saved), 'ref_count': len(saved_refs),
-                'bid_files': results['_filenames'], 'ref_files': results['_ref_filenames'],
-                'verdict': results['verdict']['conclusion'],
-                'abnormal_matches': sum(p['abnormal_count'] for p in results['text_similarity']['pair_results']),
-                'template_matches': results['text_similarity']['template_matches'],
-                'total_pairs': results['text_similarity']['total_pairs'],
-                'data': history_results
-            }
-            with open(os.path.join(HISTORY_DIR, f'{history_id}.json'), 'w', encoding='utf-8') as f:
-                json.dump(history_entry, f, ensure_ascii=False)
+            history_id = _write_history_entry(
+                _prepare_history_data(results), saved, saved_refs)
             results['_history_id'] = history_id
         except Exception as e:
             # History persistence is best-effort: a failed save must not
@@ -5412,61 +5820,9 @@ def single_upload_and_analyze():
             results.setdefault('_warnings', []).extend(size_warnings)
 
         # Save to history — strip heavy data, keep only counts & indices
-        history_results = json.loads(json.dumps(results, ensure_ascii=False))
-        for pr in history_results.get('text_similarity', {}).get('pair_results', []):
-            light_matches = []
-            for m in pr.get('matches', []):
-                light_matches.append({
-                    'index': m.get('index'),
-                    'length': m.get('length'),
-                    'text': m.get('text', '')[:200],
-                    'abnormal': m.get('abnormal'),
-                    'risk_level': m.get('risk_level'),
-                    'score': m.get('score'),
-                    'reasons': m.get('reasons', []),
-                    'ctx1': m.get('ctx1', '')[:400],
-                    'ctx2': m.get('ctx2', '')[:400],
-                })
-            pr['matches'] = light_matches
-        # Strip pricing subItemCompare items
-        if 'subItemCompare' in history_results.get('pricing', {}):
-            for c in history_results['pricing']['subItemCompare']:
-                for item in c.get('items', []):
-                    item.pop('extras', None)
-        # Strip metadata detail from files
-        for section in ['metadata', 'personnel', 'pricing']:
-            for f in history_results.get(section, {}).get('files', []):
-                keep = ['name']
-                if section == 'metadata':
-                    keep += ['creator', 'last_modified_by', 'created', 'modified',
-                             'application', 'template', 'revision', 'total_edit_time',
-                             'pages', 'words', 'company']
-                elif section == 'personnel':
-                    keep += ['legal_rep', 'authorized_rep', 'id_number', 'phone',
-                             'address', 'response_date', 'company_name']
-                elif section == 'pricing':
-                    keep += ['totalPriceInTax', 'totalPrice', 'taxRate']
-                for k in list(f.keys()):
-                    if k not in keep and not k.startswith('_'):
-                        f[k] = '' if isinstance(f[k], str) else None
-        # Keep all_abnormal / substantial_abnormal / suspicious_template for report regeneration
-        history_id = datetime.now().strftime('%Y%m%d_%H%M%S_') + uuid.uuid4().hex[:12]
-        history_entry = {
-            'id': history_id,
-            'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'bid_count': len(saved),
-            'ref_count': len(saved_refs),
-            'bid_files': results['_filenames'],
-            'ref_files': results['_ref_filenames'],
-            'verdict': results['verdict']['conclusion'],
-            'abnormal_matches': sum(p['abnormal_count'] for p in results['text_similarity']['pair_results']),
-            'template_matches': results['text_similarity']['template_matches'],
-            'total_pairs': results['text_similarity']['total_pairs'],
-            'data': history_results
-        }
         try:
-            with open(os.path.join(HISTORY_DIR, f'{history_id}.json'), 'w', encoding='utf-8') as f:
-                json.dump(history_entry, f, ensure_ascii=False)
+            history_id = _write_history_entry(
+                _prepare_history_data(results), saved, saved_refs)
             results['_history_id'] = history_id
         except Exception as e:
             logger.warning('history save failed in single_upload_and_analyze: %s', e)
