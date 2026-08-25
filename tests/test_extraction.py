@@ -625,8 +625,93 @@ def t_company_prefix_strip():
 
 
 def t_clean_phone_junk():
-    assert m._clean_phone('_021-12345678') == '021-12345678'
-    assert m._clean_phone('010-51683081；') == '010-51683081'
+    assert m._clean_phone('_021-12345678、') == '021-12345678'
+    assert m._clean_phone('010-51683081;') == '010-51683081'
+    assert m._clean_phone('010 - 5168 3081') == '010-51683081'
+
+
+# ── Defense layers 7+: invisible chars / OCR glyphs / phone & amount forms ──
+def t_invisible_chars_stripped():
+    # Zero-width chars sit inside labels ('委托代理人\u200b：'), where \s-based
+    # glue cannot reach them; CR/form-feed variants must become newlines.
+    t = '授权委托书\r\n委托代理人\u200b：李\u2060明\r被授权人：王\u00ad强\n'
+    p = m.extract_personnel(t)
+    assert p['authorized_rep'] == '李某某', p
+
+
+def t_ocr_label_glyph_fixes():
+    # Scanned-label glyph confusions: 人/入, 话/活, 币/巾, plus the 身分证
+    # variant spelling — all repaired before any label regex runs.
+    p = m.extract_personnel('授权委托书\n法定代表入：王强\n联系电活：13912345678\n'
+                            '身分证号：110101199001011234\n')
+    assert p['legal_rep'] == '王强', p
+    assert '13912345678' in p['phones'], p
+    assert '110101199001011234' in p['id_numbers'], p
+    r = m.extract_prices('人民巾（大写）：壹佰贰拾万元整')
+    assert r['totalPriceInTax'] == 1200000, r
+
+
+def t_phone_country_code_and_dashed():
+    # '+86…' is rejected by the plain pattern's (?<!\d) lookbehind; the
+    # dash-grouped form never matched any pattern before.
+    p = m.extract_personnel('联系人：+8613912345678 或 139-1234-5678')
+    assert '13912345678' in p['phones'], p['phones']
+    assert p['phones'].count('13912345678') == 1, p['phones']
+
+
+def t_phone_landline_padded_and_label_variants():
+    p = m.extract_personnel('授权委托书\n联系电话：010 - 5168 3081\n')
+    assert p['phone'] == '010-51683081', p
+    p2 = m.extract_personnel('授权委托书\n移动电话：13912345678\n')
+    assert p2['phone'] == '13912345678', p2
+
+
+def t_price_thinspace_groups():
+    r = m.extract_prices('投标总价：￥1 261 819.76元')
+    assert abs(r['totalPriceInTax'] - 1261819.76) < 0.01, r
+    # Two space-separated column numbers must NOT merge into one amount.
+    assert m._parse_amount('1838529 5002800') == 1838529
+
+
+def t_price_thinspace_survives_validation():
+    # The full chain: section detection must accept space-grouped numbers,
+    # and the post-validation "value must appear in text" check must search
+    # the '1 234 567' form — otherwise the extracted price is cleared again.
+    r = m.extract_prices('开标一览表\n投标总价（元）：1 234 567.89\n税率 6%')
+    assert r['totalPriceInTax'] == 1234567.89, r
+
+
+def t_name_internal_spaces():
+    p = m.extract_personnel('授权委托书\n委托代理人：张 三\n')
+    assert p['authorized_rep'] == '张三', p
+    p2 = m.extract_personnel('项目管理机构\n姓名：王 建国 联系电话：13800000000\n')
+    names = {x['name'] for x in p2['all_persons']}
+    assert '王某某' in names and '王某某联' not in names, names
+
+
+def t_name_tolerant_no_label_swallow():
+    # '兹委托 李某某 同志…' — the tolerant class must not absorb 同志 even
+    # though the trailing (?:同志)? is optional; the spaced form must still
+    # be captured.
+    p = m.extract_personnel('授权委托书\n兹委托 李某某 同志为我方代理人，负责签署投标文件。')
+    assert p['authorized_rep'] == '李某某', p
+    p2 = m.extract_personnel('授权委托书\n兹委托 李 明 同志为我方代理人。')
+    assert p2['authorized_rep'] == '李某某', p2
+
+
+def t_name_validation_allows_internal_space():
+    assert m._is_person_name('张 三')
+    assert m._is_person_name('阿不来提 · 买买提')
+
+
+def t_address_cut_at_next_label():
+    p = m.extract_personnel('授权委托书\n地址：北京市海淀区上地十街10号 电话：010-51683081\n')
+    assert p['address'] == '北京市海淀区上地十街10号', p
+
+
+def t_email_fullwidth_at():
+    p = m.extract_personnel('电子邮箱：Zhang＠Example.com\n')
+    assert 'zhang@example.com' in p['emails'], p['emails']
 
 
 def main():

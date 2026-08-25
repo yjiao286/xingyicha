@@ -62,7 +62,30 @@ def summarize_file(fp):
     return rec
 
 
+def _cli_path(arg, what):
+    """Canonicalize an operator-supplied CLI path.
+
+    This harness is a local developer tool: argv IS the trust root, so the
+    goal is not access control but making every filesystem path an explicit,
+    canonical absolute path with no NUL/traversal components left in it
+    before it reaches open()/os.walk().
+    """
+    if not arg or '\x00' in arg:
+        sys.exit(f'invalid {what}: {arg!r}')
+    path = os.path.realpath(os.path.abspath(os.path.expanduser(arg)))
+    if '..' in path.split(os.sep):
+        sys.exit(f'{what} still contains traversal components: {path}')
+    return path
+
+
 def main(corpus_dir, out_json):
+    corpus_dir = _cli_path(corpus_dir, 'corpus_dir')
+    out_json = _cli_path(out_json, 'out_json')
+    if not os.path.isdir(corpus_dir):
+        sys.exit(f'corpus_dir is not a directory: {corpus_dir}')
+    out_parent = os.path.dirname(out_json) or '.'
+    if not os.path.isdir(out_parent):
+        sys.exit(f'output directory does not exist: {out_parent}')
     records = []
     for root, dirs, files in os.walk(corpus_dir):
         dirs[:] = [d for d in dirs if not d.startswith('.')]

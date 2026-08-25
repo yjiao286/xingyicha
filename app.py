@@ -1153,6 +1153,11 @@ def _is_person_name(name):
         return True
 
     # ── Chinese name path ──
+    # PDF single-char blocks insert spaces INSIDE a name ('张 三'); collapse
+    # before validation so spaced names validate and dedup correctly. The
+    # foreign-name path above keeps its spaces.
+    name_stripped = re.sub(r'\s+', '', name_stripped)
+    name_lower = name_stripped.lower()
     _FUNCTION_CHARS = set('对的了是为在与和就被就以从把向由因所给见')
     # Placeholder text that looks like a name label (CV form fields, etc.)
     _PLACEHOLDER_LABELS = (
@@ -1230,7 +1235,7 @@ def _extract_from_auth_section(section_text, info):
     # company_name is captured even when the name fails validation — the two
     # facts are independent, and a rare-surname miss must not also lose the
     # company (observed: 兰某某 rejected → company disappeared too).
-    m = re.search(r'(?:本人\s*)?我?\s*([一-鿿]{2,4}(?:[·•・][一-鿿]{2,4}){0,2})\s*[（(]姓名[）)]\s*系\s*(.{1,40}?)\s*[（(]供应商名称[）)]\s*的法定代表人', section_text)
+    m = re.search(r'(?:本人\s*)?我?\s*([一-鿿](?:[ 	]*[一-鿿]){1,3}(?:[ 	]*[·•・][ 	]*[一-鿿](?:[ 	]*[一-鿿]){1,3}){0,2})\s*[（(]姓名[）)]\s*系\s*(.{1,40}?)\s*[（(]供应商名称[）)]\s*的法定代表人', section_text)
     if m:
         if not info.get('company_name'):
             info['company_name'] = _clean_company(m.group(2).strip())
@@ -1240,7 +1245,7 @@ def _extract_from_auth_section(section_text, info):
 
     # Pattern 0b: "（兰某某）系（北京某某航天技术有限公司）的法定代表人"
     # 法定代表人资格证明书 form: name AND company in unlabeled parentheses.
-    m = re.search(r'[（(]\s*([一-鿿]{2,4}(?:[·•・][一-鿿]{2,4}){0,2})\s*[）)]\s*系\s*[（(]?\s*(.{2,40}?)\s*[）)]?\s*的法定代表人', section_text)
+    m = re.search(r'[（(]\s*([一-鿿](?:[ 	]*[一-鿿]){1,3}(?:[ 	]*[·•・][ 	]*[一-鿿](?:[ 	]*[一-鿿]){1,3}){0,2})\s*[）)]\s*系\s*[（(]?\s*(.{2,40}?)\s*[）)]?\s*的法定代表人', section_text)
     if m:
         if not info.get('company_name'):
             info['company_name'] = _clean_company(m.group(2).strip())
@@ -1263,7 +1268,7 @@ def _extract_from_auth_section(section_text, info):
 
     # Pattern 2: "本人 XXX 系 XXX 的法定代表人"
     if not info['legal_rep']:
-        m = re.search(r'(?:本人\s*)?([一-鿿]{2,4}(?:[·•・][一-鿿]{2,4}){0,2})\s*(?:[（(]姓名[）)])?\s*系\s*(.{1,30}?)\s*的法定代表人', section_text)
+        m = re.search(r'(?:本人\s*)?([一-鿿](?:[ 	]*[一-鿿]){1,3}(?:[ 	]*[·•・][ 	]*[一-鿿](?:[ 	]*[一-鿿]){1,3}){0,2})\s*(?:[（(]姓名[）)])?\s*系\s*(.{1,30}?)\s*的法定代表人', section_text)
         if m:
             if not info.get('company_name'):
                 info['company_name'] = _clean_company(m.group(2).strip())
@@ -1274,7 +1279,7 @@ def _extract_from_auth_section(section_text, info):
     # Pattern 3: "（王戈、董事长）代表本公司授权（赵凯、销售经理）"
     # NOTE: Some documents insert company name between the auth clause and agent name:
     #   "（王戈、董事长）代表本公司授权（北京东方中科...）的在下面签字的（赵凯、销售经理）"
-    m = re.search(r'[（(]([一-鿿]{2,4}(?:[·•・][一-鿿]{2,4}){0,2})[、，].{0,6}?[）)]\s*代表本公司授权\s*[（(]([一-鿿]{2,4}(?:[·•・][一-鿿]{2,4}){0,2})', section_text)
+    m = re.search(r'[（(]([一-鿿](?:[ 	]*[一-鿿]){1,3}(?:[ 	]*[·•・][ 	]*[一-鿿](?:[ 	]*[一-鿿]){1,3}){0,2})[、，].{0,6}?[）)]\s*代表本公司授权\s*[（(]([一-鿿](?:[ 	]*[一-鿿]){1,3}(?:[ 	]*[·•・][ 	]*[一-鿿](?:[ 	]*[一-鿿]){1,3}){0,2})', section_text)
     if m:
         if not info['legal_rep']:
             info['legal_rep'] = m.group(1).strip()
@@ -1288,7 +1293,7 @@ def _extract_from_auth_section(section_text, info):
                 # Captured group is likely a company name fragment.
                 # Try to find the actual person name after the company: "（XXX、role）为本公司"
                 post_match = section_text[m.end():m.end() + 200]
-                m2 = re.search(r'[（(]([一-鿿]{2,4}(?:[·•・][一-鿿]{2,4}){0,2})[、，].{0,6}?[）)]\s*(?:为本公司的合法代理人|为代理人)', post_match)
+                m2 = re.search(r'[（(]([一-鿿](?:[ 	]*[一-鿿]){1,3}(?:[ 	]*[·•・][ 	]*[一-鿿](?:[ 	]*[一-鿿]){1,3}){0,2})[、，].{0,6}?[）)]\s*(?:为本公司的合法代理人|为代理人)', post_match)
                 if m2:
                     name2 = m2.group(1).strip()
                     if _is_person_name(name2):
@@ -1297,7 +1302,7 @@ def _extract_from_auth_section(section_text, info):
 
     # Pattern 4: "签字代表（赵凯、销售经理）" — common in bid letters
     if not info['authorized_rep']:
-        m = re.search(r'签字代表[（(]([一-鿿]{2,4}(?:[·•・][一-鿿]{2,4}){0,2})[、，]', section_text)
+        m = re.search(r'签字代表[（(]([一-鿿](?:[ 	]*[一-鿿]){1,3}(?:[ 	]*[·•・][ 	]*[一-鿿](?:[ 	]*[一-鿿]){1,3}){0,2})[、，]', section_text)
         if m:
             name = m.group(1).strip()
             if _is_person_name(name):
@@ -1306,14 +1311,14 @@ def _extract_from_auth_section(section_text, info):
 
     # Pattern 5: "现委托 XXX（姓名）为我方代理人"
     if not info['authorized_rep']:
-        m = re.search(r'(?:现委托|委托)\s*([一-鿿]{2,4}(?:[·•・][一-鿿]{2,4}){0,2})\s*[（(]姓名[）)]', section_text)
+        m = re.search(r'(?:现委托|委托)\s*([一-鿿](?:[ 	]*[一-鿿]){1,3}(?:[ 	]*[·•・][ 	]*[一-鿿](?:[ 	]*[一-鿿]){1,3}){0,2})\s*[（(]姓名[）)]', section_text)
         if m:
             info['authorized_rep'] = m.group(1).strip()
             info['all_persons'].append({'name': info['authorized_rep'], 'role': 'authorized_rep', 'confidence': 0.90})
 
     # Pattern 6: "代理人：XXX" or "授权代表：XXX" — with person name validation
     if not info['authorized_rep']:
-        m = re.search(r'(?:授权委托代理人|委托代理人|代理人|授权代表|被授权人|受托人|签字代表|投标代表)[：:]\s*([一-鿿]{2,4}(?:[·•・][一-鿿]{2,4}){0,2})', section_text)
+        m = re.search(r'(?:授权委托代理人|委托代理人|代理人|授权代表|被授权人|受托人|签字代表|投标代表)[：:]\s*([一-鿿](?:[ 	]*[一-鿿]){1,3}(?:[ 	]*[·•・][ 	]*[一-鿿](?:[ 	]*[一-鿿]){1,3}){0,2})(?![一-鿿])', section_text)
         if m:
             name = m.group(1).strip()
             if _is_person_name(name):
@@ -1322,7 +1327,7 @@ def _extract_from_auth_section(section_text, info):
 
     # Pattern 7: "法定代表人：XXX"
     if not info['legal_rep']:
-        m = re.search(r'(?:法定代表人|单位负责人|法人代表)[：:]\s*([一-鿿]{2,4}(?:[·•・][一-鿿]{2,4}){0,2})', section_text)
+        m = re.search(r'(?:法定代表人|单位负责人|法人代表)[：:]\s*([一-鿿](?:[ 	]*[一-鿿]){1,3}(?:[ 	]*[·•・][ 	]*[一-鿿](?:[ 	]*[一-鿿]){1,3}){0,2})(?![一-鿿])', section_text)
         if m:
             name = m.group(1).strip()
             if _is_person_name(name):
@@ -1332,15 +1337,24 @@ def _extract_from_auth_section(section_text, info):
     # Pattern 8: "兹委托 XXX（同志）为我(方/公司)…代理人" / "现授权/特授权"
     if not info['authorized_rep']:
         m = re.search(r'(?:兹委托|现委托|兹授权|现授权|特授权|特此委托)\s*'
-                      r'([一-鿿]{2,4}(?:[·•・][一-鿿]{2,4}){0,2})\s*(?:同志)?\s*'
+                      r'([一-鿿]{2,4}(?:[ 	]*[·•・][ 	]*[一-鿿]{2,4}){0,2})\s*(?:同志)?\s*'
                       r'(?:为|作为)[^。]{0,40}?代理\s*人', section_text)
+        if not m:
+            # Spaced-name retry ('兹委托 李 明 同志为我方代理人'). The trailing
+            # guard is safe HERE only because the strict pass above already
+            # handled zero-separator '现委托刘某某为…' forms, where 为 sits right
+            # after the name and the guard would reject the correct capture.
+            m = re.search(r'(?:兹委托|现委托|兹授权|现授权|特授权|特此委托)\s*'
+                          r'([一-鿿](?:[ 	]*[一-鿿]){1,3}(?:[ 	]*[·•・][ 	]*[一-鿿](?:[ 	]*[一-鿿]){1,3}){0,2})(?![一-鿿])\s*'
+                          r'(?:同志)?\s*'
+                          r'(?:为|作为)[^。]{0,40}?代理\s*人', section_text)
         if m and _is_person_name(m.group(1).strip()):
             info['authorized_rep'] = m.group(1).strip()
             info['all_persons'].append({'name': info['authorized_rep'], 'role': 'authorized_rep', 'confidence': 0.85})
 
     # Pattern 9: "委托：XXX" / "代理人 XXX（签字）" — bare agent label without colon
     if not info['authorized_rep']:
-        m = re.search(r'(?:委托|代理人)\s+([一-鿿]{2,4}(?:[·•・][一-鿿]{2,4}){0,2})\s*[（(]?(?:签字|签章|盖章|姓名)', section_text)
+        m = re.search(r'(?:委托|代理人)\s+([一-鿿](?:[ 	]*[一-鿿]){1,3}(?:[ 	]*[·•・][ 	]*[一-鿿](?:[ 	]*[一-鿿]){1,3}){0,2})\s*[（(]?(?:签字|签章|盖章|姓名)', section_text)
         if m and _is_person_name(m.group(1).strip()):
             info['authorized_rep'] = m.group(1).strip()
             info['all_persons'].append({'name': info['authorized_rep'], 'role': 'authorized_rep', 'confidence': 0.75})
@@ -1368,22 +1382,22 @@ def _extract_from_personnel_table(section_text, info):
     # 职称/级别词（表格"职称"列的值，如"张然 中级 项目负责人"）— 绝不能当姓名
     _TITLE_WORDS = r'(?:高级|中级|初级|正高级|副高级|教授|副教授|讲师|助教|研究员|副研究员|工程师|高级工程师|助理工程师|技师|高级技师|助理)?'
     patterns = [
-        r'姓名[：:]\s*([一-鿿]{2,4}(?:[·•・][一-鿿]{2,4}){0,2})\s*.*?(?:职务|岗位|角色|职称)[：:]\s*([一-鿿]{2,10})',
+        r'姓名[：:]\s*([一-鿿]{2,4}(?:[ 	]*[·•・][ 	]*[一-鿿]{2,4}){0,2})\s*.*?(?:职务|岗位|角色|职称)[：:]\s*([一-鿿]{2,10})',
         # Single space or tab between name and role is common in both docx
         # and PDF extraction ('王某某 项目经理'); require the role keyword
         # so a bare space-separated line cannot be a false positive.
         # PDF "序号 姓名 职称 分工" tables produce '张然 中级 项目负责人' —
         # allow one title word between name and role so 张然 is captured
         # instead of the 职称 column value 中级.
-        r'([一-鿿]{2,4}(?:[·•・][一-鿿]{2,4}){0,2})\s+' + _TITLE_WORDS + r'\s*(项目经理|项目负责人|技术负责人|技术总监|总工程师|安全员|质量员|施工员|材料员|资料员|造价员|预算员)',
-        r'(项目经理|项目负责人|技术负责人|技术总监|总工程师)[：:]\s*([一-鿿]{2,4}(?:[·•・][一-鿿]{2,4}){0,2})(?![一-鿿])',
-        r'(项目经理|项目负责人|技术负责人|安全负责人)\s+([一-鿿]{2,4}(?:[·•・][一-鿿]{2,4}){0,2})(?![一-鿿])',
+        r'([一-鿿]{2,4}(?:[ 	]*[·•・][ 	]*[一-鿿]{2,4}){0,2})\s+' + _TITLE_WORDS + r'\s*(项目经理|项目负责人|技术负责人|技术总监|总工程师|安全员|质量员|施工员|材料员|资料员|造价员|预算员)',
+        r'(项目经理|项目负责人|技术负责人|技术总监|总工程师)[：:]\s*([一-鿿](?:[ 	]*[一-鿿]){1,3}(?:[ 	]*[·•・][ 	]*[一-鿿](?:[ 	]*[一-鿿]){1,3}){0,2})(?![一-鿿])',
+        r'(项目经理|项目负责人|技术负责人|安全负责人)\s+([一-鿿]{2,4}(?:[ 	]*[·•・][ 	]*[一-鿿]{2,4}){0,2})(?![一-鿿])',
         # Reversed label order: "职务：项目经理 ... 姓名：张三" (role first)
-        r'(?:职务|岗位|职称)[：:]\s*([一-鿿]{2,10})\s*[\s\S]{0,60}?姓名[：:]\s*([一-鿿]{2,4}(?:[·•・][一-鿿]{2,4}){0,2})',
+        r'(?:职务|岗位|职称)[：:]\s*([一-鿿]{2,10})\s*[\s\S]{0,60}?姓名[：:]\s*([一-鿿](?:[ 	]*[一-鿿]){1,3}(?:[ 	]*[·•・][ 	]*[一-鿿](?:[ 	]*[一-鿿]){1,3}){0,2})(?![一-鿿])',
         # Bare "姓名：张三" without a role label (name-only tables, resumes).
         # The lookahead rejects the next label ('姓名：性别：男' → '性别' is
         # followed by a colon and never captured).
-        r'姓名[：:]\s*([一-鿿]{2,4}(?:[·•・][一-鿿]{2,4}){0,2})(?![一-鿿]|：|:)',
+        r'姓名[：:]\s*([一-鿿](?:[ 	]*[一-鿿]){1,3}(?:[ 	]*[·•・][ 	]*[一-鿿](?:[ 	]*[一-鿿]){1,3}){0,2})(?![一-鿿]|：|:)',
     ]
     for pat in patterns:
         for m in re.finditer(pat, section_text):
@@ -1484,10 +1498,10 @@ def _parse_personnel_pipe_table(text, info):
                 role = _infer_role_label(role_str) if role_str else 'team_member'
                 info['all_persons'].append({'name': name, 'role': role, 'confidence': 0.75})
                 if phone_col is not None and phone_col < len(cells):
-                    for pm in re.finditer(r'1[3-9]\d{9}', cells[phone_col]):
-                        _append_unique(info['phones'], pm.group(0))
+                    for num in _iter_mobiles(cells[phone_col]):
+                        _append_unique(info['phones'], num)
                         if not info.get('phone'):
-                            info['phone'] = pm.group(0)
+                            info['phone'] = num
                 if id_col is not None and id_col < len(cells):
                     im = re.search(r'\d{17}[\dXx]', cells[id_col].replace(' ', ''))
                     if im:
@@ -1505,7 +1519,7 @@ def _append_unique(lst, value, cap=30):
 
 def _extract_from_signature_page(section_text, info):
     """Extract signatory names from signature/seal pages."""
-    m = re.search(r'法定代表人或其委托代理人[：:][（(]?\s*(?:签字|签章|盖章|签名)\s*[）)]?\s*([一-鿿]{2,4}(?:[·•・][一-鿿]{2,4}){0,2})', section_text)
+    m = re.search(r'法定代表人或其委托代理人[：:][（(]?\s*(?:签字|签章|盖章|签名)\s*[）)]?\s*([一-鿿](?:[ 	]*[一-鿿]){1,3}(?:[ 	]*[·•・][ 	]*[一-鿿](?:[ 	]*[一-鿿]){1,3}){0,2})(?![一-鿿])', section_text)
     if m and _is_person_name(m.group(1).strip()):
         info['all_persons'].append({'name': m.group(1).strip(), 'role': 'signatory', 'confidence': 0.75})
 
@@ -1531,7 +1545,7 @@ def _extract_from_cover(section_text, info):
 
     # Extract authorized rep from "签字代表（name、role）" in cover/bid letter
     if not info.get('authorized_rep'):
-        m = re.search(r'签字代表[（(]([一-鿿]{2,4}(?:[·•・][一-鿿]{2,4}){0,2})[、，]', section_text)
+        m = re.search(r'签字代表[（(]([一-鿿](?:[ 	]*[一-鿿]){1,3}(?:[ 	]*[·•・][ 	]*[一-鿿](?:[ 	]*[一-鿿]){1,3}){0,2})[、，]', section_text)
         if m:
             name = m.group(1).strip()
             if _is_person_name(name):
@@ -1540,7 +1554,7 @@ def _extract_from_cover(section_text, info):
 
     # Also try "签字代表：XXX" format
     if not info.get('authorized_rep'):
-        m = re.search(r'签字代表[：:]\s*([一-鿿]{2,4}(?:[·•・][一-鿿]{2,4}){0,2})', section_text)
+        m = re.search(r'签字代表[：:]\s*([一-鿿](?:[ 	]*[一-鿿]){1,3}(?:[ 	]*[·•・][ 	]*[一-鿿](?:[ 	]*[一-鿿]){1,3}){0,2})(?![一-鿿])', section_text)
         if m:
             name = m.group(1).strip()
             if _is_person_name(name):
@@ -1551,7 +1565,7 @@ def _extract_from_cover(section_text, info):
     # (not only in the authorization-letter section), e.g. the signature line
     # "授权代表（签字）：张三". Same label family as _extract_from_auth_section.
     if not info.get('authorized_rep'):
-        m = re.search(r'(?:授权委托代理人|委托代理人|代理人|授权代表|被授权人|受托人|投标代表)[（(]?\s*(?:签字|签章|盖章|签名)?\s*[）)]?[：:]\s*([一-鿿]{2,4}(?:[·•・][一-鿿]{2,4}){0,2})', section_text)
+        m = re.search(r'(?:授权委托代理人|委托代理人|代理人|授权代表|被授权人|受托人|投标代表)[（(]?\s*(?:签字|签章|盖章|签名)?\s*[）)]?[：:]\s*([一-鿿](?:[ 	]*[一-鿿]){1,3}(?:[ 	]*[·•・][ 	]*[一-鿿](?:[ 	]*[一-鿿]){1,3}){0,2})(?![一-鿿])', section_text)
         if m:
             name = m.group(1).strip()
             if _is_person_name(name):
@@ -1613,7 +1627,7 @@ def _cleanup_name(info, key):
     val = re.sub(r'^\s*[（(](?:姓名|签字|盖章|单位负责人|法定代表人)[）)]\s*', '', val)
     # A name may still carry extra whitespace from a PDF (single-char blocks).
     val = re.sub(r'\s+', '', val)
-    if len(val) < 2 or any(w in val for w in ['注册', '签字', '盖章', '地址', '电话', '投标人', '姓名', '职务', '授权']):
+    if len(val) < 2 or any(w in val for w in ['注册', '签字', '盖章', '地址', '电话', '投标人', '姓名', '职务', '授权', '同志']):
         info[key] = None
     else:
         info[key] = val
@@ -1626,6 +1640,10 @@ def _clean_phone(v):
         return v
     v = re.sub(r'^[^\d]+', '', str(v).strip())
     v = re.sub(r'[^0-9\-]+$', '', v).strip()
+    # PDF column padding inserts spaces inside a landline ('010 - 5168 3081');
+    # keep the dash structure but remove the padding.
+    v = re.sub(r'(?<=\d)[ \t]+(?=\d)', '', v)
+    v = re.sub(r'(?<=\d)[ \t]*-[ \t]*(?=\d)', '-', v)
     return v
 
 
@@ -1716,6 +1734,69 @@ def _join_split_names(text):
     return text
 
 
+# ── Invisible / control character defense ──
+# PDF text layers emit zero-width spaces (\u200b), word joiners (\u2060),
+# BOMs (\ufeff), soft hyphens (\u00ad) and exotic breaks (\r, \f, \v,
+# \u2028/\u2029). '\s' does NOT match the zero-width family, so a single
+# \u200b inside 法定代表人 defeats both the glue pass and every
+# label-anchored regex. Normalize them before anything else runs.
+def _strip_invisible(text):
+    if not text:
+        return text
+    text = text.replace('\r\n', '\n').replace('\r', '\n')
+    text = re.sub(r'[\f\v\u2028\u2029]', '\n', text)
+    return re.sub(r'[\u200b\u200c\u200d\u2060\ufeff\u00ad]', '', text)
+
+
+# ── OCR near-form glyph repair (label words only) ──
+# Scanned documents systematically confuse a few glyph pairs INSIDE labels:
+# 人/入 (法定代表入), 话/活 (联系电活), 币/巾 (人民巾), 系/糸 (联糸).
+# Every pattern below is a string that never occurs in legitimate Chinese,
+# so a global replace cannot corrupt real document content. 身分证 is a
+# common variant spelling rather than OCR noise, fixed the same way.
+_OCR_LABEL_FIXES = (
+    ('法定代表入', '法定代表人'),
+    ('人民巾', '人民币'),
+    ('委托入', '委托人'),
+    ('电活', '电话'),
+    ('联糸', '联系'),
+    ('身分证', '身份证'),
+)
+
+
+def _fix_ocr_label_confusions(text):
+    if not text:
+        return text
+    for bad, good in _OCR_LABEL_FIXES:
+        if bad in text:
+            text = text.replace(bad, good)
+    return text
+
+
+# ── Mobile number form coverage ──
+# Bare '13912345678', country-code prefixed '+8613912345678' (the plain
+# pattern's (?<!\d) lookbehind alone would reject it), and dash/space
+# grouped '139-1234-5678' / '139 1234 5678' from formatted PDF cells.
+_MOBILE_PATTERNS = (
+    re.compile(r'(?<!\d)(?:\+?86)?1[3-9]\d{9}(?!\d)'),
+    re.compile(r'(?<![\d-])(?:\+?86[- \t]?)?1[3-9]\d[- \t]?\d{4}[- \t]?\d{4}(?![\d-])'),
+)
+
+
+def _iter_mobiles(src):
+    """Yield normalized 11-digit mobile numbers across PDF/OCR layouts."""
+    out, seen = [], set()
+    for pat in _MOBILE_PATTERNS:
+        for match in pat.finditer(src or ''):
+            digits = re.sub(r'\D', '', match.group(0))
+            if len(digits) == 13 and digits.startswith('86'):
+                digits = digits[2:]
+            if re.fullmatch(r'1[3-9]\d{9}', digits) and digits not in seen:
+                seen.add(digits)
+                out.append(digits)
+    return out
+
+
 def extract_personnel(text):
     """Extract personnel information from bid text using chapter-scoped extraction.
 
@@ -1745,6 +1826,11 @@ def extract_personnel(text):
     }
     if not text:
         return info
+
+    # Zero-width chars / exotic breaks would defeat every regex below; OCR
+    # glyph confusions inside labels are repaired before any label matching.
+    text = _strip_invisible(text)
+    text = _fix_ocr_label_confusions(text)
 
     # Full-width digits break the ASCII-digit regexes ('１３９…' phones)
     text = _fw_digits_to_ascii(text)
@@ -1820,8 +1906,8 @@ def extract_personnel(text):
     # contact info without section headers. IDs tolerate internal whitespace
     # ('3201 23 19…') which PDF extraction frequently inserts.
     for src in (text, _ocr_digit_normalize(text)):
-        for m in re.finditer(r'(?<!\d)1[3-9]\d{9}(?!\d)', src):
-            _append_unique(info['phones'], m.group(0))
+        for num in _iter_mobiles(src):
+            _append_unique(info['phones'], num)
     for m in re.finditer(r'(?<!\d)\d{6}(?:18|19|20)\d{2}'
                          r'(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])'
                          r'\d{3}[\dXx](?![\dXx])', text.replace(' ', '')):
@@ -1849,9 +1935,22 @@ def extract_personnel(text):
 
     # Cover/bid-letter block (投标函) commonly carries the bidder's own
     # 地址/电话/传真 lines ("投标人：X（盖单位章）…电话：010-51683081") —
-    # include cover_sections so a landline there is not missed.
+    # include cover_sections so a landline there is not missed. The capture
+    # tolerates the PDF column padding inside a landline ('010 - 5168 3081').
     for sec in auth_sections + personnel_sections + sig_sections + cover_sections:
-        m = re.search(r'(?:电话|手机|联系电话|联系方式)[：:]\s*(\d[\d\-]{6,15})', sec['text'])
+        m = re.search(r'(?:电话|手机|联系电话|联系方式|移动电话|手机号码|电话号码)[：:]\s*(\d[\d\- \t]{6,19})', sec['text'])
+        if m:
+            phone = _clean_phone(m.group(1))
+            if not info.get('phone'):
+                info['phone'] = phone
+            if not info['contacts'].get('phone'):
+                info['contacts']['phone'] = phone
+
+    # Section-less documents (short response letters, OCR dumps) never enter
+    # the loop above — run the same label-anchored scan on the full text so a
+    # landline there is not lost, mirroring the step-6 name-rescan fallback.
+    if not (auth_sections or personnel_sections or sig_sections or cover_sections):
+        m = re.search(r'(?:电话|手机|联系电话|联系方式|移动电话|手机号码|电话号码)[：:]\s*(\d[\d\- \t]{6,19})', text)
         if m:
             phone = _clean_phone(m.group(1))
             if not info.get('phone'):
@@ -1862,9 +1961,15 @@ def extract_personnel(text):
     for sec in auth_sections:
         m = re.search(r'地址[：:]\s*(.{8,80})', sec['text'])
         if m and not info.get('address'):
-            addr = m.group(1).strip()[:100]
-            info['address'] = addr
-            info['contacts']['address'] = addr
+            addr = m.group(1).strip()
+            # Cover blocks put the next field on the SAME line — cut the
+            # address at the first following label so it does not swallow
+            # '电话：…' / '联系人：…' fragments.
+            addr = re.split(r'\s*(?:电话|手机|联系电话|联系方式|传真|邮编|邮政编码|联系人|'
+                            r'电子邮箱|邮箱|开户行|开户银行|账号|账户|网址)', addr, 1)[0][:100]
+            if len(addr) >= 8:
+                info['address'] = addr
+                info['contacts']['address'] = addr
 
     # Response date (can be anywhere near top of document)
     m = re.search(r'(\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日)', text[:800])
@@ -1879,6 +1984,10 @@ def extract_personnel(text):
     seen = set()
     unique_persons = []
     for p in info['all_persons']:
+        # CJK names: strip PDF-inserted internal spaces ('张 三') so the same
+        # person matches across files; foreign names keep their spaces.
+        if p['name'] and not re.search(r'[A-Za-z]', p['name']):
+            p['name'] = re.sub(r'\s+', '', p['name'])
         key = (p['name'], p['role'])
         if key not in seen:
             seen.add(key)
@@ -2024,6 +2133,11 @@ def _parse_amount(s):
     if re.search(r'\d', s) and re.fullmatch(r'[\dOoIl|.\s]+', s):
         s = s.translate(str.maketrans('OoIl|', '00111'))
 
+    # Thousands thin-space groups from PDF ('1 261 819.76'). A space is only
+    # joined when followed by exactly 3 digits (plus optional decimal tail),
+    # so two space-separated column numbers ('1838529 5002800') never merge.
+    s = re.sub(r'(?<=\d)[ \t](?=\d{3}(?:\.\d+)?(?!\d))', '', s)
+
     has_cn = any(ch in _CN_NUM or ch in _CN_UNIT or ch in _CN_SECTION for ch in s)
 
     if has_cn:
@@ -2066,7 +2180,10 @@ def _parse_amount(s):
 # Arabic amount with optional 万元/亿/元 suffix captured into the group, so
 # '12.5万元' / '126181976.30元' keep their magnitude through _parse_amount.
 # (A bare [\d,]+\.?\d* alternation would stop before the unit and lose x10000.)
-_AMT_ARABIC = r'[\d,]+\.?\d*\s*(?:万|亿)?\s*元?'
+# '(?: \d{3})*' tolerates thin-space thousands groups ('1 261 819.76') that
+# PDF extraction emits instead of commas — the group shape (exactly 3 digits
+# after each space) keeps two space-separated column numbers apart.
+_AMT_ARABIC = r'[\d,]+(?: \d{3})*\.?\d*\s*(?:万|亿)?\s*元?'
 # Full Chinese uppercase / informal numeral string (incl. 元/角/分/整).
 _AMT_CN = r'[壹贰叁肆伍陆柒捌玖拾佰仟万亿零一二三四五六七八九十百千元整角分圆]+'
 _AMT = r'(?:' + _AMT_ARABIC + r'|' + _AMT_CN + r')'
@@ -2096,11 +2213,12 @@ def _amount_in_non_bid_context(search_text, pos):
 
 
 def _fw_digits_to_ascii(s):
-    """Translate full-width digits (０-９) and ：，％ to ASCII in a text copy.
+    """Translate full-width digits (０-９), ：，％＠ to ASCII in a text copy.
 
     PDF text layers occasionally emit full-width digits ('小写：１２３４５'),
-    which the ASCII-digit regexes would silently skip."""
-    return s.translate(str.maketrans('０１２３４５６７８９：，％％', '0123456789:,%%'))
+    which the ASCII-digit regexes would silently skip. ＠ joins so a
+    full-width email address still matches the ASCII email pattern."""
+    return s.translate(str.maketrans('０１２３４５６７８９：，％％＠', '0123456789:,%%@'))
 
 
 def _ocr_digit_normalize(s):
@@ -2135,6 +2253,8 @@ def extract_prices(text):
     }
     if not text:
         return result
+    text = _strip_invisible(text)
+    text = _fix_ocr_label_confusions(text)
     text = _fw_digits_to_ascii(text)
     text = _glue_phrases(text)
     text = _normalize_cjk_whitespace(text)
@@ -2506,6 +2626,7 @@ def _find_bid_summary_section(text):
             if re.search(r'(?:人民币|CNY|RMB|￥|¥|元)\s*(?:[\d,]+\.?\d*|' + _CN_AMT + r')', section) or \
                re.search(_CN_AMT + r'\s*元', section) or \
                re.search(r'[\d,]+\.?\d*\s*万', section) or \
+               re.search(r'\d{1,3}(?: \d{3})+', section) or \
                re.search(r'(?<!\d)[\d,]{5,}(?![\d,])', section):
                 return section
 
@@ -2789,6 +2910,12 @@ def _validate_price_extraction(text, result, bid_section):
         # Also search 万/亿-suffixed forms: a value extracted from '￥12.5万元'
         # has no plain Arabic '125000' in the text to match against.
         formats = [str(val_int), f'{val_int:,}', f'{val_int:.2f}', f'{val_int:.1f}']
+        # Thin-space thousands groups ('1 234 567') emitted by PDF extraction
+        # instead of commas — without this form the validator rejects a value
+        # that genuinely appears in the text.
+        comma_fmt = f'{val_int:,}'
+        if ',' in comma_fmt:
+            formats.append(comma_fmt.replace(',', ' '))
         if val_int >= 10000:
             formats += [f'{val_int / 10000:g}万', f'{val_int / 10000:g}万元']
         if val_int >= 100000000:
@@ -5558,6 +5685,11 @@ def _prepare_history_data(results):
 def _write_history_entry(history_results, saved, saved_refs):
     """Serialize a lightened analysis record to HISTORY_DIR; returns its id."""
     history_id = datetime.now().strftime('%Y%m%d_%H%M%S_') + uuid.uuid4().hex[:12]
+    # history_id is fully server-generated; assert its shape before it reaches
+    # the filesystem so no caller-supplied component can ever become part of
+    # the path.
+    if not re.fullmatch(r'\d{8}_\d{6}_[0-9a-f]{12}', history_id):
+        raise ValueError(f'unexpected history id: {history_id!r}')
     history_entry = {
         'id': history_id,
         'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
