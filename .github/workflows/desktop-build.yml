@@ -3,14 +3,20 @@ name: 桌面版三平台构建
 # 云端构建 Windows / Linux / macOS 桌面版（无需本地各平台机器）。
 # 触发方式：
 #   1. 手动：Actions 页面 -> 桌面版三平台构建 -> Run workflow
-#   2. 打 tag（v*）：构建完成后自动发布 GitHub Release 并附上所有产物
-# 产物（构建约 15-25 分钟，在 run 页面底部 Artifacts 下载；Release 页为 ASCII 名）：
+#      （可选参数 release_tag：构建产物直传到该 Release，如 v1.3.0）
+#   2. 打 tag（v*）：构建完成后产物直接上传 GitHub Release（ASCII 名）
+# 产物（构建约 15-25 分钟；Release 页为 ASCII 名）：
 #   Windows: 星易查-Setup.exe + 星易查-便携版.zip   (XingYiCha-Setup.exe / XingYiCha-portable.zip)
 #   Linux:   星易查-linux-x86_64.tar.gz + XingYiCha-x86_64.AppImage
 #   macOS:   XingYiCha-macOS-arm64.dmg/.zip + XingYiCha-macOS-x86_64.dmg/.zip
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: '构建产物直传到指定 Release（如 v1.3.0），绕过 Artifact 存储'
+        required: false
+        type: string
   push:
     tags:
       - 'v*'
@@ -171,10 +177,27 @@ jobs:
           Copy-Item 'dist/星易查-Setup.exe' 'dist/XingYiCha-Setup.exe'
           Copy-Item 'dist/星易查-便携版.zip' 'dist/XingYiCha-portable.zip'
 
-      - name: Upload artifacts
+      # 私有仓库的 Actions Artifact 存储配额极易触顶（按月累计，清空也不解禁），
+      # Release 附件走独立通道不受限，故 tag 构建产物直传 Release。
+      - name: Upload to GitHub Release directly
+        if: startsWith(github.ref, 'refs/tags/') || inputs.release_tag != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+        run: |
+          # 4 个平台 job 并发：release 已存在则直接上传，不存在则抢先创建（败者容忍）
+          gh release view "$RELEASE_TAG" >/dev/null 2>&1 \
+            || gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --generate-notes \
+            || true
+          gh release upload "$RELEASE_TAG" dist/XingYiCha-* --clobber
+
+      - name: Upload artifacts (manual runs only)
+        if: github.event_name == 'workflow_dispatch' && inputs.release_tag == ''
         uses: actions/upload-artifact@v4
         with:
           name: 星易查-${{ matrix.suffix }}
+          retention-days: 1
           if-no-files-found: error
           path: |
             dist/XingYiCha-Setup.exe
@@ -185,26 +208,3 @@ jobs:
             dist/XingYiCha-macOS-arm64.zip
             dist/XingYiCha-macOS-x86_64.dmg
             dist/XingYiCha-macOS-x86_64.zip
-
-  release:
-    # tag 构建时聚合所有平台产物发布到 GitHub Release
-    if: startsWith(github.ref, 'refs/tags/')
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout (git context for gh CLI)
-        uses: actions/checkout@v4
-
-      - name: Download all platform artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: '星易查-*'
-          path: release-assets
-          merge-multiple: true
-
-      - name: Create GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create "$GITHUB_REF_NAME" release-assets/* \
-            --title "$GITHUB_REF_NAME" --generate-notes
