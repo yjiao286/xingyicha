@@ -2093,7 +2093,24 @@ btnDownload.addEventListener('click', async () => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = '围串标分析报告_' + new Date().toISOString().slice(0, 10).replace(/-/g, '') + '.docx';
+    // 优先采用服务端文件名（含判定等级与时间戳）；取不到时按同规则本地兜底
+    const cd = resp.headers.get('Content-Disposition') || '';
+    let fname = '';
+    const utf8Name = cd.match(/filename\*=UTF-8''([^;]+)/i);
+    const plainName = cd.match(/filename="?([^";]+)"?/i);
+    if (utf8Name) fname = decodeURIComponent(utf8Name[1]);
+    else if (plainName) fname = plainName[1];
+    if (!fname || !/\.docx$/i.test(fname)) {
+      const levelMap = { high: '高度嫌疑', medium: '可疑', low: '无明显异常', uncertain: '无法判断' };
+      const lv = levelMap[(analysisResult.verdict || {}).conclusion_level] || '';
+      const proj = String(analysisResult.project_name || '')
+        .replace(/[\\/:*?"<>|\r\n\t]/g, '').trim().slice(0, 40);
+      const d = new Date(), pad = function(n) { return String(n).padStart(2, '0'); };
+      const stamp = '' + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate())
+        + '_' + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds());
+      fname = ['围串标风险识别分析报告', proj, lv, stamp].filter(Boolean).join('_') + '.docx';
+    }
+    a.download = fname;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);

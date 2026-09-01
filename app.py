@@ -20,6 +20,8 @@ from flask import Flask, request, jsonify, send_file, render_template, Response
 # custom _sanitize_filename() which preserves CJK non-ASCII chars that
 # werkzeug.utils.secure_filename would strip.
 from docx import Document
+from docx.shared import Pt, RGBColor
+from docx.oxml.ns import qn
 from pypdf import PdfReader
 import olefile
 import threading
@@ -4776,6 +4778,121 @@ def _build_sub_item_comparison(all_prices, filenames):
 
 
 
+# ── Project name extraction（报告命名用；跨文档取共识，失败返回 ''）──
+# 标签正则容忍 OCR/排版造成的字间空白；含"招标/采购/分包"前缀形态
+_PROJECT_LABEL_RE = re.compile(
+    r'(?:招\s*标|采\s*购|分\s*包)?项\s*目\s*名\s*称|(?:工\s*程|标\s*段)\s*名\s*称|项\s*目\s*名'
+)
+# 值中出现即视为误抓的词（真实项目名不会包含这些标签/栏目词）
+_PROJECT_JUNK_WORDS = (
+    '招标编号', '标段编号', '招标代理', '招标人', '投标人', '联系方式', '联系电话',
+    '联系人', '开标', '评标办法', '资格预审', '招标文件', '投标文件', '响应文件',
+    '磋商文件', '谈判文件', '目录', '日期',
+)
+
+
+def _clean_project_value(v):
+    """清理捕获到的项目名值：剥引号书名号/填空下划线/截断后续标签。"""
+    if not v:
+        return ''
+    v = str(v).split('|')[0]
+    # 末尾循环剥离包裹符/冒号/填空（如 '：《XX工程》' 需多层剥离）
+    strip_chars = ':：;；,，。..、· 《》"\'“”‘’　 \t'
+    prev = None
+    while prev != v:
+        prev = v
+        v = v.strip(strip_chars)
+    v = re.sub(r'^[为是]+', '', v)            # "项目名称为XXX" 的"为"
+    v = re.split(r'\t| {2,}|　+', v)[0]       # 封面同行多列
+    m2 = _PROJECT_LABEL_RE.search(v)
+    if m2 and m2.start() > 0:                 # 同行尾随下一个标签
+        v = v[:m2.start()]
+    v = re.sub(r'[_＿]{2,}', '', v).strip()   # 填空下划线
+    prev = None
+    while prev != v:
+        prev = v
+        v = v.strip(strip_chars)
+    return v.strip()
+
+
+def _valid_project_value(v):
+    """项目名有效性过滤：长度/纯数字或日期值/标签词残留/点线与冒号残留。"""
+    if not v or not (4 <= len(v) <= 60):
+        return False
+    if re.fullmatch(r'[\d\s.,，。:：\-—_/\\()（）年月日时分秒]+', v):
+        return False                          # 纯数字/日期值（2026年01月01日 等）
+    if any(w in v for w in _PROJECT_JUNK_WORDS):
+        return False
+    if re.search(r'[.。]{4,}|[_＿]{3,}', v):   # 目录点线/空白填充未剔除干净
+        return False
+    if ':' in v or '：' in v:                 # 值中再出现冒号多为标签串行
+        return False
+    return True
+
+
+def _project_candidates_from_text(text, limit=5):
+    """从单份文档提取项目名称候选 [(归一化key, 展示值)]，按出现顺序去重。"""
+    cands = []
+    seen = set()
+    if not text:
+        return cands
+    lines = text.splitlines()
+    for li, raw_line in enumerate(lines):
+        line = raw_line.strip()
+        if not line or len(line) > 300:
+            continue
+        got = ''
+        if '|' in line:
+            # 管道表行："项目名称 | XXX工程 | 招标编号 | ..."
+            cells = [c.strip() for c in line.split('|')]
+            for i in range(len(cells) - 1):
+                cell_key = re.sub(r'[\s:：]+', '', cells[i])
+                if _PROJECT_LABEL_RE.fullmatch(cell_key):
+                    got = cells[i + 1]
+                    break
+        else:
+            m = _PROJECT_LABEL_RE.search(line)
+            if not m:
+                continue
+            rest = line[m.end():]
+            if rest and not re.match(r'^[\s:：为是]', rest):
+                continue    # 标签后无冒号/"为"直接接正文，像一般表述而非赋值
+            if rest:
+                got = rest
+            else:
+                # 标签独占一行（封面常见），值在下一非空行
+                nxt = lines[li + 1].strip() if li + 1 < len(lines) else ''
+                if nxt and len(nxt) <= 80 and not _PROJECT_LABEL_RE.search(nxt):
+                    got = nxt
+                else:
+                    continue
+        got = _clean_project_value(got)
+        if not _valid_project_value(got):
+            continue
+        key = re.sub(r'[\s　]', '', got)
+        if key not in seen:
+            seen.add(key)
+            cands.append((key, got))
+            if len(cands) >= limit:
+                break
+    return cands
+
+
+def _extract_project_name(texts_by_file):
+    """跨文档投票提取项目名：≥2 份一致的候选优先，否则取票数最高者；失败返回 ''。"""
+    votes = defaultdict(int)
+    display = {}
+    for text in texts_by_file.values():
+        for key, raw in _project_candidates_from_text(text):
+            votes[key] += 1
+            if key not in display or len(raw) > len(display[key]):
+                display[key] = raw
+    if not votes:
+        return ''
+    best_key = max(votes, key=lambda k: (votes[k], len(display[k])))
+    return display[best_key]
+
+
 def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts=None, on_progress=None,
                       cancel_event=None):
     """Run all analysis modules and return structured results.
@@ -4876,6 +4993,9 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
     all_structure = {}
     for fn, text in all_text.items():
         all_structure[fn] = extract_structure(text)
+
+    # 6b. 项目名称 — 跨文档共识提取（写入结果，供报告命名与展示）
+    project_name = _extract_project_name(all_text)
 
     # Build per-group metadata (use first file's metadata)
     # Build per-group metadata: start with the first volume, then fill in
@@ -5535,6 +5655,7 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
         },
         'structure': {gn: all_structure.get(gn, [])[:60] for gn in out_names},
         'ref_docs': ref_filenames,
+        'project_name': project_name,
         'verdict': {
             'clauses': clauses,
             'conclusion': conclusion,
@@ -5555,22 +5676,321 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
 
 
 # ── Report Generation ────────────────────────────────────────────
-def generate_report_docx(analysis):
-    """Generate a .docx report from analysis results"""
-    doc = Document()
 
-    # Title
-    title = doc.add_heading('围串标投标文件分析报告', level=0)
+# 中文角色标签（与前端 ROLE_LABELS 保持一致）
+_REPORT_ROLE_LABELS = {
+    'legal_rep': '法定代表人', 'authorized_rep': '授权代表',
+    'project_manager': '项目经理', 'tech_lead': '技术负责人',
+    'bid_contact': '投标联系人', 'team_member': '团队成员',
+    'signatory': '签署人', 'other': '其他人员',
+}
+_SEVERITY_ORDER = {'critical': 0, 'high': 1, 'medium': 2, 'info': 3}
+_SEVERITY_TEXT = {'critical': '致命', 'high': '严重', 'medium': '一般', 'info': '信息'}
+_LEVEL_TEXT = {'high': '高度嫌疑', 'medium': '可疑', 'low': '无明显异常', 'uncertain': '无法判断'}
+
+# 报告结论突出显示用色
+_RED = RGBColor(0xC0, 0x00, 0x00)
+_GREEN = RGBColor(0x1E, 0x7E, 0x34)
+_GRAY = RGBColor(0x80, 0x80, 0x80)
+_ORANGE = RGBColor(0xD9, 0x77, 0x06)
+_LEVEL_COLORS = {'high': _RED, 'medium': _ORANGE, 'low': _GREEN, 'uncertain': _GRAY}
+_SAT_COLORS = {True: _RED, False: _GREEN, None: _GRAY}               # 条款判定: 满足/不满足/无法判断
+_SAT_TXT_COLORS = {'满足': _RED, '不满足': _GREEN, '无法判断': _GRAY}  # 判定汇总表内文字
+
+# 发现类文本分级（按关键词归类着色；顺序即优先级）
+_RISK_FINDING_KW = ('一致', '等差', '规律', '高度接近', '高风险', '不规范翻译', '型号')
+_GRAY_FINDING_KW = ('未提取到', '仅提取到', '模板过滤', '已排除', '已降级', '不计分', '疑似模板')
+
+# 按结论等级给出的总体处置建议
+_REPORT_ADVICE = {
+    'high': [
+        '建议招标人或招标代理机构暂缓确定中标候选人/中标结果，先行复核本报告列出的各项证据；',
+        '对报告中的硬证据（WPS保存记录一致、最后修改人同一、授权代表交叉、联系电话/身份证号相同等）逐项人工核实并固定原始文件；',
+        '视项目监管权限向相应行政监督部门报告线索，并移交本报告及原始投标文件；',
+        '必要时依法提请对涉案单位投标保证金缴纳、资金往来账户进一步调查。',
+    ],
+    'medium': [
+        '建议对本报告命中条款的证据进行人工复核，重点核查元数据一致项与人员交叉发现；',
+        '可要求相关投标人对异常一致内容、人员重叠情况作出书面澄清说明；',
+        '结合投标保证金缴纳账户、投标文件相互混装等本系统未自动检测的情形补充人工查验；',
+        '如复核后证据坐实，按"高度嫌疑"情形处置。',
+    ],
+    'low': [
+        '本次分析未发现明显围标串标异常，可按正常流程推进评审工作；',
+        '建议留存本报告及分析数据备查；如后续获得新证据可重新分析。',
+    ],
+    'uncertain': [
+        '当前数据不足以做出完整判定（如仅上传1份标书，或未提取到有效文本/报价信息）；',
+        '建议补齐全部投标文件（.docx/.doc/.pdf/.txt/.xlsx）及招标文件/模板后重新分析。',
+    ],
+}
+
+# 按实际命中条款给出的专项处置建议（仅对"满足"的条款输出）
+_REPORT_CLAUSE_ADVICE = {
+    '第（一）项': '投标文件由同一单位或个人编制：封存投标文件原件，核查文档创建者、最后保存者及WPS硬件记录所指向的实际编制人，必要时调取投标单位的授权与用印台账比对；',
+    '第（二）项': '委托同一单位或个人办理投标事宜：约谈相关投标人的授权代表，核验其劳动关系、社保缴纳单位与身份证明，确认是否存在同一人员或中介代办的情形；',
+    '第（三）项': '项目管理成员为同一人：要求相关投标人提供拟投入项目管理人员的劳动合同与社保缴纳记录，核实人员是否真实在编在岗、是否存在同时受聘于多家投标人的情形；',
+    '第（四）项-a': '投标文件异常一致：要求投标人对技术方案等异常一致内容作出书面澄清，提交独立编制过程的证明材料；',
+    '第（四）项-b': '投标报价异常一致或呈规律性差异：复核各投标人报价编制依据与成本构成，逐项比对分项报价明细，核查是否存在事先合意抬价、压价或轮流中标的迹象；',
+}
+
+# 附加线索处置建议：银行账号交叉（对应条例第四十条第六项的核查方向，系统不自动判定）
+_REPORT_BANK_ADVICE = ('出现同一银行账号：结合投标保证金缴纳凭证核查资金来源与流向，'
+                       '确认是否存在保证金从同一单位或个人账户转出的情形（实施条例第四十条第六项）；')
+
+_REPORT_NOTES = [
+    '本报告由围串标风险识别系统基于文件元数据、人员信息、文本相似度与报价规律的自动化比对生成，仅供招标评审与监管核查参考；',
+    '报告结论不构成对围标串标行为的最终认定，最终认定应以行政监督部门调查或司法机关裁判为准；',
+    '元数据可能因文件流转、格式转换等原因失真，关键证据建议以原始文件复核为准；',
+    '文本相似度比对已自动排除招标文件/模板等正常一致内容，个别模板性表述仍可能残留，请结合上下文判断。',
+]
+
+# 《招标投标法实施条例》第四十条（2019年修订版条文）
+_REGULATION_ARTICLE_40 = [
+    '（一）不同投标人的投标文件由同一单位或者个人编制；',
+    '（二）不同投标人委托同一单位或者个人办理投标事宜；',
+    '（三）不同投标人的投标文件载明的项目管理成员为同一人；',
+    '（四）不同投标人的投标文件异常一致或者投标报价呈规律性差异；',
+    '（五）不同投标人的投标文件相互混装；',
+    '（六）不同投标人的投标保证金从同一单位或者个人的账户转出。',
+]
+
+
+def _fmt_money(v):
+    """Format a money value for report tables/lines; tolerant of str/None."""
+    if v is None or v == '':
+        return '-'
+    if isinstance(v, (int, float)):
+        return f'{v:,.0f}元'
+    return str(v)
+
+
+def _set_style_east_font(style, name):
+    """Set the East-Asian font of a style (w:eastAsia; Word 需单独指定中文字体)."""
+    rpr = style.element.get_or_add_rPr()
+    rpr.get_or_add_rFonts().set(qn('w:eastAsia'), name)
+
+
+def _setup_report_styles(doc):
+    """标准公文字体: 正文宋体(西文 Times New Roman)小四, 标题黑体加粗黑色."""
+    normal = doc.styles['Normal']
+    normal.font.name = 'Times New Roman'
+    normal.font.size = Pt(12)
+    _set_style_east_font(normal, '宋体')
+    for name, size in (('Title', 22), ('Heading 1', 16), ('Heading 2', 14), ('Heading 3', 12)):
+        try:
+            st = doc.styles[name]
+        except KeyError:
+            continue
+        st.font.name = 'Times New Roman'
+        st.font.size = Pt(size)
+        st.font.bold = True
+        st.font.color.rgb = RGBColor(0, 0, 0)
+        _set_style_east_font(st, '黑体')
+
+
+def _conclusion_para(doc, text, color=None, size=None, underline=False, style=None):
+    """加粗结论行：可选颜色/字号增大/下划线突出（不用高亮底纹）。"""
+    p = doc.add_paragraph(style=style)
+    run = p.add_run(text)
+    run.font.bold = True
+    if color is not None:
+        run.font.color.rgb = color
+    if size is not None:
+        run.font.size = Pt(size)
+    if underline:
+        run.font.underline = True
+    return p
+
+
+def _emphasize_cell(cell, color=None, bold=True):
+    """Bold/color existing runs of a table cell (conclusion columns)."""
+    for para in cell.paragraphs:
+        for run in para.runs:
+            if bold:
+                run.font.bold = True
+            if color is not None:
+                run.font.color.rgb = color
+
+
+def _finding_para(doc, text, style='List Bullet'):
+    """发现类结论行：无风险绿、数据缺失与模板信息灰、风险发现红（加粗着色，不用底纹）。"""
+    s = str(text)
+    p = doc.add_paragraph(style=style)
+    run = p.add_run(s)
+    run.font.bold = True
+    if '未发现' in s:
+        run.font.color.rgb = _GREEN
+    elif any(k in s for k in _GRAY_FINDING_KW):
+        run.font.color.rgb = _GRAY
+    elif any(k in s for k in _RISK_FINDING_KW):
+        run.font.color.rgb = _RED
+    return p
+
+
+def _severity_runs(p, sev_key):
+    """按严重度给【标签】+正文两个 run 着色：致命/严重红、一般橙、信息灰（整行加粗）。"""
+    tag, body = p.runs[0], p.runs[1]
+    tag.font.bold = True
+    body.font.bold = True
+    if sev_key in ('critical', 'high'):
+        color = _RED
+    elif sev_key == 'medium':
+        color = _ORANGE
+    else:
+        color = _GRAY
+    tag.font.color.rgb = color
+    body.font.color.rgb = color
+
+
+def _report_table(doc, header, rows):
+    """Bordered docx table with bold header; plain table if style missing."""
+    table = doc.add_table(rows=1, cols=len(header))
+    try:
+        table.style = 'Table Grid'
+    except Exception:
+        pass
+    for i, text in enumerate(header):
+        cell = table.rows[0].cells[i]
+        cell.text = str(text)
+        for para in cell.paragraphs:
+            for run in para.runs:
+                run.bold = True
+    for row in rows:
+        cells = table.add_row().cells
+        for i, text in enumerate(row):
+            cells[i].text = '-' if text is None or text == '' else str(text)
+    # 表格统一五号字
+    for trow in table.rows:
+        for cell in trow.cells:
+            for para in cell.paragraphs:
+                for run in para.runs:
+                    run.font.size = Pt(10.5)
+    return table
+
+
+def _sanitize_filename_component(s, max_len=40):
+    """Filename-safe component: strip Windows-forbidden chars/controls, cap length."""
+    s = re.sub(r'[\\/:*?"<>|\r\n\t\x00-\x1f]', '', str(s))
+    s = re.sub(r'\s+', ' ', s).strip().strip('. ').strip()
+    return s[:max_len].strip()
+
+
+def generate_report_docx(analysis):
+    """Generate a comprehensive .docx report from analysis results.
+
+    All field access is defensive (.get with defaults) so the report can be
+    regenerated both from live results and from history records lightened by
+    _prepare_history_data (which truncates match bodies and nulls per-file
+    fields outside _HISTORY_KEEP).
+    """
+    doc = Document()
+    _setup_report_styles(doc)
+
+    meta_section = analysis.get('metadata') or {}
+    personnel_section = analysis.get('personnel') or {}
+    similarity_section = analysis.get('text_similarity') or {}
+    pricing_section = analysis.get('pricing') or {}
+    verdict_section = analysis.get('verdict') or {}
+
+    meta_files = meta_section.get('files') or []
+    personnel_files = personnel_section.get('files') or []
+    pricing_files = pricing_section.get('files') or []
+    meta_matches = meta_section.get('matches') or []
+    cross_matches = personnel_section.get('cross_matches') or []
+    pair_results = similarity_section.get('pair_results') or []
+    clauses = verdict_section.get('clauses') or []
+    scoring = verdict_section.get('scoring_rule') or {}
+    ref_docs = analysis.get('ref_docs') or []
+
+    score = verdict_section.get('score') or 0
+    max_score = verdict_section.get('max_score') or 100
+    conclusion_level = verdict_section.get('conclusion_level') or 'uncertain'
+    conclusion = verdict_section.get('conclusion') or '-'
+    synergy_bonus = verdict_section.get('synergy_bonus') or 0
+    hard_synergy_bonus = verdict_section.get('hard_synergy_bonus') or 0
+    level_text = _LEVEL_TEXT.get(conclusion_level, conclusion_level)
+
+    # ── Title block ──
+    title = doc.add_heading('围串标风险识别分析报告', level=0)
     title.alignment = 1  # center
 
+    num_files = len(meta_files) or len(personnel_files) or len(pricing_files)
     doc.add_paragraph(f'生成时间: {datetime.now().strftime("%Y年%m月%d日 %H:%M:%S")}')
     doc.add_paragraph('分析依据: 《中华人民共和国招标投标法实施条例》第四十条')
+    doc.add_paragraph(f'分析文件: {num_files} 份，交叉比对 {len(pair_results)} 组')
+    if ref_docs:
+        doc.add_paragraph(
+            f'模板扣除: 已上传 {len(ref_docs)} 份招标文件/模板，用于排除正常一致内容（{ "、".join(str(r) for r in ref_docs[:5]) }）')
     doc.add_paragraph('─' * 60)
 
-    # 1. Metadata
-    doc.add_heading('一、元数据分析', level=1)
-    for f in analysis['metadata']['files']:
-        doc.add_heading(f'文件: {f["name"]}', level=2)
+    # ── 1. Executive overview ──
+    doc.add_heading('一、分析概览', level=1)
+    _level_color = _LEVEL_COLORS.get(conclusion_level)
+    _conclusion_para(doc, f'综合风险评分: {score} / {max_score} 分（风险等级: {level_text}）',
+                     color=_level_color, size=14)
+    _conclusion_para(doc, f'判定结论: {conclusion}', color=_level_color, size=14, underline=True)
+
+    satisfied_n = sum(1 for c in clauses if c.get('satisfied') is True)
+    uncertain_n = sum(1 for c in clauses if c.get('satisfied') is None)
+    not_n = sum(1 for c in clauses if c.get('satisfied') is False)
+    bonus_parts = []
+    if synergy_bonus:
+        bonus_parts.append(f'软证据协同 +{synergy_bonus}分')
+    if hard_synergy_bonus:
+        bonus_parts.append(f'硬证据协同 +{hard_synergy_bonus}分')
+    doc.add_paragraph(
+        f'条款命中: 满足 {satisfied_n} 项 · 无法判断 {uncertain_n} 项 · 不满足 {not_n} 项'
+        f'；协同加分: {"，".join(bonus_parts) if bonus_parts else "无"}')
+
+    if meta_files or personnel_files:
+        doc.add_heading('分析文件清单', level=2)
+        file_rows = []
+        for idx, f in enumerate(meta_files or personnel_files, 1):
+            file_rows.append([
+                idx,
+                f.get('name', '-'),
+                f.get('creator') or '-',
+                f.get('last_modified_by') or '-',
+                f.get('modified') or '-',
+            ])
+        _report_table(doc, ['序号', '文件名', '创建者', '最后保存者', '修改时间'], file_rows)
+
+    doc.add_heading('各维度检查结果统计', level=2)
+    total_substantial = sum(p.get('substantial_count') or 0 for p in pair_results)
+    total_suspicious = sum(p.get('suspicious_count') or 0 for p in pair_results)
+    severe_matches = [m for m in cross_matches if m.get('severity') in ('critical', 'high')]
+    stat_rows = [
+        ['元数据分析', f'一致项 {len(meta_matches)} 处（其中严重 {sum(1 for m in meta_matches if m.get("severity") == "high")} 处）'],
+        ['人员及联系信息', f'交叉异常 {len(cross_matches)} 处（其中致命/严重 {len(severe_matches)} 处）'],
+        ['文本相似度', f'高风险异常段落 {total_substantial} 处，疑似模板段落 {total_suspicious} 处'],
+        ['报价分析', f'风险发现 {len(pricing_section.get("findings") or [])} 条'],
+    ]
+    _report_table(doc, ['检查维度', '结果'], stat_rows)
+
+    # Key risks: hard evidence first (personnel/meta), then text and pricing
+    key_risks = []
+    for m in severe_matches:
+        key_risks.append(('人员', m.get('detail', '')))
+    for m in meta_matches:
+        if m.get('severity') == 'high':
+            pair = f'（{m.get("pair")}）' if m.get('pair') else ''
+            key_risks.append(('元数据', f'{m.get("field")}: {m.get("value")}{pair}'))
+    for e in (similarity_section.get('substantial_abnormal') or [])[:3]:
+        key_risks.append(('文本', f'{e.get("pair")} 异常一致: {str(e.get("text", ""))[:80]}'))
+    for f_text in (pricing_section.get('findings') or []):
+        s = str(f_text)
+        if any(k in s for k in ('一致', '等差', '高度接近')):
+            key_risks.append(('报价', s))
+    if key_risks:
+        doc.add_heading('主要风险点摘要', level=2)
+        for dim, text in key_risks[:10]:
+            _conclusion_para(doc, f'[{dim}] {text}', color=_RED, style='List Bullet')
+
+    # ── 2. Metadata ──
+    doc.add_heading('二、元数据分析', level=1)
+    for f in meta_files:
+        doc.add_heading(f'文件: {f.get("name", "-")}', level=2)
         meta_fields = [
             ('创建者', f.get('creator', '-')),
             ('最后保存者', f.get('last_modified_by', '-')),
@@ -5590,67 +6010,134 @@ def generate_report_docx(analysis):
             if value and value != '-':
                 doc.add_paragraph(f'{label}: {str(value)[:200]}')
 
-    if analysis['metadata']['matches']:
-        doc.add_heading('元数据一致项', level=2)
-        for m in analysis['metadata']['matches']:
-            doc.add_paragraph(f'【{m["verdict"]}】{m["field"]}: {m["value"]}', style='List Bullet')
-    for f_text in analysis['metadata']['findings']:
-        if f_text.strip():
-            doc.add_paragraph(f_text, style='List Bullet')
+    if meta_matches:
+        doc.add_heading('元数据一致项（按严重程度排序）', level=2)
+        for m in sorted(meta_matches, key=lambda m: _SEVERITY_ORDER.get(m.get('severity'), 3)):
+            sev = _SEVERITY_TEXT.get(m.get('severity'), '信息')
+            pair = f'（{m.get("pair")}）' if m.get('pair') else ''
+            p = doc.add_paragraph(style='List Bullet')
+            p.add_run(f'【{sev}】')
+            p.add_run(f'{m.get("field")}: {m.get("value")}{pair} — {m.get("verdict", "")}')
+            _severity_runs(p, m.get('severity'))
+    else:
+        _conclusion_para(doc, '未发现元数据一致项。', color=_GREEN)
+    for f_text in meta_section.get('findings') or []:
+        if f_text and str(f_text).strip():
+            _finding_para(doc, f_text)
 
-    # 2. Personnel
-    doc.add_heading('二、人员及联系信息分析', level=1)
-    for f in analysis['personnel']['files']:
-        doc.add_heading(f'文件: {f["name"]}', level=2)
+    # ── 3. Personnel ──
+    doc.add_heading('三、人员及联系信息分析', level=1)
+    for f in personnel_files:
+        doc.add_heading(f'文件: {f.get("name", "-")}', level=2)
         # Multi-value contact pools (all phones / IDs / emails collected)
         _phones = '、'.join(f.get('phones') or []) or f.get('phone') or '-'
         _ids = '、'.join(f.get('id_numbers') or []) or f.get('id_number') or '-'
         _emails = '、'.join(f.get('emails') or []) or '-'
         p_fields = [
+            ('公司名称', f.get('company_name', '-')),
             ('法定代表人', f.get('legal_rep', '-')),
             ('授权代表', f.get('authorized_rep', '-')),
             ('身份证号', _ids),
             ('联系电话', _phones),
             ('邮箱', _emails),
             ('地址', f.get('address', '-')),
+            ('响应/投标日期', f.get('response_date', '-')),
         ]
         for label, value in p_fields:
             if value and value != '-':
                 doc.add_paragraph(f'{label}: {value}')
 
-    if analysis['personnel']['cross_matches']:
-        doc.add_heading('人员交叉发现', level=2)
-        for m in analysis['personnel']['cross_matches']:
-            doc.add_paragraph(f'【{m["severity"]}】{m["detail"]}', style='List Bullet')
+        banks = f.get('bank_accounts') or []
+        if banks:
+            doc.add_paragraph('银行账号: ' + '、'.join(str(b) for b in banks[:5]))
 
-    # 3. Text Similarity
-    doc.add_heading('三、文本相似度分析', level=1)
-    for pr in analysis['text_similarity']['pair_results']:
-        doc.add_heading(f'{pr["file1"]} vs {pr["file2"]}', level=2)
-        doc.add_paragraph(f'总匹配段落数: {pr["total_matches"]}')
-        doc.add_paragraph(f'异常一致段落数: {pr["abnormal_count"]}')
+        persons = f.get('all_persons') or []
+        if persons:
+            names = [
+                f'{p.get("name", "")}({_REPORT_ROLE_LABELS.get(p.get("role"), p.get("role") or "人员")})'
+                for p in persons[:20]
+            ]
+            more = f' 等共{len(persons)}人' if len(persons) > 20 else ''
+            doc.add_paragraph('人员名单: ' + '、'.join(names) + more)
 
-        if pr['matches']:
-            doc.add_heading('异常一致段落详情:', level=3)
-            for m in pr['matches'][:30]:  # Limit to top 30
-                if m.get('abnormal'):
+    if cross_matches:
+        doc.add_heading('人员交叉发现（按严重程度排序）', level=2)
+        for m in sorted(cross_matches, key=lambda m: _SEVERITY_ORDER.get(m.get('severity'), 3)):
+            sev = _SEVERITY_TEXT.get(m.get('severity'), '信息')
+            p = doc.add_paragraph(style='List Bullet')
+            p.add_run(f'【{sev}】')
+            p.add_run(f'{m.get("type", "")} — {m.get("detail", "")}')
+            _severity_runs(p, m.get('severity'))
+    else:
+        _conclusion_para(doc, '未发现人员交叉异常。', color=_GREEN)
+
+    # ── 4. Text similarity ──
+    doc.add_heading('四、文本相似度分析', level=1)
+    if pair_results:
+        for pr in pair_results:
+            doc.add_heading(f'{pr.get("file1", "?")} vs {pr.get("file2", "?")}', level=2)
+            doc.add_paragraph(f'总匹配段落数: {pr.get("total_matches", 0)}')
+            doc.add_paragraph(
+                f'异常一致段落数: {pr.get("abnormal_count", 0)}'
+                f'（高风险 {pr.get("substantial_count", 0)}，疑似模板 {pr.get("suspicious_count", 0)}），'
+                f'已过滤模板段落 {pr.get("template_count", 0)}')
+
+            abnormal_matches = [m for m in (pr.get('matches') or []) if m.get('abnormal')]
+            if abnormal_matches:
+                doc.add_heading('异常一致段落详情:', level=3)
+                for m in abnormal_matches[:30]:  # Limit to top 30
+                    m_score = m.get('score')
+                    score_str = f'，实质性评分 {m_score:.0%}' if isinstance(m_score, (int, float)) else ''
+                    nd = '【高度近似】' if m.get('near_duplicate') else ''
+                    reasons = '；'.join(str(r) for r in (m.get('reasons') or []))
+                    reason_str = f'（{reasons}）' if reasons else ''
                     doc.add_paragraph(
-                        f'第{m["index"]}项 ({m["length"]}字): {m["text"][:150]}...',
+                        f'{nd}第{m.get("index")}项 ({m.get("length")}字{score_str}): '
+                        f'{str(m.get("text", ""))[:150]}...{reason_str}',
                         style='List Bullet'
                     )
+    else:
+        _conclusion_para(doc, '未进行文本相似度比对（文件数不足或未提取到有效文本）。', color=_GRAY)
 
-    for f_text in analysis['text_similarity']['findings']:
-        doc.add_paragraph(f_text, style='List Bullet')
+    for f_text in similarity_section.get('findings') or []:
+        if f_text and str(f_text).strip():
+            _finding_para(doc, f_text)
 
-    # 4. Pricing
-    doc.add_heading('四、报价分析', level=1)
+    # ── 5. Pricing ──
+    doc.add_heading('五、报价分析', level=1)
+    if pricing_files:
+        doc.add_heading('各文件报价汇总', level=2)
+        price_rows = []
+        for f in pricing_files:
+            price_rows.append([
+                f.get('name', '-'),
+                _fmt_money(f.get('totalPriceInTax')),
+                _fmt_money(f.get('totalPrice')),
+                f.get('taxRate') or '-',
+                f.get('bidRate') or '-',
+            ])
+        _report_table(doc, ['文件', '含税总价', '不含税总价', '税率', '费率/下浮率'], price_rows)
+
+        warn_lines = []
+        for f in pricing_files:
+            for w in (f.get('warnings') or []):
+                if w:
+                    warn_lines.append(f'{f.get("name", "")}: {w}')
+        if warn_lines:
+            doc.add_heading('报价提取警示', level=2)
+            for w in warn_lines[:10]:
+                doc.add_paragraph(str(w), style='List Bullet')
+
     # Rate-based quotes (费率/下浮率) — service bids with no amount prices
-    rate_lines = [f'{f["name"]}={f["bidRate"]}'
-                  for f in analysis['pricing']['files'] if f.get('bidRate')]
+    rate_lines = [f'{f.get("name")}={f.get("bidRate")}'
+                  for f in pricing_files if f.get('bidRate')]
     if rate_lines:
         doc.add_paragraph('费率/下浮率报价: ' + ' | '.join(rate_lines))
-    if analysis['pricing']['comparison']:
-        for key, entry in analysis['pricing']['comparison'].items():
+
+    comparison = pricing_section.get('comparison') or {}
+    if comparison:
+        doc.add_heading('总价/成本项比对', level=2)
+        for key, entry in comparison.items():
             files = [k for k in entry.keys() if k != '_same_all']
             parts = []
             for fn in files:
@@ -5662,13 +6149,24 @@ def generate_report_docx(analysis):
                 else:
                     parts.append(f'{fn}={str(val)}')
             mark = ' ← 全一致' if entry.get('_same_all') else ''
-            doc.add_paragraph(f'{key}: {" | ".join(parts)}{mark}')
+            if mark:
+                p = doc.add_paragraph()
+                p.add_run(f'{key}: {" | ".join(parts)}').font.bold = True
+                mk = p.add_run(mark)
+                mk.font.bold = True
+                mk.font.color.rgb = _RED
+            else:
+                doc.add_paragraph(f'{key}: {" | ".join(parts)}')
 
-    for f_text in analysis['pricing']['findings']:
-        doc.add_paragraph(f_text, style='List Bullet')
+    pricing_findings = pricing_section.get('findings') or []
+    if not pricing_findings:
+        _conclusion_para(doc, '未发现报价异常。', color=_GREEN)
+    for f_text in pricing_findings:
+        if f_text and str(f_text).strip():
+            _finding_para(doc, f_text)
 
     # ── Sub-item comparison ──
-    sub_items = analysis['pricing'].get('subItemCompare', [])
+    sub_items = pricing_section.get('subItemCompare') or []
     if sub_items:
         doc.add_heading('分项报价比对', level=2)
         for c in sub_items:
@@ -5687,10 +6185,60 @@ def generate_report_docx(analysis):
                     parts.append(f'数量:{it["count"]}')
                 doc.add_paragraph(' | '.join(parts), style='List Bullet')
             for f_text in c.get('findings', []):
-                doc.add_paragraph(f'→ {f_text}', style='List Bullet')
+                _finding_para(doc, f'→ {f_text}')
 
-    # ── Scoring rules summary ──
-    scoring = analysis['verdict'].get('scoring_rule', {})
+    # ── 6. Verdict & scoring ──
+    doc.add_heading('六、综合判定与评分', level=1)
+    if clauses:
+        doc.add_heading('条款判定汇总', level=2)
+        clause_rows = []
+        for c in clauses:
+            sat = c.get('satisfied')
+            sat_str = '满足' if sat is True else ('不满足' if sat is False else '无法判断')
+            clause_rows.append([
+                c.get('clause', '-'),
+                c.get('description', ''),
+                sat_str,
+                c.get('evidence_level', '无'),
+                c.get('_weight', '-'),
+                c.get('_score', '-'),
+            ])
+        clause_table = _report_table(
+            doc, ['条款', '条款内容', '判定', '证据强度', '权重(分)', '得分'], clause_rows)
+        # 判定/证据强度列按结论着色突出
+        for trow in clause_table.rows[1:]:
+            _emphasize_cell(trow.cells[2], color=_SAT_TXT_COLORS.get(trow.cells[2].text.strip()))
+            if trow.cells[3].text.strip() == '强':
+                _emphasize_cell(trow.cells[3], color=_RED)
+
+        base_score = round(sum(c.get('_score') or 0 for c in clauses), 1)
+        p = doc.add_paragraph()
+        r = p.add_run(
+            f'评分构成: 条款得分合计 {base_score:g} 分'
+            + (f' + 软证据协同 {synergy_bonus} 分' if synergy_bonus else '')
+            + (f' + 硬证据协同 {hard_synergy_bonus} 分' if hard_synergy_bonus else '')
+            + f' = 总分 {score} 分（满分 {max_score} 分）'
+        )
+        r.font.bold = True
+
+        doc.add_heading('条款证据明细', level=2)
+        for c in clauses:
+            sat = c.get('satisfied')
+            sat_str = '满足' if sat is True else ('不满足' if sat is False else '无法判断')
+            lvl = c.get('evidence_level')
+            lvl_str = f'［证据强度: {lvl}］' if lvl else ''
+            h = doc.add_heading('', level=3)
+            h.add_run(f'{c.get("clause", "")} - {c.get("description", "")} ［')
+            sat_run = h.add_run(sat_str)
+            sat_run.font.bold = True
+            sat_color = _SAT_COLORS.get(sat)
+            if sat_color is not None:
+                sat_run.font.color.rgb = sat_color
+            h.add_run(f'］{lvl_str}')
+            for e in c.get('evidence') or []:
+                if isinstance(e, str):
+                    doc.add_paragraph(f'- {e}')
+
     if scoring:
         doc.add_heading('评分规则', level=2)
         weights = scoring.get('weights', {})
@@ -5717,17 +6265,52 @@ def generate_report_docx(analysis):
         )
         doc.add_paragraph('总分上限100分', style='List Bullet')
 
-    # 5. Verdict
-    doc.add_heading('五、综合判定', level=1)
-    for c in analysis['verdict']['clauses']:
-        satisfied_str = '满足' if c['satisfied'] is True else ('不满足' if c['satisfied'] is False else '无法判断')
-        doc.add_heading(f'{c["clause"]} - {c["description"]} [{satisfied_str}]', level=2)
-        for e in c.get('evidence', []):
-            if isinstance(e, str):
-                doc.add_paragraph(f'- {e}')
+    # ── 7. Conclusion & advice ──
+    doc.add_heading('七、结论与处置建议', level=1)
+    doc.add_heading('最终结论', level=2)
+    _conclusion_para(doc, conclusion, color=_level_color, size=14, underline=True)
+    _conclusion_para(doc, f'综合风险评分: {score}/{max_score} 分，风险等级: {level_text}',
+                     color=_level_color, size=14)
 
-    doc.add_heading('最终结论', level=1)
-    doc.add_paragraph(analysis['verdict']['conclusion'])
+    doc.add_heading('处置建议', level=2)
+    doc.add_paragraph('总体建议:', style='List Bullet')
+    for a in _REPORT_ADVICE.get(conclusion_level, _REPORT_ADVICE['uncertain']):
+        doc.add_paragraph(a, style='List Bullet 2')
+
+    # 专项建议：按本次实际命中的条款与线索生成，未命中的不输出
+    clause_advice = [
+        _REPORT_CLAUSE_ADVICE[c['clause']]
+        for c in clauses
+        if c.get('satisfied') is True and c.get('clause') in _REPORT_CLAUSE_ADVICE
+    ]
+    if any(m.get('type') == '银行账号相同' for m in cross_matches):
+        clause_advice.append(_REPORT_BANK_ADVICE)
+    if clause_advice:
+        doc.add_paragraph('针对本次命中情形的专项建议:', style='List Bullet')
+        for a in clause_advice:
+            doc.add_paragraph(a, style='List Bullet 2')
+
+    doc.add_heading('报告使用说明', level=2)
+    for note in _REPORT_NOTES:
+        doc.add_paragraph(note, style='List Bullet')
+
+    # ── Appendix: regulation text ──
+    doc.add_heading('附录: 判定依据（《中华人民共和国招标投标法实施条例》第四十条）', level=1)
+    doc.add_paragraph('有下列情形之一的，视为投标人相互串通投标:')
+    for item in _REGULATION_ARTICLE_40:
+        doc.add_paragraph(item, style='List Bullet')
+    doc.add_paragraph(
+        '说明: 本系统自动检测第（一）至（四）项；第（五）项（投标文件相互混装）需人工查验，'
+        '第（六）项（投标保证金从同一账户转出）可结合本报告"三、人员及联系信息分析"中的银行账号交叉结果人工判断。'
+    )
+
+    # Footer disclaimer
+    try:
+        footer_para = doc.sections[0].footer.paragraphs[0]
+        footer_para.text = '本报告由围串标风险识别系统自动生成，仅供参考'
+        footer_para.alignment = 1  # center
+    except Exception:
+        pass
 
     # Save to BytesIO
     buf = BytesIO()
@@ -5800,11 +6383,21 @@ def report():
 
     try:
         buf = generate_report_docx(analysis_data)
+        # 文件名 = 标题 + 项目名 + 判定等级 + 时间戳；项目名做安全过滤，
+        # 各段均可缺失（旧历史记录无 project_name / verdict 残缺时退化）
+        parts = ['围串标风险识别分析报告']
+        proj = _sanitize_filename_component(analysis_data.get('project_name') or '')
+        if proj:
+            parts.append(proj)
+        level_text = _LEVEL_TEXT.get((analysis_data.get('verdict') or {}).get('conclusion_level'), '')
+        if level_text:
+            parts.append(level_text)
+        parts.append(datetime.now().strftime('%Y%m%d_%H%M%S'))
         return send_file(
             buf,
             mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
             as_attachment=True,
-            download_name=f'围串标分析报告_{datetime.now().strftime("%Y%m%d_%H%M%S")}.docx'
+            download_name='_'.join(parts) + '.docx'
         )
     except Exception as e:
         logger.exception('report generation failed')
@@ -5853,6 +6446,7 @@ def _prepare_history_data(results):
                 'risk_level': m.get('risk_level'),
                 'score': m.get('score'),
                 'reasons': m.get('reasons', []),
+                'near_duplicate': m.get('near_duplicate', False),
                 'ctx1': m.get('ctx1', '')[:400],
                 'ctx2': m.get('ctx2', '')[:400],
             })
