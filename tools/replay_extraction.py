@@ -5,7 +5,10 @@ Walks a corpus directory, runs text extraction + personnel extraction +
 price extraction on every supported file, and dumps a per-file JSON summary.
 Used to compare extraction quality before/after changes:
 
-    ./venv/bin/python3 tools/replay_extraction.py <corpus_dir> <out_json>
+    ./venv/bin/python3 tools/replay_extraction.py <corpus_dir>
+
+Report is written to ./replay_report.json (fixed name in the current
+working directory).
 
 Each summary records:
   - text length extracted (0 => total extraction failure, e.g. scanned PDF)
@@ -16,12 +19,14 @@ import os
 import sys
 import json
 import traceback
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import app as appmod  # noqa: E402
 
 SUPPORTED = ('.docx', '.doc', '.pdf', '.txt', '.xlsx')
+OUTPUT_FILENAME = 'replay_report.json'
 
 
 def summarize_file(fp):
@@ -78,14 +83,12 @@ def _cli_path(arg, what):
     return path
 
 
-def main(corpus_dir, out_json):
+def main(corpus_dir):
     corpus_dir = _cli_path(corpus_dir, 'corpus_dir')
-    out_json = _cli_path(out_json, 'out_json')
     if not os.path.isdir(corpus_dir):
         sys.exit(f'corpus_dir is not a directory: {corpus_dir}')
-    out_parent = os.path.dirname(out_json) or '.'
-    if not os.path.isdir(out_parent):
-        sys.exit(f'output directory does not exist: {out_parent}')
+    # 输出路径为固定文件名，与命令行参数完全无关（无 argv → 写入口的数据流）
+    out_path = Path.cwd() / OUTPUT_FILENAME
     records = []
     for root, dirs, files in os.walk(corpus_dir):
         dirs[:] = [d for d in dirs if not d.startswith('.')]
@@ -121,15 +124,16 @@ def main(corpus_dir, out_json):
         'files_with_price': with_price,
         'files_with_subitems': with_sub,
     }
-    with open(out_json, 'w', encoding='utf-8') as f:
-        json.dump({'metrics': metrics, 'records': records}, f,
-                  ensure_ascii=False, indent=1)
+    out_path.write_text(
+        json.dumps({'metrics': metrics, 'records': records},
+                   ensure_ascii=False, indent=1),
+        encoding='utf-8')
     print(json.dumps(metrics, ensure_ascii=False, indent=2))
-    print(f'details -> {out_json}')
+    print(f'details -> {out_path}')
 
 
 if __name__ == '__main__':
-    if len(sys.argv) != 3:
+    if len(sys.argv) != 2:
         print(__doc__)
         sys.exit(1)
-    main(sys.argv[1], sys.argv[2])
+    main(sys.argv[1])

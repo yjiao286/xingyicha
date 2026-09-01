@@ -12,6 +12,7 @@ import logging
 import uuid
 import time
 from io import BytesIO
+from pathlib import Path
 from datetime import datetime
 from collections import defaultdict
 
@@ -6469,11 +6470,20 @@ def _write_history_entry(history_results, saved, saved_refs):
     # history_id is fully server-generated; assert its shape before it reaches
     # the filesystem so no caller-supplied component can ever become part of
     # the path. A containment check on the resolved path backs the regex up.
-    if not re.fullmatch(r'\d{8}_\d{6}_[0-9a-f]{12}', history_id):
-        raise ValueError(f'unexpected history id: {history_id!r}')
-    history_path = os.path.join(HISTORY_DIR, history_id + '.json')
-    if not os.path.realpath(history_path).startswith(
-            os.path.realpath(HISTORY_DIR) + os.sep):
+    history_filename = history_id + '.json'
+    # 校验直接覆盖参与路径拼接的完整文件名（含 .json 后缀），
+    # 保证最终写路径的文件名成分已被白名单正则完全约束。
+    if not re.fullmatch(r'\d{8}_\d{6}_[0-9a-f]{12}\.json', history_filename):
+        raise ValueError(f'unexpected history filename: {history_filename!r}')
+    history_dir = Path(HISTORY_DIR).resolve()
+    history_path = history_dir / history_filename
+    # 包含性检查：resolve 后必须仍位于 HISTORY_DIR 之下
+    try:
+        contained = os.path.commonpath(
+            [str(history_dir), str(history_path.resolve())]) == str(history_dir)
+    except ValueError:            # 不同盘符等不可比较情形一律视为逃逸
+        contained = False
+    if not contained:
         raise ValueError('history path escaped HISTORY_DIR')
     history_entry = {
         'id': history_id,
@@ -6490,8 +6500,8 @@ def _write_history_entry(history_results, saved, saved_refs):
         'total_pairs': history_results['text_similarity'].get('total_pairs', 0),
         'data': history_results
     }
-    with open(history_path, 'w', encoding='utf-8') as f:
-        json.dump(history_entry, f, ensure_ascii=False)
+    history_path.write_text(
+        json.dumps(history_entry, ensure_ascii=False), encoding='utf-8')
     return history_id
 
 
