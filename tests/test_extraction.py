@@ -714,6 +714,228 @@ def t_email_fullwidth_at():
     assert 'zhang@example.com' in p['emails'], p['emails']
 
 
+def t_duty_label_suffix_not_person():
+    # Duty-label strings are form/table column labels, never person names,
+    # even when they start with a real surname (任中职务 → 任).
+    for lbl in ('任中职务', '现任职务', '担任职务', '任何职务', '拟任职务',
+                '本人岗位', '项目职称', '担任角色'):
+        assert not m._is_person_name(lbl), lbl
+    # Real names sharing those surnames/characters must keep passing.
+    assert m._is_person_name('任志强')
+    assert m._is_person_name('陈某某')
+
+
+def t_personnel_duty_label_column():
+    # PDF-flattened row '陈某某 任中职务 项目经理' (colons lost, label column
+    # between name and role): the label must not enter all_persons, and the
+    # real name before it must be recovered as project_manager.
+    p = m.extract_personnel('项目团队\n陈某某 任中职务 项目经理\n杨伟 任中职务 项目经理\n')
+    names = [(x['name'], x['role']) for x in p['all_persons']]
+    assert ('任中职务', 'project_manager') not in names, names
+    assert ('陈某某', 'project_manager') in names, names
+    assert ('杨伟', 'project_manager') in names, names
+    # Cross-line re-pairing must not duplicate an exact (name, role) pair.
+    assert names.count(('杨伟', 'project_manager')) == 1, names
+
+
+def t_personnel_duty_label_colon_form():
+    p = m.extract_personnel('项目团队\n姓名：陈某某 任中职务：项目经理\n')
+    names = [(x['name'], x['role']) for x in p['all_persons']]
+    assert ('陈某某', 'project_manager') in names, names
+    assert all(x['name'] != '任中职务' for x in p['all_persons']), names
+
+
+def t_name_rejects_section_header_words():
+    # Section markers / table captions that START with real surnames
+    # (项/关/管) must never validate as person names.
+    for hdr in ('项目团队', '项目成员', '项目人员', '关键人员', '管理人员',
+                '项目分工', '项目组', '项目部', '组织机构', '人员简历',
+                '项目机构', '人员配置'):
+        assert not m._is_person_name(hdr), hdr
+    # Real names sharing those surnames must keep passing.
+    assert m._is_person_name('管虎')
+    assert m._is_person_name('项少龙')
+
+
+def t_name_rejects_duty_label_variants():
+    # Traditional-script duty labels survive the surname check when led by
+    # a surname char ('任職務') — the suffix rule must catch them too.
+    for lbl in ('任職務', '任何崗位', '现任职务', '拟任职务', '岗位职责',
+                '本任職責', '擔任角色'):
+        assert not m._is_person_name(lbl), lbl
+
+
+def t_personnel_section_header_not_person():
+    # Flattened '项目团队\n项目经理：赵四' must not yield the section header
+    # 项目团队 as a project_manager (项 is a real surname).
+    p = m.extract_personnel('项目团队\n项目经理：赵四\n')
+    names = [(x['name'], x['role']) for x in p['all_persons']]
+    assert ('项目团队', 'project_manager') not in names, names
+    assert ('赵四', 'project_manager') in names, names
+
+
+def t_personnel_role_not_paired_across_lines():
+    # A role keyword at the end of one table row must not attach to the
+    # next row's name ('王某某 项目经理\n李某某 施工员' once made 李某某 a
+    # project_manager → false same-role cross-file match risk).
+    p = m.extract_personnel('项目团队\n王某某 项目经理\n李某某 施工员\n')
+    roles = {}
+    for x in p['all_persons']:
+        roles.setdefault(x['name'], set()).add(x['role'])
+    assert 'project_manager' in roles.get('王某某', set()), roles
+    assert 'project_manager' not in roles.get('李某某', set()), roles
+    assert 'team_member' in roles.get('李某某', set()), roles
+    # Same-line role-then-name pairs keep working, several per line.
+    p2 = m.extract_personnel('项目团队\n项目经理 王某某 技术负责人 李四\n')
+    roles2 = {}
+    for x in p2['all_persons']:
+        roles2.setdefault(x['name'], set()).add(x['role'])
+    assert roles2.get('王某某') == {'project_manager'}, roles2
+    assert roles2.get('李四') == {'tech_lead'}, roles2
+
+
+def t_personnel_label_colon_without_name_label():
+    # '陈某某 任中职务：项目经理' — no 姓名 label at all; the colon sits after
+    # the duty-label column with zero space before the role value.
+    p = m.extract_personnel('项目团队\n陈某某 任中职务：项目经理\n')
+    names = [(x['name'], x['role']) for x in p['all_persons']]
+    assert ('陈某某', 'project_manager') in names, names
+    assert all(x['name'] != '任中职务' for x in p['all_persons']), names
+
+
+def t_personnel_traditional_duty_label():
+    # Traditional-script duty labels (任職務) must be skipped the same way
+    # so the real name before them is still recovered.
+    p = m.extract_personnel('项目团队\n陈某某 任職務 项目经理\n')
+    names = [(x['name'], x['role']) for x in p['all_persons']]
+    assert ('陈某某', 'project_manager') in names, names
+    assert all('職務' not in x['name'] for x in p['all_persons']), names
+
+
+def t_personnel_resume_vertical_labels():
+    # Resume forms put 姓名 and 职务 on different lines; the span between
+    # them may cross a newline but never another 姓名 label.
+    p = m.extract_personnel('项目团队\n姓名：张三 性别：男\n现任职务：项目经理\n')
+    roles = {x['role'] for x in p['all_persons'] if x['name'] == '张三'}
+    assert 'project_manager' in roles, p['all_persons']
+
+    p2 = m.extract_personnel('项目团队\n姓名：张三 学历：本科\n姓名：李四 职务：项目经理\n')
+    roles2 = {x['role'] for x in p2['all_persons'] if x['name'] == '张三'}
+    roles3 = {x['role'] for x in p2['all_persons'] if x['name'] == '李四'}
+    assert 'project_manager' not in roles2, p2['all_persons']
+    assert 'project_manager' in roles3, p2['all_persons']
+
+
+def t_price_bank_voucher_excluded():
+    # Bond transfer slip: '金额 / 人民币：22,000.00 / 人民币：贰万贰仟元整 /
+    # 用途 / 制单日期…' — banking words sit on neighbouring lines, not on
+    # the amount's own line, so they need the voucher WINDOW check.
+    text = ('开标一览表\n投标总价\n大写：壹佰壹拾贰万元\n小写：1120000.00元\n（元，含税）\n'
+            '账号 30210000000123\n开户行 中国民生银行\n金额\n人民币：22,000.00\n'
+            '人民币：贰万贰仟元整\n用途\n制单日期：2025-08-26\n')
+    r = m.extract_prices(text)
+    assert r['totalPriceInTax'] == 1120000, r
+
+
+def t_price_bond_echo_excluded():
+    # The bond value echoes unlabeled later in the document; a candidate
+    # equal to a bond-labeled amount must be skipped even without voucher
+    # words around it.
+    text = '投标函\n投标总价：980000元\n投标保证金\n2.2万元\n附证明材料\n人民币：22000\n'
+    r = m.extract_prices(text)
+    assert r['totalPriceInTax'] == 980000, r
+
+
+def t_price_rmb_label_no_newline_grab():
+    # '2000万元人民币\n2014年1月20日' — the 人民币 prefix at a line end must
+    # not pair with the next line's year; '人民币 2014年' (same line) is a
+    # year too, never an amount.
+    text = ('投标人基本情况表\n注册资金\n成立时间\n2000万元人民币\n2014年1月20日\n'
+            '人民币 2014年注册\n开标一览表\n小写：1120000.00元\n')
+    r = m.extract_prices(text)
+    assert r['totalPriceInTax'] == 1120000, r
+
+
+def t_price_section_toc_and_quote_anchors():
+    # A TOC without dot leaders, a 《…》 reference and a "…" quoted mention
+    # are not section headers; the anchor must fall on the real table.
+    toc = '目录\n' + ''.join(
+        f'{c}、{t}\n' for c, t in zip('一二三四五六七八九十',
+        ['投标函', '开标一览表', '分项报价表', '法定代表人身份证明', '资格审查资料',
+         '技术方案', '服务承诺', '履约计划', '培训方案', '其他补充材料']))
+    toc += '附件1 本项目实施团队主要人员名单 63\n附件2 本项目实施团队主要人员简历表 64\n' * 6
+    text = (toc + '一、投标函\n愿意以《开标一览表》中的投标报价提供全部内容。\n'
+            '备注：分项合计金额中的总价应等于“开标一览表”中的投标总价。\n'
+            '开标一览表\n投标总价（元，含税）\n大写：玖拾捌万元整\n小写：980000.00元\n')
+    r = m.extract_prices(text)
+    assert r['totalPriceInTax'] == 980000, r
+
+
+def t_price_cost_wan_magnitude():
+    r = m.extract_prices('成本明细\n人工成本 350万元\n设备购置费 12000元\n')
+    costs = {d['priceName']: d['totalPrice'] for d in r['costDetails']}
+    assert costs.get('人工成本') == 3500000, costs
+    assert costs.get('设备购置费') == 12000, costs
+
+
+def t_price_cost_performance_table_excluded():
+    # Past-performance tables list HISTORICAL contract amounts under a
+    # 合同金额 header; project-name fragments ('站产品采购') are not cost
+    # items and 3500万 must not shrink to 3500.
+    text = ('业绩一览表\n项目名称\n合同金额\n(元)\n2023年\n某某A+福利\n'
+            '站产品采购\n3500万\n中国移动\n2000万\n')
+    r = m.extract_prices(text)
+    assert r['cost'] is None and not r['costDetails'], r
+
+
+def t_price_unit_rate_not_total():
+    # Per-month / per-person rates share the summary table with the total;
+    # the denominator is dropped by the amount patterns, so the rate would
+    # pose as the total.
+    text = ('开标一览表\n小写：22000.00元/月\n服务单价 340000/人月\n'
+            '投标总价：1120000元\n')
+    r = m.extract_prices(text)
+    assert r['totalPriceInTax'] == 1120000, r
+
+
+def t_price_fee_penalty_labels_excluded():
+    text = ('投标函\n违约金：人民币50000元\n招标代理服务费：￥30000\n'
+            '开标一览表\n小写：980000.00元\n')
+    r = m.extract_prices(text)
+    assert r['totalPriceInTax'] == 980000, r
+
+
+def t_price_bond_echo_cn_numeral():
+    # '投标保证金（大写）：贰万元整' must seed the bond echo set so the
+    # unlabeled '人民币：20000' echo is skipped anywhere in the document.
+    text = ('投标保证金（大写）：贰万元整\n其他材料\n人民币：20000\n'
+            '开标一览表\n小写：980000.00元\n')
+    r = m.extract_prices(text)
+    assert r['totalPriceInTax'] == 980000, r
+
+
+def t_price_tax_pair_date_runs_rejected():
+    # '签订 20250826 / 生效 20250829 / 3' — two calendar dates + a small
+    # digit pass the old ratio check (1.0) and would pose as a 20M price pair.
+    r = m.extract_prices('开标一览表\n签订 20250826\n生效 20250829\n3\n')
+    assert r['totalPriceInTax'] is None and r['totalPrice'] is None, r
+
+
+def t_price_cost_line_flattened_variants():
+    # 序号 prefixes, colons, thousands commas and 万元 magnitudes are all
+    # common in flattened cost tables.
+    r = m.extract_prices('成本明细\n1. 材料费：340,000.00元\n（二）人工成本：350万\n')
+    costs = {d['priceName']: d['totalPrice'] for d in r['costDetails']}
+    assert costs.get('材料费') == 340000, costs
+    assert costs.get('人工成本') == 3500000, costs
+
+
+def t_price_cost_date_run_rejected():
+    # Glued date runs ('检测20250826批次') are not 20M cost items.
+    r = m.extract_prices('检测报告\n检测20250826批次\n差旅费20250826\n')
+    assert not r['costDetails'] and r['cost'] is None, r
+
+
 def main():
     for name, fn in sorted(globals().items()):
         if name.startswith('t_') and callable(fn):

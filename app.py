@@ -1207,6 +1207,20 @@ def _is_person_name(name):
         '法定代表人', '授权代表', '项目负责人', '技术负责人', '项目经理',
     )
 
+    # Duty-label suffix rule: any CJK string ENDING in a duty/role word —
+    # simplified or traditional ('任中职务', '现任职务', '任何岗位', '任職務'…) —
+    # is a form/table column label, never a person name, even when it starts
+    # with a real surname like 任. Observed: '任中职务 项目经理' rows fed the
+    # column label into all_persons as a project_manager.
+    if re.search(r'(?:职务|職務|岗位|崗位|职称|職稱|角色|职责|職責)$', name_stripped):
+        return False
+    # Collective-word rule: section headers and table captions
+    # ('项目团队', '关键人员', '管理人员', '项目成员', '项目分工', '项目部'…)
+    # start with real surnames (项/关/管) and would pass every check below,
+    # but no genuine person name contains a collective/organizational word.
+    if re.search(r'项目|項目|人员|人員|团队|團隊|成员|成員|机构|機構|分工|部门|部門|简历|簡歷|配备|配備|配置|一览|一覽', name_stripped):
+        return False
+
     # Minority-ethnic names use a middle-dot separator (· U+00B7, •, ・),
     # e.g. 阿不来提·买买提, 迪力夏提·阿不都·热合曼. Validate each CJK
     # segment independently with the same filters as plain names.
@@ -1401,16 +1415,28 @@ def _extract_from_personnel_table(section_text, info):
     # 职称/级别词（表格"职称"列的值，如"张然 中级 项目负责人"）— 绝不能当姓名
     _TITLE_WORDS = r'(?:高级|中级|初级|正高级|副高级|教授|副教授|讲师|助教|研究员|副研究员|工程师|高级工程师|助理工程师|技师|高级技师|助理)?'
     patterns = [
-        r'姓名[：:]\s*([一-鿿]{2,4}(?:[ 	]*[·•・][ 	]*[一-鿿]{2,4}){0,2})\s*.*?(?:职务|岗位|角色|职称)[：:]\s*([一-鿿]{2,10})',
+        # '姓名：...' and '职务：...' often sit on different lines in resume
+        # forms; the span may cross newlines but never another 姓名 label
+        # (which would pair this row's name with the NEXT row's role).
+        r'姓名[：:]\s*([一-鿿]{2,4}(?:[ 	]*[·•・][ 	]*[一-鿿]{2,4}){0,2})\s*(?:(?!姓名[：:])[\s\S]){0,60}?(?:职务|岗位|角色|职称)[：:]\s*([一-鿿]{2,10})',
         # Single space or tab between name and role is common in both docx
         # and PDF extraction ('王某某 项目经理'); require the role keyword
         # so a bare space-separated line cannot be a false positive.
         # PDF "序号 姓名 职称 分工" tables produce '张然 中级 项目负责人' —
         # allow one title word between name and role so 张然 is captured
         # instead of the 职称 column value 中级.
-        r'([一-鿿]{2,4}(?:[ 	]*[·•・][ 	]*[一-鿿]{2,4}){0,2})\s+' + _TITLE_WORDS + r'\s*(项目经理|项目负责人|技术负责人|技术总监|总工程师|安全员|质量员|施工员|材料员|资料员|造价员|预算员)',
+        # Flattened rows may also carry a duty-LABEL column between name and
+        # role ('陈某某 任中职务 项目经理'): skip one label word so the real
+        # name before it is captured instead of the label itself (which
+        # '任中职务' starts with surname 任 and would otherwise look like one).
+        # The colon/zero-space tolerance covers '陈某某 任中职务：项目经理';
+        # traditional label forms (任職務) are skipped the same way.
+        r'([一-鿿]{2,4}(?:[ 	]*[·•・][ 	]*[一-鿿]{2,4}){0,2})\s+(?:[一-鿿]{0,2}(?:职务|職務|岗位|崗位|职称|職稱|角色|职责|職責)[：:]?\s*)?' + _TITLE_WORDS + r'\s*(项目经理|项目负责人|技术负责人|技术总监|总工程师|安全员|质量员|施工员|材料员|资料员|造价员|预算员)',
         r'(项目经理|项目负责人|技术负责人|技术总监|总工程师)[：:]\s*([一-鿿](?:[ 	]*[一-鿿]){1,3}(?:[ 	]*[·•・][ 	]*[一-鿿](?:[ 	]*[一-鿿]){1,3}){0,2})(?![一-鿿])',
-        r'(项目经理|项目负责人|技术负责人|安全负责人)\s+([一-鿿]{2,4}(?:[ 	]*[·•・][ 	]*[一-鿿]{2,4}){0,2})(?![一-鿿])',
+        # Role-then-name pairs must stay on ONE line: with '\s+' the role at
+        # the end of one table row grabbed the next row's name
+        # ('王某某 项目经理\n李某某 施工员' made 李某某 a project_manager).
+        r'(项目经理|项目负责人|技术负责人|安全负责人)[ \t]+([一-鿿]{2,4}(?:[ 	]*[·•・][ 	]*[一-鿿]{2,4}){0,2})(?![一-鿿])',
         # Reversed label order: "职务：项目经理 ... 姓名：张三" (role first)
         r'(?:职务|岗位|职称)[：:]\s*([一-鿿]{2,10})\s*[\s\S]{0,60}?姓名[：:]\s*([一-鿿](?:[ 	]*[一-鿿]){1,3}(?:[ 	]*[·•・][ 	]*[一-鿿](?:[ 	]*[一-鿿]){1,3}){0,2})(?![一-鿿])',
         # Bare "姓名：张三" without a role label (name-only tables, resumes).
@@ -1418,8 +1444,16 @@ def _extract_from_personnel_table(section_text, info):
         # followed by a colon and never captured).
         r'姓名[：:]\s*([一-鿿](?:[ 	]*[一-鿿]){1,3}(?:[ 	]*[·•・][ 	]*[一-鿿](?:[ 	]*[一-鿿]){1,3}){0,2})(?![一-鿿]|：|:)',
     ]
-    for pat in patterns:
+    # 'role name' immediately before a match start means the pairing belongs
+    # to pattern 2 above ('项目经理 王某某 技术负责人 李四'): re-pairing that
+    # name with the FOLLOWING role would double-tag the person. A post-filter
+    # instead of a lookbehind so any run of spaces/tabs is covered.
+    _ROLE_BEFORE_NAME = re.compile(
+        r'(?:项目经理|项目负责人|技术负责人|安全负责人|技术总监|总工程师)[ \t]+$')
+    for pi, pat in enumerate(patterns):
         for m in re.finditer(pat, section_text):
+            if pi == 1 and _ROLE_BEFORE_NAME.search(section_text, 0, m.start()):
+                continue
             groups = m.groups()
             if len(groups) == 2:
                 # Determine which is name and which is role.
@@ -1444,6 +1478,10 @@ def _extract_from_personnel_table(section_text, info):
                 continue
             # Validate the name looks like an actual person name (not column label, company name, etc.)
             if not _is_person_name(name):
+                continue
+            # Same (name, role) pair can be matched by several patterns on the
+            # same row ('杨伟 任中职务 项目经理' + '...项目经理\n杨伟'); keep one.
+            if any(p['name'] == name and p['role'] == role for p in info['all_persons']):
                 continue
             info['all_persons'].append({'name': name, 'role': role, 'confidence': 0.80})
 
@@ -2215,7 +2253,16 @@ _AMT = r'(?:' + _AMT_ARABIC + r'|' + _AMT_CN + r')'
 _NON_BID_AMOUNT_CTX = (r'(?:保证金|投标保证|押金|投标保函|银行保函|履约保证|'
                        r'合同金额|合同价款|签约合同价|中标金额|结算金额|成交金额|'
                        r'售价|注册[资]*金|出资|暂列金额|'
-                       r'最高限价|招标控制价|控制价|拦标价|暂估价|预算[金额财]*[额为]?)')
+                       r'最高限价|招标控制价|控制价|拦标价|暂估价|预算[金额财]*[额为]?|'
+                       r'违约金|赔偿金|罚金|代理服务费|中标服务费|交易服务费|'
+                       r'平台使用费|工本费|标书款|手续费|佣金)')
+
+# Bank payment-voucher markers. Unlike the label list above these never sit
+# on the amount's own line (PDF extraction puts each table cell on its own
+# line), so they need a WINDOW check around the amount, not a line-prefix one.
+_PAYMENT_VOUCHER_CTX = re.compile(
+    r'(?:账号|开户行|开户银行|电汇|汇款|转账|缴款|制单|回单|贷记|银行流水|'
+    r'收款人|付款人|出票|票据|凭证|结算凭证|业务回执|承兑|汇票|支票|本票|网银)')
 
 
 def _amount_in_non_bid_context(search_text, pos):
@@ -2229,6 +2276,45 @@ def _amount_in_non_bid_context(search_text, pos):
     """
     line_start = search_text.rfind('\n', 0, pos) + 1
     return bool(re.search(_NON_BID_AMOUNT_CTX, search_text[line_start:pos]))
+
+
+def _amount_in_payment_voucher(search_text, pos, window=160):
+    """True when the amount at `pos` sits inside a bank payment voucher.
+
+    Bid-bond transfer slips print the amount as '金额 / 人民币：22,000.00 /
+    人民币：贰万贰仟元整 / 用途 / 制单日期…' — the banking words live on
+    NEIGHBOURING lines (one cell per line in PDF extraction), so the
+    line-prefix check above never sees them. A bounded window around the
+    amount catches them; the marker words do not occur near real bid totals.
+    """
+    lo = max(0, pos - window)
+    hi = min(len(search_text), pos + window)
+    return bool(_PAYMENT_VOUCHER_CTX.search(search_text, lo, hi))
+
+
+def _amount_is_unit_rate(search_text, end):
+    """True when the amount ending at `end` is a UNIT RATE, not a total.
+
+    Service bids print per-month / per-person rates ('22000元/月',
+    '340000/人月', '1200元/次') in the same summary tables; the amount
+    patterns drop the denominator and the rate would pose as the bid total.
+    Any slash directly after the amount (or 元 + 人月/每…) marks a rate.
+    """
+    tail = search_text[end:end + 12]
+    return bool(re.match(r'[ \t]*(?:元[ \t]*)?[/／]|'
+                         r'[ \t]*元[ \t]*(?:人月|每)', tail))
+
+
+def _is_yyyymmdd(v):
+    """True when the number parses as a calendar date YYYYMMDD (1990-2099).
+
+    Digit runs like 20250826 appear in flattened tables as 签订/生效 dates
+    and must never be read as amounts."""
+    s = str(int(v))
+    if len(s) != 8:
+        return False
+    y, mo, d = int(s[:4]), int(s[4:6]), int(s[6:8])
+    return 1990 <= y <= 2099 and 1 <= mo <= 12 and 1 <= d <= 31
 
 
 def _fw_digits_to_ascii(s):
@@ -2300,6 +2386,21 @@ def extract_prices(text):
     # text search to avoid matching bid bonds, deposits, or other small amounts.
     bid_section = _find_bid_summary_section(text)
 
+    # ── Bond-amount echo set ──
+    # The bid bond value echoes through the document: labeled once in the
+    # summary table ('投标保证金 2.2万元' or '投标保证金（大写）：贰万元整') and
+    # again, UNLABELED, on the bank transfer slip ('金额 / 人民币:22,000.00 /
+    # 人民币:贰万贰仟元整'). Collect every explicitly bond-labeled amount (Arabic
+    # or Chinese-numeral form) so unlabeled echoes can be skipped anywhere.
+    bond_amounts = set()
+    for bm in re.finditer(
+            r'(?:投标保证金|履约保证金|投标保函|保证金|押金)[\s\S]{0,30}?'
+            r'([\d,]+(?:\.\d{1,2})?\s*万元?|[壹贰叁肆伍陆柒捌玖拾佰仟万亿零]{2,20})',
+            text):
+        val = _parse_amount(bm.group(1))
+        if val >= 100:
+            bond_amounts.add(round(val, 2))
+
     # ── Channel 1: Symbol-based (￥/¥/CNY/RMB) ── confidence: 0.95
     # Search bid_section first (most reliable), then fall back to the full
     # text: a bid-summary keyword occurrence may start AFTER the actual price
@@ -2310,7 +2411,11 @@ def extract_prices(text):
         r'(?:CNY|RMB)\s*[￥¥]?\s*[：:]?\s*(' + _AMT_ARABIC + r')',
         # '￥12.5万元' keeps its 万元 magnitude via _AMT_ARABIC suffix
         r'[￥¥]\s*[：:]?\s*(' + _AMT + r')',
-        r'人民币[：:\s]+(' + _AMT + r')',
+        # 人民币 and its amount must stay on ONE line: with '\s+' the label
+        # at the end of '2000万元人民币' grabs the next line's '2014年1月20日'
+        # (a founding date), and the later-nulled value blocks all lower
+        # channels from retrying.
+        r'人民币[：:]?[ \t]*(' + _AMT + r')',
         r'(?:CNY|RMB)\s*(' + _AMT_ARABIC + r')',
         r'USD\s*([\d,]+\.?\d*)',
     ]
@@ -2329,7 +2434,20 @@ def extract_prices(text):
                 # ('招标文件售价：人民币1000元'), tender ceilings ('最高限价…')
                 if _amount_in_non_bid_context(search_text, m.start()):
                     continue
+                # Skip bank payment vouchers (bond transfer slips) and any
+                # echo of an explicitly bond-labeled amount.
+                if _amount_in_payment_voucher(search_text, m.start()):
+                    continue
+                # A digit run directly followed by 年 is a date year
+                # ('2014年1月20日'), never an amount.
+                if re.match(r'[ \t]*年', search_text[m.end():]):
+                    continue
+                # Unit rates ('22000元/月', '340000/人月') are not totals.
+                if _amount_is_unit_rate(search_text, m.end()):
+                    continue
                 val = _parse_amount(m.group(1))
+                if any(abs(val - b) < 1 for b in bond_amounts):
+                    continue
                 if val >= 100:
                     result['totalPriceInTax'] = val
                     result['totalPrice'] = val
@@ -2341,7 +2459,8 @@ def extract_prices(text):
     # ── Channel 2: Label-based (标签通道) ── confidence: 0.90
     if result['totalPriceInTax'] is None:
         label_patterns = [
-            r'人民币[：:\s]+(' + _AMT + r')',
+            # Same-line 人民币 prefix (see Channel 1 note on the newline grab)
+            r'人民币[：:]?[ \t]*(' + _AMT + r')',
             r'小写[（(]?\s*[:：]?\s*[）)]?\s*(' + _AMT_ARABIC + r')',
             r'(?:投标总价|投标总报价|总报价|报价金额|投标报价|项目总价|投标总金额|总金额|'
             r'最终报价|首轮报价|响应报价|谈判报价|含税总报价|投标金额|响应文件总价|'
@@ -2362,7 +2481,15 @@ def extract_prices(text):
                 for m in re.finditer(pat, search_text):
                     if _amount_in_non_bid_context(search_text, m.start()):
                         continue
+                    if _amount_in_payment_voucher(search_text, m.start()):
+                        continue
+                    if re.match(r'[ \t]*年', search_text[m.end():]):
+                        continue
+                    if _amount_is_unit_rate(search_text, m.end()):
+                        continue
                     val = _parse_amount(m.group(1))
+                    if any(abs(val - b) < 1 for b in bond_amounts):
+                        continue
                     if val >= 100:
                         result['totalPriceInTax'] = val
                         result['totalPrice'] = val
@@ -2618,6 +2745,22 @@ def _find_bid_summary_section(text):
                 idx = text.find(kw, idx + 1)
                 continue
 
+            # Same for curly-quoted references: '等于"开标一览表"中的投标总价'
+            # mentions the table in a note; it is not a section header either.
+            if line_prefix.endswith('“') or line_prefix.endswith('‘'):
+                idx = text.find(kw, idx + 1)
+                continue
+
+            # Skip TOC entries WITHOUT dot leaders and other verbal mentions:
+            # many extractors drop the dots, leaving '开标一览表\n三、分项报价表
+            # \n四、…\n11\n12' where every line is a title or page number. A REAL
+            # summary table shows a price signal within ~400 chars of its header
+            # (小写：/大写：/￥/CN-numeral amounts/5+ digit numbers).
+            if not re.search(r'(?:小写|大写)\s*[：:]|￥|¥|\d{5,}|\d[，,]\d{3}|'
+                             r'[壹贰叁肆伍陆柒捌玖][佰仟万亿]', text[idx:idx + 400]):
+                idx = text.find(kw, idx + 1)
+                continue
+
             # Skip inline list items like "（2）开标一览表；" or "1）开标一览表；"
             # These are bid-letter content listings, not actual section headers.
             if re.search(r'[（(]\d+[）)]\s*$', line_prefix):
@@ -2693,6 +2836,10 @@ def _extract_tax_decomposition(text, section, result):
                 if is_plain_pair:
                     hi, lo = max(v1, v2), min(v1, v2)
                     if lo == 0 or hi / lo > 1.25:
+                        continue
+                    # Digit runs that parse as YYYYMMDD are table dates
+                    # ('签订 20250826 / 生效 20250829 / 3'), not a price pair.
+                    if _is_yyyymmdd(v1) or _is_yyyymmdd(v2):
                         continue
                 result['totalPrice'] = v1
                 result['totalPriceInTax'] = v2
@@ -2848,12 +2995,16 @@ def _extract_structured_items(text, result):
             })
 
     # Pattern C: Whitespace-separated cost lines (original pattern, kept as fallback)
+    # Tolerates flattened-cell shapes: 序号 prefixes ('1. ' / '（二）'), an
+    # optional colon between name and value ('材料费：340,000.00'), thousands
+    # commas, and 万元 magnitudes.
     cost_pattern = re.compile(
-        r'(?:^|\n)\s*([一-鿿]{2,20}(?:费|成本|支出|投入|工资|薪酬|酬金|折旧|摊销|租赁|租金|'
+        r'(?:^|\n)\s*(?:[（(][一二三四五六七八九十\d]+[）)]\s*|\d+[.、]\s*)?'
+        r'([一-鿿]{2,20}(?:费|成本|支出|投入|工资|薪酬|酬金|折旧|摊销|租赁|租金|'
         r'维护|保养|检测|试验|测试|设计|开发|研制|采购|运输|差旅|会议|培训|办公|印刷|'
         r'咨询|审计|评估|保险|税费|利息|手续费|管理|服务|劳务|材料|设备|仪器|软件|'
         r'许可|专利|著作|技术|咨询|外协|加工|燃料|动力|事务|不可预见|预备|风险|'
-        r'收益|利润|税金|公积金|基金)[一-鿿]{0,6})\s+(\d{4,}(?:\.\d{2})?)',
+        r'收益|利润|税金|公积金|基金)[一-鿿]{0,6})\s*[：:]?\s*(\d[\d,]*(?:\.\d{1,2})?)\s*(万元?)?',
         re.MULTILINE
     )
     for m in cost_pattern.finditer(text):
@@ -2861,8 +3012,23 @@ def _extract_structured_items(text, result):
         name = _norm_cost_name(raw_name)
         if not name or name in seen_names:
             continue
-        val = float(m.group(2).replace(',', ''))
-        if val == 0:
+        digits = m.group(2)
+        val = float(digits.replace(',', ''))
+        if m.group(3):  # 万元 magnitude suffix — keep the real scale
+            val *= 10000 if m.group(3).startswith('万') else 1
+        elif len(digits.replace(',', '').replace('.', '')) < 4:
+            # Bare numbers keep the old \d{4,} guard (skip small values/years)
+            seen_names.add(name)
+            continue
+        # Bare 8-digit runs that parse as YYYYMMDD are table dates, not costs
+        if not m.group(3) and _is_yyyymmdd(val):
+            seen_names.add(name)
+            continue
+        # Skip past-performance tables: a 业绩一览表 lists HISTORICAL contract
+        # amounts ('合同金额(元)' header, project-name fragments like
+        # '站产品采购' split across cells) — never this bid's cost items.
+        if re.search(r'(?:合同金额|合同价款|签约合同价|业绩一览|类似项目|项目业绩|业绩证明)',
+                     text[max(0, m.start() - 300):m.start()]):
             seen_names.add(name)
             continue
         # ── Additional filtering for Pattern C (global text search) ──
@@ -2882,12 +3048,14 @@ def _extract_structured_items(text, result):
         if re.search(r'(?:成立于|于$|成为|自$|见后附|次会议|授权)', name):
             seen_names.add(name)
             continue
-        # Validate the number appears near a currency indicator (元/万) within 20 chars
-        match_end = m.end()
-        post_context = text[match_end:match_end + 30]
-        if not re.search(r'(?:元|万|万元|CNY|RMB|￥|¥)', post_context):
-            seen_names.add(name)
-            continue
+        # Validate the number appears near a currency indicator (元/万) within
+        # 20 chars — an explicit 万元 suffix captured above already proves it.
+        if not m.group(3):
+            match_end = m.end()
+            post_context = text[match_end:match_end + 30]
+            if not re.search(r'(?:元|万|万元|CNY|RMB|￥|¥)', post_context):
+                seen_names.add(name)
+                continue
         if val >= 100:
             seen_names.add(name)
             if '收益' in name or '利润' in name:
@@ -5706,9 +5874,13 @@ def _write_history_entry(history_results, saved, saved_refs):
     history_id = datetime.now().strftime('%Y%m%d_%H%M%S_') + uuid.uuid4().hex[:12]
     # history_id is fully server-generated; assert its shape before it reaches
     # the filesystem so no caller-supplied component can ever become part of
-    # the path.
+    # the path. A containment check on the resolved path backs the regex up.
     if not re.fullmatch(r'\d{8}_\d{6}_[0-9a-f]{12}', history_id):
         raise ValueError(f'unexpected history id: {history_id!r}')
+    history_path = os.path.join(HISTORY_DIR, history_id + '.json')
+    if not os.path.realpath(history_path).startswith(
+            os.path.realpath(HISTORY_DIR) + os.sep):
+        raise ValueError('history path escaped HISTORY_DIR')
     history_entry = {
         'id': history_id,
         'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
@@ -5724,7 +5896,7 @@ def _write_history_entry(history_results, saved, saved_refs):
         'total_pairs': history_results['text_similarity'].get('total_pairs', 0),
         'data': history_results
     }
-    with open(os.path.join(HISTORY_DIR, f'{history_id}.json'), 'w', encoding='utf-8') as f:
+    with open(history_path, 'w', encoding='utf-8') as f:
         json.dump(history_entry, f, ensure_ascii=False)
     return history_id
 
