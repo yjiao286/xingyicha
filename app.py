@@ -780,7 +780,11 @@ _ocr_checked = False
 
 
 def _get_ocr_fn():
-    """Lazy-init the OCR callable (pdf_path, page_idx) -> str, or None.
+    """Lazy-init the OCR callable (fitz_page, dpi=200) -> str, or None.
+
+    The page (from the caller's already-open PyMuPDF document) is rendered
+    straight to a numpy array — a PNG encode/decode round trip here cost
+    ~0.2-0.5s per 200-DPI A4 page.
 
     Dependencies (pymupdf, rapidocr_onnxruntime) are imported lazily so the
     base deployment keeps its minimal footprint; absence degrades gracefully.
@@ -790,16 +794,21 @@ def _get_ocr_fn():
         return _ocr_fn
     _ocr_checked = True
     try:
-        import fitz
+        import fitz  # capability check: pages are rendered by the caller's doc
         import numpy as np
         import cv2
         from rapidocr_onnxruntime import RapidOCR
         engine = RapidOCR()
 
-        def _ocr_page(pdf_path, page_idx, dpi=200):
-            with fitz.open(pdf_path) as doc:
-                png = doc[page_idx].get_pixmap(dpi=dpi).tobytes('png')
-            img = cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_COLOR)
+        def _ocr_page(page, dpi=200):
+            pix = page.get_pixmap(dpi=dpi, alpha=False)
+            img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
+                pix.height, pix.width, pix.n)
+            # fitz samples are RGB; the engine consumes cv2-style BGR
+            if pix.n == 3:
+                img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+            elif pix.n == 1:
+                img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
             result, _ = engine(img)
             if not result:
                 return ''
@@ -889,9 +898,25 @@ def extract_text_with_tables(filepath, max_pages=MAX_PDF_PAGES, on_progress=None
         ocr_pages_done = 0
         ocr_time_spent = 0.0
 
-        # Structural table state (PyMuPDF, lazily opened on first trigger page)
+        # Shared PyMuPDF document: opened lazily at most once and reused by
+        # both the scanned-page OCR fallback and the structural table channel
+        # (reopening the file per OCR page re-parsed the whole xref each time).
+        # None when PyMuPDF is unavailable or the open fails.
         fitz_doc = None
-        fitz_tried = False
+        fitz_open_tried = False
+
+        def _open_fitz():
+            nonlocal fitz_doc, fitz_open_tried
+            if not fitz_open_tried:
+                fitz_open_tried = True
+                try:
+                    import fitz
+                    fitz_doc = fitz.open(filepath)
+                except Exception as e:
+                    logger.info('PyMuPDF unavailable, scanned-page OCR and PDF '
+                                'table extraction stay disabled: %s', e)
+            return fitz_doc
+
         table_pages_done = 0
 
         for i, page in enumerate(reader.pages):
@@ -923,7 +948,8 @@ def extract_text_with_tables(filepath, max_pages=MAX_PDF_PAGES, on_progress=None
                 if ocr_fn and budget_ok and pages_ok:
                     t0 = time.time()
                     try:
-                        ocr_text = ocr_fn(filepath, i)
+                        doc = _open_fitz()
+                        ocr_text = ocr_fn(doc[i]) if doc is not None else ''
                     except Exception as e:
                         logger.warning('OCR failed on %s page %d: %s', fname, i + 1, e)
                         ocr_text = ''
@@ -950,18 +976,11 @@ def extract_text_with_tables(filepath, max_pages=MAX_PDF_PAGES, on_progress=None
             tbl_text = ''
             if has_text and table_pages_done < MAX_PDF_TABLE_PAGES \
                     and _PDF_TABLE_TRIGGER.search(text):
-                if not fitz_tried:
-                    fitz_tried = True
-                    try:
-                        import fitz
-                        fitz_doc = fitz.open(filepath)
-                    except Exception as e:
-                        logger.info('PyMuPDF unavailable, PDF tables keep the '
-                                    'flattened-text heuristic only: %s', e)
-                if fitz_doc is not None:
+                doc = _open_fitz()
+                if doc is not None:
                     _check_cancelled(cancel_event)
                     try:
-                        tbl_text = _fitz_page_tables_as_pipes(fitz_doc[i])
+                        tbl_text = _fitz_page_tables_as_pipes(doc[i])
                     except Exception as e:
                         logger.warning('PDF table extraction failed on %s '
                                        'page %d: %s', fname, i + 1, e)
