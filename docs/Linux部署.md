@@ -7,6 +7,10 @@
 | AppImage | `XingYiCha-x86_64.AppImage` | 单文件，`chmod +x` 后双击即运行 |
 | 便携版 | `XingYiCha-linux-x86_64.tar.gz` | 解压即用 |
 
+> 信创环境（银河麒麟 V10，含 x86_64 海光/兆芯与 aarch64 飞腾/鲲鹏）请参见
+> [银河麒麟部署.md](银河麒麟部署.md)——注意 glibc 兼容性、KYLSEC 放行与
+> 离线安装事项。
+
 ## 一、获取（云端构建，与 Windows 版同源）
 
 1. 登录 GitHub（私有仓库需有权限的账号）

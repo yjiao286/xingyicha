@@ -25,6 +25,12 @@
 
 启动后自动打开浏览器访问 `http://127.0.0.1:5001`，终端窗口关闭即停止服务。
 
+> **⚠️ 前置条件（仅当标书含老格式 `.doc`）**：`.docx` / `.pdf` / `.txt` /
+> `.xlsx` / 扫描件 OCR 均开箱即用；`.doc` 的**正文提取**需先安装
+> LibreOffice（`brew install --cask libreoffice`，或
+> [官网](https://www.libreoffice.org/) 下载 pkg 安装）。未安装时 `.doc`
+> 正文自动跳过，其元数据比对及全部其他格式、维度不受影响。
+
 ## 三、功能说明
 
 | 功能 | 表现 |
