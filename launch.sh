@@ -1,7 +1,7 @@
 #!/bin/bash
 # ── 星易查 - 围串标风险识别系统 启动脚本 ──
 
-PROJECT_DIR="/Users/dev/Desktop/围串标/围串标风险识别APPV2"
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PORT=5001
 URL="http://localhost:${PORT}"
 

@@ -581,8 +581,8 @@ def _glue(text):
 
 def t_glue_phrases_multi_position():
     # 法定\n代\n表\n人 split across several line breaks -> one keyword.
-    assert _glue('本人张某某系北京交\n通大学的法定\n代\n表\n人（单位负责人）') == \
-        '本人张某某系北京交\n通大学的法定代表人（单位负责人）'
+    assert _glue('本人张某某系北京某\n某大学的法定\n代\n表\n人（单位负责人）') == \
+        '本人张某某系北京某\n某大学的法定代表人（单位负责人）'
     # 委托代\n理人
     assert _glue('现委托李四为我方委托代\n理人。代理人行使签署权。') == \
         '现委托李四为我方委托代理人。代理人行使签署权。'
@@ -606,9 +606,9 @@ def t_cjk_ws_normalized():
 
 def t_join_split_names():
     # 换行拆词拼接
-    assert m._join_split_names('本人张某某系的法人') == '本人张某某系的法人'
+    assert m._join_split_names('本人张\n某某系的法人') == '本人张某某系的法人'
     # 空格列间距不得拼接（否则 '国 联系' / '建国 联系' 吞掉标签）
-    assert m._join_split_names('张某某') == '张某某'
+    assert m._join_split_names('张 某某') == '张 某某'
     assert m._join_split_names('职务：项目经理 姓名：王强 联系电话：13800000000') == \
         '职务：项目经理 姓名：王强 联系电话：13800000000'
 

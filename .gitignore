@@ -25,6 +25,7 @@ history/
 # 便携打包产物（体积大，本地生成）
 build/cache/
 build/pyinstaller/
+build/*.log
 dist/
 
 # 备份文件
