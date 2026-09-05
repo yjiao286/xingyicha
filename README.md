@@ -15,8 +15,8 @@
 ## 下载与安装
 
 桌面版免 Python、免命令行。到
-[Releases 页面](https://github.com/yjiao286/bid-rigging-risk-analysis/releases)
-（当前最新 [v1.4.0](https://github.com/yjiao286/bid-rigging-risk-analysis/releases/tag/v1.4.0)）
+[Releases 页面](https://github.com/yjiao286/xingyicha/releases)
+（当前最新 [v1.5.0](https://github.com/yjiao286/xingyicha/releases/tag/v1.5.0)）
 按操作系统下载对应附件：
 
 | 操作系统 / 环境 | 下载文件 | 安装方式 | 详细指南 |
