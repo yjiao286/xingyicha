@@ -1199,7 +1199,7 @@ def _is_person_name(name):
         # Function words that are not names but pass 2-char CJK validation
         '本人', '我方', '我们', '该人', '此人', '对方', '甲方', '乙方', '丙方',
         # 职称/级别词 — PDF "姓名 职称 分工" tables put these in the 职称 column
-        # ('张然 中级 项目负责人'); they must never be captured as names.
+        # ('张伟 中级 项目负责人'); they must never be captured as names.
         '中级', '高级', '初级', '正高', '副高', '教授', '副教授', '讲师', '助教',
         '研究员', '副研究员', '工程师', '技师', '助理', '总工', '高工',
         # Table column labels / role words that look like names
@@ -1378,7 +1378,7 @@ def _extract_from_auth_section(section_text, info):
         if not m:
             # Spaced-name retry ('兹委托 李 明 同志为我方代理人'). The trailing
             # guard is safe HERE only because the strict pass above already
-            # handled zero-separator '现委托刘某某为…' forms, where 为 sits right
+            # handled zero-separator '现委托李四为…' forms, where 为 sits right
             # after the name and the guard would reject the correct capture.
             m = re.search(r'(?:兹委托|现委托|兹授权|现授权|特授权|特此委托)\s*'
                           r'([一-鿿](?:[ 	]*[一-鿿]){1,3}(?:[ 	]*[·•・][ 	]*[一-鿿](?:[ 	]*[一-鿿]){1,3}){0,2})(?![一-鿿])\s*'
@@ -1415,7 +1415,7 @@ _ROLE_KEYWORDS = [
 
 def _extract_from_personnel_table(section_text, info):
     """Extract project members from personnel/team tables."""
-    # 职称/级别词（表格"职称"列的值，如"张然 中级 项目负责人"）— 绝不能当姓名
+    # 职称/级别词（表格"职称"列的值，如"张伟 中级 项目负责人"）— 绝不能当姓名
     _TITLE_WORDS = r'(?:高级|中级|初级|正高级|副高级|教授|副教授|讲师|助教|研究员|副研究员|工程师|高级工程师|助理工程师|技师|高级技师|助理)?'
     patterns = [
         # '姓名：...' and '职务：...' often sit on different lines in resume
@@ -1423,22 +1423,22 @@ def _extract_from_personnel_table(section_text, info):
         # (which would pair this row's name with the NEXT row's role).
         r'姓名[：:]\s*([一-鿿]{2,4}(?:[ 	]*[·•・][ 	]*[一-鿿]{2,4}){0,2})\s*(?:(?!姓名[：:])[\s\S]){0,60}?(?:职务|岗位|角色|职称)[：:]\s*([一-鿿]{2,10})',
         # Single space or tab between name and role is common in both docx
-        # and PDF extraction ('王某某 项目经理'); require the role keyword
+        # and PDF extraction ('王强 项目经理'); require the role keyword
         # so a bare space-separated line cannot be a false positive.
-        # PDF "序号 姓名 职称 分工" tables produce '张然 中级 项目负责人' —
-        # allow one title word between name and role so 张然 is captured
+        # PDF "序号 姓名 职称 分工" tables produce '张伟 中级 项目负责人' —
+        # allow one title word between name and role so 张伟 is captured
         # instead of the 职称 column value 中级.
         # Flattened rows may also carry a duty-LABEL column between name and
-        # role ('陈某某 任中职务 项目经理'): skip one label word so the real
+        # role ('陈刚 任中职务 项目经理'): skip one label word so the real
         # name before it is captured instead of the label itself (which
         # '任中职务' starts with surname 任 and would otherwise look like one).
-        # The colon/zero-space tolerance covers '陈某某 任中职务：项目经理';
+        # The colon/zero-space tolerance covers '陈刚 任中职务：项目经理';
         # traditional label forms (任職務) are skipped the same way.
         r'([一-鿿]{2,4}(?:[ 	]*[·•・][ 	]*[一-鿿]{2,4}){0,2})\s+(?:[一-鿿]{0,2}(?:职务|職務|岗位|崗位|职称|職稱|角色|职责|職責)[：:]?\s*)?' + _TITLE_WORDS + r'\s*(项目经理|项目负责人|技术负责人|技术总监|总工程师|安全员|质量员|施工员|材料员|资料员|造价员|预算员)',
         r'(项目经理|项目负责人|技术负责人|技术总监|总工程师)[：:]\s*([一-鿿](?:[ 	]*[一-鿿]){1,3}(?:[ 	]*[·•・][ 	]*[一-鿿](?:[ 	]*[一-鿿]){1,3}){0,2})(?![一-鿿])',
         # Role-then-name pairs must stay on ONE line: with '\s+' the role at
         # the end of one table row grabbed the next row's name
-        # ('王某某 项目经理\n李某某 施工员' made 李某某 a project_manager).
+        # ('王强 项目经理\n李勇 施工员' made 李勇 a project_manager).
         r'(项目经理|项目负责人|技术负责人|安全负责人)[ \t]+([一-鿿]{2,4}(?:[ 	]*[·•・][ 	]*[一-鿿]{2,4}){0,2})(?![一-鿿])',
         # Reversed label order: "职务：项目经理 ... 姓名：张三" (role first)
         r'(?:职务|岗位|职称)[：:]\s*([一-鿿]{2,10})\s*[\s\S]{0,60}?姓名[：:]\s*([一-鿿](?:[ 	]*[一-鿿]){1,3}(?:[ 	]*[·•・][ 	]*[一-鿿](?:[ 	]*[一-鿿]){1,3}){0,2})(?![一-鿿])',
@@ -1448,7 +1448,7 @@ def _extract_from_personnel_table(section_text, info):
         r'姓名[：:]\s*([一-鿿](?:[ 	]*[一-鿿]){1,3}(?:[ 	]*[·•・][ 	]*[一-鿿](?:[ 	]*[一-鿿]){1,3}){0,2})(?![一-鿿]|：|:)',
     ]
     # 'role name' immediately before a match start means the pairing belongs
-    # to pattern 2 above ('项目经理 王某某 技术负责人 李四'): re-pairing that
+    # to pattern 2 above ('项目经理 王强 技术负责人 李四'): re-pairing that
     # name with the FOLLOWING role would double-tag the person. A post-filter
     # instead of a lookbehind so any run of spaces/tabs is covered.
     _ROLE_BEFORE_NAME = re.compile(
@@ -1483,7 +1483,7 @@ def _extract_from_personnel_table(section_text, info):
             if not _is_person_name(name):
                 continue
             # Same (name, role) pair can be matched by several patterns on the
-            # same row ('杨伟 任中职务 项目经理' + '...项目经理\n杨伟'); keep one.
+            # same row ('杨帆 任中职务 项目经理' + '...项目经理\n杨帆'); keep one.
             if any(p['name'] == name and p['role'] == role for p in info['all_persons']):
                 continue
             info['all_persons'].append({'name': name, 'role': role, 'confidence': 0.80})
@@ -1700,7 +1700,7 @@ def _clean_phone(v):
         return v
     v = re.sub(r'^[^\d]+', '', str(v).strip())
     v = re.sub(r'[^0-9\-]+$', '', v).strip()
-    # PDF column padding inserts spaces inside a landline ('010 - 5168 3081');
+    # PDF column padding inserts spaces inside a landline ('010 - 1234 5678');
     # keep the dash structure but remove the padding.
     v = re.sub(r'(?<=\d)[ \t]+(?=\d)', '', v)
     v = re.sub(r'(?<=\d)[ \t]*-[ \t]*(?=\d)', '-', v)
@@ -1773,16 +1773,16 @@ def _normalize_cjk_whitespace(text):
 # string (the full 百家姓 includes rare single-char surnames like 国, which
 # in '国 联系' style column-separated text would wrongly merge into a name).
 # Only newline breaks are joined, never plain spaces: column padding would
-# otherwise swallow the next label ('王某某 联系电话').
+# otherwise swallow the next label ('王强 联系电话').
 _SURNAMES = '王李张刘陈杨黄赵周吴徐孙马胡朱郭何罗高林郑梁谢唐宋韩冯于董萧程曹袁邓许傅沈曾彭吕苏卢蒋蔡贾丁魏薛叶阎余潘杜戴夏钟汪田任姜范方石姚谭廖邹熊金陆郝孔白崔康毛邱秦江史顾侯邵孟龙万段雷钱汤尹易常武乔贺赖龚文'
 
 
 def _join_split_names(text):
     """Re-join a person name split at a LINE BREAK right after the surname.
 
-    '王\\n稼琼' -> '王某某'. Two passes because re.sub does not rescan a
+    '张某某' -> '张某某'. Two passes because re.sub does not rescan a
     replacement, so a name whose pieces re-join twice settles on the second
-    pass. Deliberately newline-only: space-separated '王 建国 联系' must not
+    pass. Deliberately newline-only: space-separated '张某某 联系' must not
     be re-glued (column padding would swallow label fragments).
     """
     pat = re.compile(rf'([{_SURNAMES}])\s*\n\s*([一-鿿]{{1,2}})')
@@ -1906,7 +1906,7 @@ def extract_personnel(text):
     text = re.sub(r'法\s*\n\s*定代表人', '法定代表人', text)
     text = re.sub(r'授权委\s*\n\s*托书', '授权委托书', text)
     text = re.sub(r'供应\s*\n\s*商名称', '供应商名称', text)
-    # Fix common name splits: "王\n稼琼" → "王某某" (only when first char is a
+    # Fix common name splits: "张某某" → "张某某" (only when first char is a
     # surname; the source module-level constant covers the full 百家姓). Two
     # passes so a name broken at two whitespace boundaries settles on the 2nd.
     text = _join_split_names(text)
@@ -1994,9 +1994,9 @@ def extract_personnel(text):
         info['phone'] = info['phones'][0]
 
     # Cover/bid-letter block (投标函) commonly carries the bidder's own
-    # 地址/电话/传真 lines ("投标人：X（盖单位章）…电话：010-51683081") —
+    # 地址/电话/传真 lines ("投标人：X（盖单位章）…电话：010-12345678") —
     # include cover_sections so a landline there is not missed. The capture
-    # tolerates the PDF column padding inside a landline ('010 - 5168 3081').
+    # tolerates the PDF column padding inside a landline ('010 - 1234 5678').
     for sec in auth_sections + personnel_sections + sig_sections + cover_sections:
         m = re.search(r'(?:电话|手机|联系电话|联系方式|移动电话|手机号码|电话号码)[：:]\s*(\d[\d\- \t]{6,19})', sec['text'])
         if m:
@@ -7104,6 +7104,12 @@ def delete_history(history_id):
         pass
     return jsonify({'error': '记录不存在'}), 404
 
+@app.route('/api/ping')
+def api_ping():
+    """Liveness marker for the desktop single-instance probe (_probe_own_instance)."""
+    return jsonify({'app': 'xingyicha', 'ok': True})
+
+
 @app.after_request
 def _nocache(response):
     """Disable caching for static assets during development only.
@@ -7116,8 +7122,100 @@ def _nocache(response):
     return response
 
 
-if __name__ == '__main__':
+def _open_page(url):
+    print(f'  正在打开页面: {url}')
     import webbrowser
+    webbrowser.open(url)
+
+
+def _probe_own_instance(preferred_port, span=10):
+    """Desktop single-instance probe: if another 星易查 server already answers
+    on 127.0.0.1 ports [preferred_port, preferred_port+span), return its URL.
+
+    A second launch of the frozen app becomes a page-opener for the running
+    instance instead of a duplicate server on a drifted port — both would
+    share the history dir and interleave writes. Loopback refusals are
+    instant, so the common (free-port) case costs one failed connect."""
+    import urllib.request
+    for cand in range(preferred_port, preferred_port + span):
+        try:
+            with urllib.request.urlopen(
+                    f'http://127.0.0.1:{cand}/api/ping', timeout=0.5) as resp:
+                body = resp.read().decode('utf-8', 'replace')
+            if resp.status == 200 and 'xingyicha' in body:
+                return f'http://127.0.0.1:{cand}'
+        except Exception:
+            continue
+    return None
+
+
+def _run_macos_gui(url, host, port):
+    """Frozen macOS entry: own the main thread with a minimal Cocoa app.
+
+    A bare console server in a .app bundle cannot answer Dock activation
+    (reopen) or quit Apple Events — the first launch pops the page, then
+    clicking the Dock icon does nothing and further attempts report 'the
+    application is not open anymore'. Running NSApplication on the main
+    thread gives the process a real event loop:
+      - Dock icon click / Finder relaunch -> reopen -> (re)open the page
+      - menu-bar status item: 打开页面 / 退出
+    waitress moves to a daemon worker thread (it is a thread pool anyway)
+    and dies with the process when the user quits. Returns True once the
+    user quit the GUI; False when AppKit is unavailable so the caller can
+    fall back to the plain console server."""
+    try:
+        from AppKit import (NSApplication, NSMenu, NSMenuItem, NSStatusBar,
+                            NSVariableStatusItemLength)
+        from Foundation import NSObject
+    except ImportError:
+        return False
+
+    class _Delegate(NSObject):
+        def applicationShouldHandleReopen_hasVisibleWindows_(self, sender, has_windows):
+            _open_page(self.page_url)
+            return True
+
+        def openPage_(self, sender):
+            _open_page(self.page_url)
+
+        def quit_(self, sender):
+            NSApplication.sharedApplication().terminate_(sender)
+
+    delegate = _Delegate.alloc().init()
+    delegate.page_url = url
+
+    nsapp = NSApplication.sharedApplication()
+    nsapp.setDelegate_(delegate)
+
+    status_item = NSStatusBar.systemStatusBar().statusItemWithLength_(
+        NSVariableStatusItemLength)
+    status_item.button().setTitle_('星')
+    menu = NSMenu.alloc().init()
+    item_open = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+        '打开页面', 'openPage:', '')
+    item_open.setTarget_(delegate)
+    menu.addItem_(item_open)
+    menu.addItem_(NSMenuItem.separatorItem())
+    item_quit = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+        '退出星易查', 'quit:', '')
+    item_quit.setTarget_(delegate)
+    menu.addItem_(item_quit)
+    status_item.setMenu_(menu)
+
+    from waitress import serve
+
+    def _serve():
+        try:
+            serve(app, host=host, port=port, threads=8)
+        except Exception as exc:
+            print(f'  服务器线程异常退出: {exc}')
+
+    threading.Thread(target=_serve, daemon=True).start()
+    nsapp.run()
+    return True
+
+
+if __name__ == '__main__':
     if '--check' in sys.argv:
         # 离线自检：验证关键依赖可正常导入（用于便携包目标机校验）
         import flask  # noqa: F401
@@ -7136,6 +7234,16 @@ if __name__ == '__main__':
     # Desktop (frozen) build defaults to loopback: binding 0.0.0.0 would pop the
     # Windows firewall prompt on first launch. Set HOST=0.0.0.0 to share on LAN.
     host = os.environ.get('HOST') or ('127.0.0.1' if IS_FROZEN else '0.0.0.0')
+
+    # Desktop single-instance guard: a running instance owns the preferred
+    # port range, so just reopen its page instead of starting a duplicate.
+    if IS_FROZEN and not debug:
+        existing_url = _probe_own_instance(port)
+        if existing_url:
+            print(f'  星易查已在运行: {existing_url}')
+            print('  正在打开页面...')
+            _open_page(existing_url)
+            sys.exit(0)
 
     def _pick_free_port(preferred):
         """Return `preferred` if bindable, else preferred+1..+9 (double-click
@@ -7164,13 +7272,14 @@ if __name__ == '__main__':
     print('=' * 60)
 
     # Desktop build: pop the default browser once the server is up. Delayed so
-    # the listener exists first; only when frozen (launch.sh already opens the
-    # browser on macOS, avoid opening twice).
+    # the listener exists first.
     if IS_FROZEN and not debug:
-        threading.Timer(1.5, lambda: webbrowser.open(url)).start()
+        threading.Timer(1.5, lambda: _open_page(url)).start()
 
     if debug:
         app.run(debug=debug, host=host, port=port, threaded=True)
+    elif IS_FROZEN and sys.platform == 'darwin' and _run_macos_gui(url, host, port):
+        pass  # Cocoa event loop owned the main thread; returned on user quit
     else:
         try:
             # waitress: production-grade pure-Python WSGI server, the only

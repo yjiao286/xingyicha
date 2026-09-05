@@ -31,6 +31,9 @@ datas = [
 ]
 binaries = []
 hiddenimports = ['waitress', 'cv2', 'fitz', 'onnxruntime']
+if ON_MACOS:
+    # app.py 冻结入口用 AppKit 跑 Cocoa 事件循环（Dock reopen / 菜单栏）
+    hiddenimports += ['AppKit', 'Foundation']
 
 # rapidocr_onnxruntime 把 ONNX 模型与 YAML 配置作为 package data 分发，
 # 静态分析发现不了，collect_all 一次性收集 data 文件 / DLL / 子模块。
@@ -68,7 +71,7 @@ if ON_MACOS:
         bootloader_ignore_signals=False,
         strip=False,
         upx=False,
-        console=True,  # 保留控制台窗口：看分析进度，关闭窗口即停止服务
+        console=True,  # Windows/Linux：控制台窗口看进度，关窗即停服；macOS Finder 启动无窗口，交互走 Cocoa 图形层（app.py _run_macos_gui）
         icon=os.path.join(SPECPATH, 'star.icns') if os.path.exists(os.path.join(SPECPATH, 'star.icns')) else None,
     )
     coll = COLLECT(
