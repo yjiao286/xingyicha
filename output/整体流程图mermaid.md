@@ -1,5 +1,5 @@
 ```mermaid
-%%{init: {"theme":"base","themeVariables":{"fontFamily":"PingFang SC, Microsoft YaHei, sans-serif","fontSize":"18px","lineColor":"#8a9bb5","primaryTextColor":"#22303f"},"flowchart":{"nodeSpacing":55,"rankSpacing":95,"curve":"basis"}}}%%
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"PingFang SC, Microsoft YaHei, sans-serif","fontSize":"18px","lineColor":"#8a9bb5","primaryTextColor":"#22303f"},"flowchart":{"nodeSpacing":55,"rankSpacing":95,"curve":"basis","htmlLabels":true,"markdownAutoWrap":false,"wrappingWidth":600}}}%%
 flowchart TD
     subgraph ANALYSIS["🧩 分析流程"]
         subgraph IN["📥 输入层"]
@@ -12,7 +12,7 @@ flowchart TD
         A1 --> C
         C3 -. "中断控制" .-> C
         B -. "参照命中自动降权" .-> T3
-        C["📝 提取与预处理（共用底座）<br/>① 文本 + 表格 · docx/txt 原生 · pdf 文字层 · xlsx 工作表（openpyxl）<br/>② 扫描件 OCR 回退 · pymupdf 渲染 + RapidOCR · 预算可配（默认放开）<br/>③ 元数据 · OOXML · PDF Info · OLE2+KSO（硬件ID/ICV）"]
+        C["📝 提取与预处理（共用底座）<br/>① 文本 + 表格 · docx/txt 原生 · pdf 文字层+表格 · xlsx 工作表（openpyxl）<br/>② 扫描件 OCR 回退 · pymupdf 渲染 + RapidOCR · 预算可配（默认放开）<br/>③ 元数据 · OOXML · PDF Info · OLE2+KSO（硬件ID/ICV）"]
 
         M0["🖥️ 元数据比对"]
         M1["创建者 / 最后保存者 / 编辑程序 / 模板 / ICV"]
@@ -28,9 +28,9 @@ flowchart TD
 
         P0["👥 人员交叉比对"]
         P1["章节限定提取 + 管道表解析<br/>姓名容错 · 职称黑名单"]
-        P2["多值联系池：phones / id_numbers / emails"]
+        P2["多值联系池：phones / id_numbers / emails / bank_accounts"]
         P3["6 层交叉 ①：同名 · 共享手机 · 共享身份证"]
-        P4["6 层交叉 ②：共享邮箱 · 授权代表=创建者<br/>修改人 · 重叠率≥50%"]
+        P4["6 层交叉 ②：共享邮箱 · 共享银行账号<br/>授权代表=创建者 · 修改人 · 重叠率≥50%"]
         CL2["⚖️ 第（二）项<br/>同一人办理投标事宜"]
         CL3["⚖️ 第（三）项<br/>项目管理成员同一人"]
         P0 --> P1
@@ -84,7 +84,7 @@ flowchart TD
     V -.->|"仅 1 份 / 数据不足"| U["⚪ 无法判定"]
 
     subgraph OUT["📤 输出与外围能力"]
-        O1["📄 综合报告 .docx<br/>含分项比对 + 评分规则"]
+        O1["📄 综合报告 .docx · 按项目名称命名<br/>分项比对 + 评分规则 + 附录判定依据"]
         O2["🕘 历史记录<br/>轻量存储 · 重载 / 重生成报告 / 删除"]
         O3["📊 数据统计页 /api/stats<br/>KPI · 结论环图 · 评分趋势 · 维度条形"]
         O4["⚡ 流式 NDJSON 进度 · 一键分析 API<br/>取消机制 /api/cancel"]

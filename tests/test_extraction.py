@@ -161,17 +161,17 @@ def t_personnel_blank_template_no_leak():
 
 
 def t_personnel_title_word_not_name():
-    # PDF "序号 姓名 职称 分工" tables: '张然 中级 项目负责人' — the 职称
-    # column value 中级 must not become the name; 张然 must be captured.
+    # PDF "序号 姓名 职称 分工" tables: '张伟 中级 项目负责人' — the 职称
+    # column value 中级 must not become the name; 张伟 must be captured.
     t = ('项目人员配置\n表 5 项目人员与分工\n序号 姓名 职称 分工\n'
-         '1 张然 中级 项目负责人\n'
+         '1 张伟 中级 项目负责人\n'
          '2 刘某某 教授 流资源预留协议设计\n'
          '3 潘某某 副教授 负载均衡技术设计\n')
     p = m.extract_personnel(t)
     names = [x['name'] for x in p['all_persons']]
     assert '中级' not in names and '教授' not in names and '副教授' not in names, names
-    assert '张然' in names, names
-    zhang = [x for x in p['all_persons'] if x['name'] == '张然']
+    assert '张伟' in names, names
+    zhang = [x for x in p['all_persons'] if x['name'] == '张伟']
     assert any(x['role'] == 'project_manager' for x in zhang), zhang
 
 
@@ -234,14 +234,14 @@ def t_price_bidrate_extra():
 
 
 def t_personnel_zhweituo():
-    p = m.extract_personnel('授权委托书\n兹委托 李某某 同志为我方代理人，负责签署投标文件。')
-    assert p['authorized_rep'] == '李某某', p
+    p = m.extract_personnel('授权委托书\n兹委托 李勇 同志为我方代理人，负责签署投标文件。')
+    assert p['authorized_rep'] == '李勇', p
 
 
 def t_personnel_reversed_labels():
-    p = m.extract_personnel('项目管理机构\n职务：项目经理 姓名：王某某 联系电话：13800000000')
+    p = m.extract_personnel('项目管理机构\n职务：项目经理 姓名：王强 联系电话：13800000000')
     names = {x['name'] for x in p['all_persons']}
-    assert '王某某' in names, names
+    assert '王强' in names, names
 
 
 def t_personnel_pipe_merged_cell():
@@ -285,9 +285,9 @@ def t_personnel_bank_account_pool():
 
 def t_personnel_section_marker_extended():
     # New personnel-table section markers must scope extraction
-    p = m.extract_personnel('人员一览表\n姓名 职务\n王某某 项目经理\n')
+    p = m.extract_personnel('人员一览表\n姓名 职务\n王强 项目经理\n')
     names = {x['name'] for x in p['all_persons']}
-    assert '王某某' in names, names
+    assert '王强' in names, names
 
 
 # ── Accuracy hardening: ceilings, environmental noise, cross-checks ──
@@ -407,7 +407,7 @@ def t_fitz_table_pipes():
     assert '姓名 | 职务' in out and '张三 | 项目经理' in out, out
 
 
-# ── Real-world regression: 某某航天 format (2026-08-25) ──
+# ── Real-world regression: auth-letter/cert format (2026-08-25) ──
 def t_personnel_auth_letter_full():
     # 授权委托书 with labeled parens; also exercises the 兰 surname
     t = ('授权委托书\n本人  兰某某  （姓名）系  北京某某航天技术有限公司  （供应商名称）的'
@@ -435,7 +435,7 @@ def t_personnel_company_survives_bad_name():
 
 
 def t_personnel_surnames_extended():
-    for n in ('兰某某', '付强', '肖磊', '闫丽', '郝建', '滕飞', '岳鹏', '单芳'):
+    for n in ('兰某某', '付某某', '肖某某', '闫某某', '郝某某', '滕某某', '岳某某', '单某某'):
         assert m._is_person_name(n), n
 
 
@@ -557,14 +557,14 @@ def t_company_strips_detached_label():
 
 
 def t_auth_xianweituo_split_newline():
-    # '现委托刘某某为我方代理\n人' — 代理人 split across a PDF line wrap must
+    # '现委托李四为我方代理\n人' — 代理人 split across a PDF line wrap must
     # still be recognized (pattern 8 tolerates the newline).
     info = {'legal_rep': None, 'authorized_rep': None, 'company_name': None, 'all_persons': []}
     m._extract_from_auth_section(
-        '本人王某某系北京某某大学的法定代表人（单位负责人），现委托刘某某为我方代理\n人。'
+        '本人张某某系北京某某大学的法定代表人（单位负责人），现委托李四为我方代理\n人。'
         '代理人根据授权，以我方名义签署、澄明确认。', info)
-    assert info['authorized_rep'] == '刘某某', info
-    assert info['legal_rep'] == '王某某', info
+    assert info['authorized_rep'] == '李四', info
+    assert info['legal_rep'] == '张某某', info
     assert info['company_name'] == '北京某某大学', info
 
 
@@ -581,11 +581,11 @@ def _glue(text):
 
 def t_glue_phrases_multi_position():
     # 法定\n代\n表\n人 split across several line breaks -> one keyword.
-    assert _glue('本人王某某系北京交\n通大学的法定\n代\n表\n人（单位负责人）') == \
-        '本人王某某系北京交\n通大学的法定代表人（单位负责人）'
+    assert _glue('本人张某某系北京交\n通大学的法定\n代\n表\n人（单位负责人）') == \
+        '本人张某某系北京交\n通大学的法定代表人（单位负责人）'
     # 委托代\n理人
-    assert _glue('现委托刘某某为我方委托代\n理人。代理人行使签署权。') == \
-        '现委托刘某某为我方委托代理人。代理人行使签署权。'
+    assert _glue('现委托李四为我方委托代\n理人。代理人行使签署权。') == \
+        '现委托李四为我方委托代理人。代理人行使签署权。'
     # absent keyword is untouched
     assert _glue('这是一段普通文字，没有关键词') == '这是一段普通文字，没有关键词'
 
@@ -594,23 +594,23 @@ def t_glue_cleans_auth_extraction():
     # A whole-keyword word wrap inside the auth letter must not lose the agent.
     info = {'legal_rep': None, 'authorized_rep': None, 'company_name': None, 'all_persons': []}
     m._extract_from_auth_section(
-        '本人王某某系北京某某大学的法定代表人（单位负责人），现委托刘某某为我方代理\n人。', info)
-    assert info['authorized_rep'] == '刘某某', info
+        '本人张某某系北京某某大学的法定代表人（单位负责人），现委托李四为我方代理\n人。', info)
+    assert info['authorized_rep'] == '李四', info
     assert info['company_name'] == '北京某某大学', info
 
 
 def t_cjk_ws_normalized():
     assert m._normalize_cjk_whitespace('投标人 ： 张三（ 盖单位章 ）') == '投标人： 张三（盖单位章）'
-    assert m._normalize_cjk_whitespace('电话 ：　010-51683081') == '电话： 010-51683081'
+    assert m._normalize_cjk_whitespace('电话 ：　010-12345678') == '电话： 010-12345678'
 
 
 def t_join_split_names():
     # 换行拆词拼接
-    assert m._join_split_names('本人王\n稼琼系的法人') == '本人王某某系的法人'
+    assert m._join_split_names('本人张某某系的法人') == '本人张某某系的法人'
     # 空格列间距不得拼接（否则 '国 联系' / '建国 联系' 吞掉标签）
-    assert m._join_split_names('王 稼琼') == '王 稼琼'
-    assert m._join_split_names('职务：项目经理 姓名：王某某 联系电话：13800000000') == \
-        '职务：项目经理 姓名：王某某 联系电话：13800000000'
+    assert m._join_split_names('张某某') == '张某某'
+    assert m._join_split_names('职务：项目经理 姓名：王强 联系电话：13800000000') == \
+        '职务：项目经理 姓名：王强 联系电话：13800000000'
 
 
 def t_glue_new_phrases():
@@ -626,27 +626,27 @@ def t_company_prefix_strip():
 
 def t_clean_phone_junk():
     assert m._clean_phone('_021-12345678、') == '021-12345678'
-    assert m._clean_phone('010-51683081;') == '010-51683081'
-    assert m._clean_phone('010 - 5168 3081') == '010-51683081'
+    assert m._clean_phone('010-12345678;') == '010-12345678'
+    assert m._clean_phone('010 - 1234 5678') == '010-12345678'
 
 
 # ── Defense layers 7+: invisible chars / OCR glyphs / phone & amount forms ──
 def t_invisible_chars_stripped():
     # Zero-width chars sit inside labels ('委托代理人\u200b：'), where \s-based
     # glue cannot reach them; CR/form-feed variants must become newlines.
-    t = '授权委托书\r\n委托代理人\u200b：李\u2060明\r被授权人：王\u00ad强\n'
+    t = '授权委托书\r\n委托代理人\u200b：李\u2060勇\r被授权人：王\u00ad强\n'
     p = m.extract_personnel(t)
-    assert p['authorized_rep'] == '李某某', p
+    assert p['authorized_rep'] == '李勇', p
 
 
 def t_ocr_label_glyph_fixes():
     # Scanned-label glyph confusions: 人/入, 话/活, 币/巾, plus the 身分证
     # variant spelling — all repaired before any label regex runs.
     p = m.extract_personnel('授权委托书\n法定代表入：王强\n联系电活：13912345678\n'
-                            '身分证号：110101199001011234\n')
+                            '身分证号：110101199003070000\n')
     assert p['legal_rep'] == '王强', p
     assert '13912345678' in p['phones'], p
-    assert '110101199001011234' in p['id_numbers'], p
+    assert '110101199003070000' in p['id_numbers'], p
     r = m.extract_prices('人民巾（大写）：壹佰贰拾万元整')
     assert r['totalPriceInTax'] == 1200000, r
 
@@ -660,8 +660,8 @@ def t_phone_country_code_and_dashed():
 
 
 def t_phone_landline_padded_and_label_variants():
-    p = m.extract_personnel('授权委托书\n联系电话：010 - 5168 3081\n')
-    assert p['phone'] == '010-51683081', p
+    p = m.extract_personnel('授权委托书\n联系电话：010 - 1234 5678\n')
+    assert p['phone'] == '010-12345678', p
     p2 = m.extract_personnel('授权委托书\n移动电话：13912345678\n')
     assert p2['phone'] == '13912345678', p2
 
@@ -684,19 +684,19 @@ def t_price_thinspace_survives_validation():
 def t_name_internal_spaces():
     p = m.extract_personnel('授权委托书\n委托代理人：张 三\n')
     assert p['authorized_rep'] == '张三', p
-    p2 = m.extract_personnel('项目管理机构\n姓名：王 建国 联系电话：13800000000\n')
+    p2 = m.extract_personnel('项目管理机构\n姓名：王 强 联系电话：13800000000\n')
     names = {x['name'] for x in p2['all_persons']}
-    assert '王某某' in names and '王某某联' not in names, names
+    assert '王强' in names and '王强联' not in names, names
 
 
 def t_name_tolerant_no_label_swallow():
-    # '兹委托 李某某 同志…' — the tolerant class must not absorb 同志 even
+    # '兹委托 李勇 同志…' — the tolerant class must not absorb 同志 even
     # though the trailing (?:同志)? is optional; the spaced form must still
     # be captured.
-    p = m.extract_personnel('授权委托书\n兹委托 李某某 同志为我方代理人，负责签署投标文件。')
-    assert p['authorized_rep'] == '李某某', p
-    p2 = m.extract_personnel('授权委托书\n兹委托 李 明 同志为我方代理人。')
-    assert p2['authorized_rep'] == '李某某', p2
+    p = m.extract_personnel('授权委托书\n兹委托 李勇 同志为我方代理人，负责签署投标文件。')
+    assert p['authorized_rep'] == '李勇', p
+    p2 = m.extract_personnel('授权委托书\n兹委托 李 勇 同志为我方代理人。')
+    assert p2['authorized_rep'] == '李勇', p2
 
 
 def t_name_validation_allows_internal_space():
@@ -705,7 +705,7 @@ def t_name_validation_allows_internal_space():
 
 
 def t_address_cut_at_next_label():
-    p = m.extract_personnel('授权委托书\n地址：北京市海淀区上地十街10号 电话：010-51683081\n')
+    p = m.extract_personnel('授权委托书\n地址：北京市海淀区上地十街10号 电话：010-12345678\n')
     assert p['address'] == '北京市海淀区上地十街10号', p
 
 
@@ -722,26 +722,26 @@ def t_duty_label_suffix_not_person():
         assert not m._is_person_name(lbl), lbl
     # Real names sharing those surnames/characters must keep passing.
     assert m._is_person_name('任志强')
-    assert m._is_person_name('陈某某')
+    assert m._is_person_name('陈刚')
 
 
 def t_personnel_duty_label_column():
-    # PDF-flattened row '陈某某 任中职务 项目经理' (colons lost, label column
+    # PDF-flattened row '陈刚 任中职务 项目经理' (colons lost, label column
     # between name and role): the label must not enter all_persons, and the
     # real name before it must be recovered as project_manager.
-    p = m.extract_personnel('项目团队\n陈某某 任中职务 项目经理\n杨伟 任中职务 项目经理\n')
+    p = m.extract_personnel('项目团队\n陈刚 任中职务 项目经理\n杨帆 任中职务 项目经理\n')
     names = [(x['name'], x['role']) for x in p['all_persons']]
     assert ('任中职务', 'project_manager') not in names, names
-    assert ('陈某某', 'project_manager') in names, names
-    assert ('杨伟', 'project_manager') in names, names
+    assert ('陈刚', 'project_manager') in names, names
+    assert ('杨帆', 'project_manager') in names, names
     # Cross-line re-pairing must not duplicate an exact (name, role) pair.
-    assert names.count(('杨伟', 'project_manager')) == 1, names
+    assert names.count(('杨帆', 'project_manager')) == 1, names
 
 
 def t_personnel_duty_label_colon_form():
-    p = m.extract_personnel('项目团队\n姓名：陈某某 任中职务：项目经理\n')
+    p = m.extract_personnel('项目团队\n姓名：陈刚 任中职务：项目经理\n')
     names = [(x['name'], x['role']) for x in p['all_persons']]
-    assert ('陈某某', 'project_manager') in names, names
+    assert ('陈刚', 'project_manager') in names, names
     assert all(x['name'] != '任中职务' for x in p['all_persons']), names
 
 
@@ -776,39 +776,39 @@ def t_personnel_section_header_not_person():
 
 def t_personnel_role_not_paired_across_lines():
     # A role keyword at the end of one table row must not attach to the
-    # next row's name ('王某某 项目经理\n李某某 施工员' once made 李某某 a
+    # next row's name ('王强 项目经理\n李勇 施工员' once made 李勇 a
     # project_manager → false same-role cross-file match risk).
-    p = m.extract_personnel('项目团队\n王某某 项目经理\n李某某 施工员\n')
+    p = m.extract_personnel('项目团队\n王强 项目经理\n李勇 施工员\n')
     roles = {}
     for x in p['all_persons']:
         roles.setdefault(x['name'], set()).add(x['role'])
-    assert 'project_manager' in roles.get('王某某', set()), roles
-    assert 'project_manager' not in roles.get('李某某', set()), roles
-    assert 'team_member' in roles.get('李某某', set()), roles
+    assert 'project_manager' in roles.get('王强', set()), roles
+    assert 'project_manager' not in roles.get('李勇', set()), roles
+    assert 'team_member' in roles.get('李勇', set()), roles
     # Same-line role-then-name pairs keep working, several per line.
-    p2 = m.extract_personnel('项目团队\n项目经理 王某某 技术负责人 李四\n')
+    p2 = m.extract_personnel('项目团队\n项目经理 王强 技术负责人 李四\n')
     roles2 = {}
     for x in p2['all_persons']:
         roles2.setdefault(x['name'], set()).add(x['role'])
-    assert roles2.get('王某某') == {'project_manager'}, roles2
+    assert roles2.get('王强') == {'project_manager'}, roles2
     assert roles2.get('李四') == {'tech_lead'}, roles2
 
 
 def t_personnel_label_colon_without_name_label():
-    # '陈某某 任中职务：项目经理' — no 姓名 label at all; the colon sits after
+    # '陈刚 任中职务：项目经理' — no 姓名 label at all; the colon sits after
     # the duty-label column with zero space before the role value.
-    p = m.extract_personnel('项目团队\n陈某某 任中职务：项目经理\n')
+    p = m.extract_personnel('项目团队\n陈刚 任中职务：项目经理\n')
     names = [(x['name'], x['role']) for x in p['all_persons']]
-    assert ('陈某某', 'project_manager') in names, names
+    assert ('陈刚', 'project_manager') in names, names
     assert all(x['name'] != '任中职务' for x in p['all_persons']), names
 
 
 def t_personnel_traditional_duty_label():
     # Traditional-script duty labels (任職務) must be skipped the same way
     # so the real name before them is still recovered.
-    p = m.extract_personnel('项目团队\n陈某某 任職務 项目经理\n')
+    p = m.extract_personnel('项目团队\n陈刚 任職務 项目经理\n')
     names = [(x['name'], x['role']) for x in p['all_persons']]
-    assert ('陈某某', 'project_manager') in names, names
+    assert ('陈刚', 'project_manager') in names, names
     assert all('職務' not in x['name'] for x in p['all_persons']), names
 
 

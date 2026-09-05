@@ -24,6 +24,7 @@ history/
 
 # 便携打包产物（体积大，本地生成）
 build/cache/
+build/pyinstaller/
 dist/
 
 # 备份文件
@@ -39,3 +40,6 @@ packaging/ChineseSimplified.isl
 
 # mimosa code-review hook runtime state
 .mimosa/
+
+# 回放测试结果（含真实标书样本信息，禁止入库）
+output/replay_*
