@@ -800,7 +800,10 @@ def _get_ocr_fn():
         import fitz  # capability check: pages are rendered by the caller's doc
         import numpy as np
         import cv2
-        from rapidocr_onnxruntime import RapidOCR
+        try:
+            from rapidocr import RapidOCR  # unified package (rapidocr>=2, py3.13+)
+        except ImportError:
+            from rapidocr_onnxruntime import RapidOCR  # legacy onnxruntime engine
         engine = RapidOCR()
 
         def _ocr_page(page, dpi=200):
@@ -812,7 +815,13 @@ def _get_ocr_fn():
                 img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
             elif pix.n == 1:
                 img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-            result, _ = engine(img)
+            out = engine(img)
+            # unified rapidocr returns a RapidOCROutput with .txts
+            txts = getattr(out, 'txts', None)
+            if txts is not None:
+                return '\n'.join(t for t in txts if t)
+            # legacy engine returns (rows, elapse) with rows=[[box, text, score], ...]
+            result = out[0] if isinstance(out, tuple) else out
             if not result:
                 return ''
             return '\n'.join(item[1] for item in result)
@@ -1270,7 +1279,8 @@ def _extract_from_auth_section(section_text, info):
     # Pattern 0: "我张三（姓名）系四川某某电子科技有限公司（供应商名称）的法定代表人"
     # company_name is captured even when the name fails validation — the two
     # facts are independent, and a rare-surname miss must not also lose the
-    # company (observed: 兰某某 rejected → company disappeared too).
+    # company (observed in corpus: a rare-surname name rejected → company
+    # disappeared too).
     m = re.search(r'(?:本人\s*)?我?\s*([一-鿿](?:[ 	]*[一-鿿]){1,3}(?:[ 	]*[·•・][ 	]*[一-鿿](?:[ 	]*[一-鿿]){1,3}){0,2})\s*[（(]姓名[）)]\s*系\s*(.{1,40}?)\s*[（(]供应商名称[）)]\s*的法定代表人', section_text)
     if m:
         if not info.get('company_name'):
@@ -1279,7 +1289,7 @@ def _extract_from_auth_section(section_text, info):
             info['legal_rep'] = m.group(1).strip()
             info['all_persons'].append({'name': info['legal_rep'], 'role': 'legal_rep', 'confidence': 0.95})
 
-    # Pattern 0b: "（兰某某）系（北京某某航天技术有限公司）的法定代表人"
+    # Pattern 0b: "（张某某）系（北京某某航天技术有限公司）的法定代表人"
     # 法定代表人资格证明书 form: name AND company in unlabeled parentheses.
     m = re.search(r'[（(]\s*([一-鿿](?:[ 	]*[一-鿿]){1,3}(?:[ 	]*[·•・][ 	]*[一-鿿](?:[ 	]*[一-鿿]){1,3}){0,2})\s*[）)]\s*系\s*[（(]?\s*(.{2,40}?)\s*[）)]?\s*的法定代表人', section_text)
     if m:
@@ -1780,7 +1790,7 @@ _SURNAMES = '王李张刘陈杨黄赵周吴徐孙马胡朱郭何罗高林郑梁�
 def _join_split_names(text):
     """Re-join a person name split at a LINE BREAK right after the surname.
 
-    '张某某' -> '张某某'. Two passes because re.sub does not rescan a
+    '张\\n某某' -> '张某某'. Two passes because re.sub does not rescan a
     replacement, so a name whose pieces re-join twice settles on the second
     pass. Deliberately newline-only: space-separated '张某某 联系' must not
     be re-glued (column padding would swallow label fragments).
@@ -1906,7 +1916,7 @@ def extract_personnel(text):
     text = re.sub(r'法\s*\n\s*定代表人', '法定代表人', text)
     text = re.sub(r'授权委\s*\n\s*托书', '授权委托书', text)
     text = re.sub(r'供应\s*\n\s*商名称', '供应商名称', text)
-    # Fix common name splits: "张某某" → "张某某" (only when first char is a
+    # Fix common name splits: "张\n某某" → "张某某" (only when first char is a
     # surname; the source module-level constant covers the full 百家姓). Two
     # passes so a name broken at two whitespace boundaries settles on the 2nd.
     text = _join_split_names(text)

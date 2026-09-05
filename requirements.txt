@@ -7,4 +7,8 @@ gunicorn>=21.0
 openpyxl>=3.1
 # 扫描件 PDF 的 OCR 回退（可选，缺失时扫描件自动跳过，不影响其他功能）
 pymupdf>=1.24
-rapidocr-onnxruntime>=1.3
+# rapidocr-onnxruntime（旧引擎包）不支持 Python>=3.13：py<3.13 走旧包，
+# py>=3.13 走统一新包 rapidocr（app.py 对两种引擎的 import 与返回值均兼容）
+rapidocr-onnxruntime>=1.3; python_version < "3.13"
+rapidocr>=2.0; python_version >= "3.13"
+onnxruntime>=1.19; python_version >= "3.13"
