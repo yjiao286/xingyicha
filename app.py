@@ -1069,7 +1069,13 @@ def _find_personnel_sections(text):
         ],
         'legal_rep_proof': [
             '法定代表人身份证明', '法定代表人证明', '法人代表证明',
-            '单位负责人证明', '法定代表人资格证明'
+            '单位负责人证明', '法定代表人资格证明',
+            # Heading variants with the parenthetical insert kept intact:
+            # '法定代表人（单位负责人）身份证明' — the plain substring above
+            # never matches across the insert, so the whole section is missed
+            # (observed in corpus: 身份证明 form then yields no legal rep).
+            '法定代表人（单位负责人）身份证明', '法定代表人(单位负责人)身份证明',
+            '法定代表人（单位负责人）证明', '法定代表人(单位负责人)证明',
         ],
         'personnel_table': [
             '项目管理机构', '项目组成员', '主要人员', '项目成员',
@@ -1280,8 +1286,20 @@ def _extract_from_auth_section(section_text, info):
     # company_name is captured even when the name fails validation — the two
     # facts are independent, and a rare-surname miss must not also lose the
     # company (observed in corpus: a rare-surname name rejected → company
-    # disappeared too).
-    m = re.search(r'(?:本人\s*)?我?\s*([一-鿿](?:[ 	]*[一-鿿]){1,3}(?:[ 	]*[·•・][ 	]*[一-鿿](?:[ 	]*[一-鿿]){1,3}){0,2})\s*[（(]姓名[）)]\s*系\s*(.{1,40}?)\s*[（(]供应商名称[）)]\s*的法定代表人', section_text)
+    # disappeared too). The paren label after the company varies by template:
+    # （投标人名称）/（单位名称）… alongside the classic （供应商名称）.
+    _P0_LABEL = r'[（(](?:投标人名称|供应商名称|单位名称|公司名称|企业名称)[）)]'
+    # (?<![一-鿿]) keeps the capture from starting mid-word: without it the
+    # name class happily grabs '权委托书' out of '三、授权委托书↵（姓名）…'
+    # (the real name line sits above the run-in heading).
+    m = re.search(r'(?:本人\s*)?我?\s*(?<![一-鿿])([一-鿿](?:[ 	]*[一-鿿]){1,3}(?:[ 	]*[·•・][ 	]*[一-鿿](?:[ 	]*[一-鿿]){1,3}){0,2})\s*[（(]姓名[）)]\s*系\s*(.{1,40}?)\s*' + _P0_LABEL + r'\s*的法定代表人', section_text)
+    if not m:
+        # Form-layout retry: the chapter header sits BETWEEN the name line and
+        # the （姓名） continuation — PDF flattening puts the run-in heading
+        # on its own line ('本人 王强' ↵ '三、授权委托书' ↵ '（姓名） 系 …').
+        # Tolerate a short junk gap there; the （姓名）+系+名称+法定代表人
+        # anchor chain stays specific enough.
+        m = re.search(r'(?:本人\s*)?我?\s*(?<![一-鿿])([一-鿿](?:[ 	]*[一-鿿]){1,3}(?:[ 	]*[·•・][ 	]*[一-鿿](?:[ 	]*[一-鿿]){1,3}){0,2})[\s\S]{0,40}?[（(]姓名[）)]\s*系\s*(.{1,40}?)\s*' + _P0_LABEL + r'\s*的法定代表人', section_text)
     if m:
         if not info.get('company_name'):
             info['company_name'] = _clean_company(m.group(2).strip())
@@ -1793,9 +1811,13 @@ def _join_split_names(text):
     '张\\n某某' -> '张某某'. Two passes because re.sub does not rescan a
     replacement, so a name whose pieces re-join twice settles on the second
     pass. Deliberately newline-only: space-separated '张某某 联系' must not
-    be re-glued (column padding would swallow label fragments).
+    be re-glued (column padding would swallow label fragments). The join is
+    blocked when the continuation is a numeral directly followed by a
+    pause mark ('林\\n三、授权委托书' — a chapter header, not the name 林三):
+    chapter numbering 三、四、… after a surname-ending line otherwise welds
+    the heading into the name and derails every downstream pattern.
     """
-    pat = re.compile(rf'([{_SURNAMES}])\s*\n\s*([一-鿿]{{1,2}})')
+    pat = re.compile(rf'([{_SURNAMES}])\s*\n\s*([一-鿿]{{1,2}})(?![、，。：:.])')
     for _ in range(2):
         nxt = pat.sub(r'\1\2', text)
         if nxt == text:
@@ -1831,7 +1853,29 @@ _OCR_LABEL_FIXES = (
     ('电活', '电话'),
     ('联糸', '联系'),
     ('身分证', '身份证'),
+    # OCR 形近字：授权委托书 → 售权委托书（授/售 glyph confusion in scanned
+    # bids; '售权委托' is not a legal Chinese collocation, so the replace
+    # cannot false-positive — same principle as the pairs above).
+    ('售权委托', '授权委托'),
 )
+
+    # Form-fill brackets: several bidders wrap EVERY filled value in 【】
+    # ('姓名： 【张三】', '（￥ 【98000】 ）'), which defeats every label
+    # regex (the char after 姓名： is '【', not CJK) — personnel AND pricing
+    # both come back empty. Strip the brackets and keep the content.
+    # '【工作表】' (xlsx sheet marker consumed by the pipe-table parser) is
+    # masked with a sentinel so it survives the strip.
+_FILL_BRACKET_SENTINEL = '\x00SHEET\x00'
+
+
+def _strip_fill_brackets(text):
+    if not text:
+        return text
+    if '【' not in text and '】' not in text:
+        return text
+    text = text.replace('【工作表】', _FILL_BRACKET_SENTINEL)
+    text = text.replace('【', '').replace('】', '')
+    return text.replace(_FILL_BRACKET_SENTINEL, '【工作表】')
 
 
 def _fix_ocr_label_confusions(text):
@@ -1901,6 +1945,9 @@ def extract_personnel(text):
     # glyph confusions inside labels are repaired before any label matching.
     text = _strip_invisible(text)
     text = _fix_ocr_label_confusions(text)
+    # 【】-wrapped form fills ('姓名： 【张三】') would defeat every label
+    # regex — strip before any anchor matching (xlsx sheet marker preserved).
+    text = _strip_fill_brackets(text)
 
     # Full-width digits break the ASCII-digit regexes ('１３９…' phones)
     text = _fw_digits_to_ascii(text)
@@ -1964,6 +2011,16 @@ def extract_personnel(text):
             or (not info.get('company_name') and not info['legal_rep'] and not info['authorized_rep']):
         _extract_from_auth_section(text, info)
         _extract_from_cover(text, info)
+    elif not info['legal_rep'] and not info['authorized_rep']:
+        # Company-only results must not block the personnel fallback: when the
+        # real authorization letter is headed by an unrecognized variant (OCR
+        # label typo the fixes above don't cover, exotic numbering), its
+        # section never matches while qualification/cover sections still yield
+        # the company — exactly the shape that silently dropped the spaced-form
+        # agent name. The auth patterns are label-anchored and set-guarded, so
+        # a full-text pass can neither overwrite nor duplicate an existing
+        # result.
+        _extract_from_auth_section(text, info)
 
     # ── Global extraction (section-scoped) ──
     for sec in auth_sections + sig_sections:
@@ -2373,6 +2430,9 @@ def extract_prices(text):
         return result
     text = _strip_invisible(text)
     text = _fix_ocr_label_confusions(text)
+    # 【】-wrapped form fills ('（￥ 【98000】 ）') hide amounts from every
+    # channel — strip before matching (xlsx sheet marker preserved).
+    text = _strip_fill_brackets(text)
     text = _fw_digits_to_ascii(text)
     text = _glue_phrases(text)
     text = _normalize_cjk_whitespace(text)
@@ -5156,9 +5216,12 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
 
                 # ── Layer 1: Exact name match (shared personnel across files) ──
                 # Normalize minority-name separators (·/•/・) so the same
-                # person spelled with different middle dots still matches.
+                # person spelled with different middle dots still matches, and
+                # fold internal whitespace so spaced OCR captures ('张 三')
+                # pair with their clean spellings (extraction already collapses
+                # CJK names; this guards any path that slips through).
                 def _nkey(n):
-                    return re.sub(r'[•・]', '·', n).strip()
+                    return re.sub(r'\s+', '', re.sub(r'[•・]', '·', n)).strip()
 
                 names_i = {}
                 for p in all_persons_map[gi]:

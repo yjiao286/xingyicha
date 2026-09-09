@@ -826,6 +826,87 @@ def t_personnel_resume_vertical_labels():
     assert 'project_manager' in roles3, p2['all_persons']
 
 
+def t_personnel_fill_brackets_unwrapped():
+    # 【】-wrapped form fills ('姓名： 【张三】') must not defeat the label
+    # regexes — one bidder wrapped EVERY filled value that way and personnel
+    # came back completely empty.
+    t = ('二、法定代表人（单位负责人）身份证明\n'
+         '投标人名称： 某某机电制造有限公司\n'
+         '姓名： 【张三】 性别： 【男】 年龄： 【76】 职务： 【总经理】\n'
+         '\n'
+         '3\n'
+         '系 某某机电制造有限公司 （投标人名称）的法定代表人（单位\n'
+         '负责人）。\n'
+         '特此证明。\n')
+    r = m.extract_personnel(t)
+    assert r['company_name'] == '某某机电制造有限公司', r
+    assert r['legal_rep'] == '张三', r
+
+
+def t_person_spaced_authorized_rep_with_ocr_heading():
+    # Scanned-bid regression: the authorization letter heading OCR'd to
+    # '售权委托书' and the agent name was printed with per-char spaces
+    # ('现委托 王 小 明 为我方代理人') — the agent was silently dropped, so
+    # the cross-bid match against the same clean-spelled name never fired.
+    t = ('本人 李林\n'
+         '三、售权委托书\n'
+         '（姓名） 系 某某管路配件有限公司 （投标人名称） 的法定代表人（单\n'
+         ' 位负责人） ，现委托 王 小 明 为我方代理人。代理人根据授权，以我方名义签署、澄清\n'
+         '确认、递交、撤回、修改设备采购招标项目投标文件、签订合同和处理有关事宜，其法律后\n'
+         '果由我方承担。\n'
+         '投标人：某某管路配件有限公司（盖单位章）\n')
+    r = m.extract_personnel(t)
+    assert r['company_name'] == '某某管路配件有限公司', r
+    assert r['legal_rep'] == '李林', r
+    # Spaced capture must be collapsed so cross-file name matching pairs it
+    # with the clean spelling used in the other bidder's document.
+    assert r['authorized_rep'] == '王小明', r
+
+
+def t_person_auth_header_interleave_not_midword():
+    # When the chapter header sits between the name line and the （姓名）
+    # continuation, the capture must be the real name — never a mid-word
+    # slice of the heading like '权委托书' (out of '三、授权委托书').
+    t = ('本人 李林\n'
+         '三、授权委托书\n'
+         '（姓名） 系 某某管路配件有限公司 （投标人名称） 的法定代表人（单\n'
+         ' 位负责人）。\n')
+    r = m.extract_personnel(t)
+    assert r['legal_rep'] == '李林', r
+
+
+def t_person_join_split_names_spares_chapter_marker():
+    # '李林\n三、授权委托书' is a name line followed by a chapter header —
+    # joining yields '李林三、…' and derails the auth patterns. Numeral
+    # continuations directly followed by a pause mark must not join.
+    s = '本人 李林 \n三、授权委托书\n（姓名） 系 某某公司 的法定代表人'
+    assert m._join_split_names(s) == s, m._join_split_names(s)
+    # Genuine split names still join.
+    assert m._join_split_names('负责人：张\n三丰') == '负责人：张三丰'
+
+
+def t_ocr_heading_shouquan_fixed():
+    # 授/售 glyph confusion in the authorization heading ('售权委托' never
+    # occurs in legitimate Chinese) — fixing it restores section detection.
+    assert m._fix_ocr_label_confusions('三、售权委托书') == '三、授权委托书'
+    assert '授权' in m._fix_ocr_label_confusions('售权委托书')
+
+
+def t_price_fill_brackets_unwrapped():
+    # Same fill style hiding amounts: '（￥ 【98000】 ）' / 大写 in 【】.
+    t = ('开标一览表\n投标总价（大写）： 【玖万捌仟元整】\n'
+         '小写：￥ 【98000】 \n')
+    r = m.extract_prices(t)
+    assert r['totalPriceInTax'] == 98000, r
+
+
+def t_person_xlsx_sheet_marker_survives_bracket_strip():
+    # The 【工作表】 header drives the pipe-table parser — the bracket strip
+    # must not eat it.
+    s = '【工作表】人员表\n姓名 | 电话\n张三 | 13912345678\n'
+    assert m._strip_fill_brackets(s) == s, m._strip_fill_brackets(s)
+
+
 def t_price_bank_voucher_excluded():
     # Bond transfer slip: '金额 / 人民币：22,000.00 / 人民币：贰万贰仟元整 /
     # 用途 / 制单日期…' — banking words sit on neighbouring lines, not on
