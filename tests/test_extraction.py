@@ -1458,6 +1458,14 @@ def t_pdf_table_layout_modes():
         import pymupdf
     except ImportError:
         return  # pymupdf absent: channel disabled in production too
+    # Activate the layout analyzer exactly as _open_fitz() does. This test
+    # calls _fitz_page_tables_as_pipes directly, so unlike a real extraction
+    # nothing has imported pymupdf.layout for it — without this the borderless
+    # case would fail for a reason that has nothing to do with the gating.
+    try:
+        import pymupdf.layout  # noqa: F401
+    except Exception:
+        pass  # optional: union degrades to line-based
     import tempfile
     saved = m.PDF_TABLE_LAYOUT
     try:
@@ -1489,7 +1497,130 @@ def t_pdf_table_layout_modes():
         m.PDF_TABLE_LAYOUT = saved
 
 
+# ══ 提取缓存与并行提取 ══
+
+def t_extract_cache_roundtrip():
+    # Extraction output is cached per content hash: the same file replays,
+    # an edited file does not, and the page budget is part of the key.
+    import tempfile
+    saved_dir, saved_on = m.EXTRACT_CACHE_DIR, m.EXTRACT_CACHE_ENABLED
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            m.EXTRACT_CACHE_DIR = td
+            m.EXTRACT_CACHE_ENABLED = True
+            p = os.path.join(td, 'sample.txt')
+            with open(p, 'w', encoding='utf-8') as f:
+                f.write('投标人名称：测试科技有限公司\n法定代表人：张三\n')
+            first = m.extract_text_with_tables(p)
+            assert '张三' in first, first
+
+            # Count real parses so a "hit" is proven, not merely consistent.
+            parses = []
+            real = m._extract_text_uncached
+
+            def _counting(*a, **k):
+                parses.append(1)
+                return real(*a, **k)
+
+            m._extract_text_uncached = _counting
+            try:
+                # Same bytes at a *different* path still hits: the key is the
+                # content, not the path — uploads are re-saved under a fresh
+                # random filename on every analysis, so a path or mtime key
+                # would never hit in practice.
+                p2 = os.path.join(td, 'copy.txt')
+                with open(p2, 'w', encoding='utf-8') as f:
+                    f.write('投标人名称：测试科技有限公司\n法定代表人：张三\n')
+                assert m.extract_text_with_tables(p2) == first
+                assert not parses, '同内容不同路径应命中缓存'
+
+                # Changed bytes → different key → real extraction.
+                with open(p, 'w', encoding='utf-8') as f:
+                    f.write('投标人名称：另一家公司\n')
+                changed = m.extract_text_with_tables(p)
+                assert len(parses) == 1, '内容已变却未重新提取'
+                assert '另一家公司' in changed, changed
+            finally:
+                m._extract_text_uncached = real
+
+            # Different settings are a different key for identical bytes.
+            assert (m._extract_cache_key(p, 10)
+                    != m._extract_cache_key(p, 20)), 'max_pages 未纳入缓存键'
+    finally:
+        m.EXTRACT_CACHE_DIR, m.EXTRACT_CACHE_ENABLED = saved_dir, saved_on
+
+
+def t_extract_cache_ignores_empty():
+    # Empty results are not cached — that is also what a transient failure
+    # looks like, and re-extracting a document that yielded nothing is cheap.
+    import tempfile
+    saved_dir, saved_on = m.EXTRACT_CACHE_DIR, m.EXTRACT_CACHE_ENABLED
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            m.EXTRACT_CACHE_DIR = td
+            m.EXTRACT_CACHE_ENABLED = True
+            p = os.path.join(td, 'empty.txt')
+            open(p, 'w', encoding='utf-8').close()
+            assert m.extract_text_with_tables(p) == ''
+            assert not [n for n in os.listdir(td) if n.endswith('.txt')
+                        and n != 'empty.txt'], '空结果不应写入缓存'
+    finally:
+        m.EXTRACT_CACHE_DIR, m.EXTRACT_CACHE_ENABLED = saved_dir, saved_on
+
+
+def t_extract_many_matches_sequential():
+    # _extract_many is the parallel path. It must return texts aligned with
+    # its input despite workers finishing out of order, and an unreadable
+    # file must yield '' instead of raising — the sequential loop it replaces
+    # swallowed per-file errors the same way.
+    try:
+        import app  # noqa: F401 — the spawn path re-imports this module
+    except Exception:
+        return
+    import tempfile
+    saved_dir, saved_on = m.EXTRACT_CACHE_DIR, m.EXTRACT_CACHE_ENABLED
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            m.EXTRACT_CACHE_DIR = td
+            m.EXTRACT_CACHE_ENABLED = False   # measure the path, not the cache
+            paths = []
+            for i, name in enumerate(('甲公司', '乙公司', '丙公司')):
+                p = os.path.join(td, f'{i}.txt')
+                with open(p, 'w', encoding='utf-8') as f:
+                    f.write(f'投标人名称：{name}\n法定代表人：负责人{i}\n'
+                            * (i + 1))
+                paths.append(p)
+            paths.append(os.path.join(td, 'missing.txt'))  # unreadable
+
+            def _sequential_reference(ps):
+                # Mirrors the loop _extract_many replaced: a per-file failure
+                # contributed nothing rather than propagating.
+                out = []
+                for p in ps:
+                    try:
+                        out.append(m.extract_text_with_tables(p) or '')
+                    except Exception:
+                        out.append('')
+                return out
+
+            expected = _sequential_reference(paths)
+            got = m._extract_many(paths)
+            assert got == expected, [len(g) for g in got]
+
+            seen = []
+            m._extract_many(paths, on_file_done=lambda i, t: seen.append(i))
+            assert sorted(seen) == list(range(len(paths))), seen
+    finally:
+        m.EXTRACT_CACHE_DIR, m.EXTRACT_CACHE_ENABLED = saved_dir, saved_on
+
+
 def main():
+    # Tests must be hermetic: the extraction cache lives on disk between runs,
+    # and a cached PDF extraction silently skips the very code path a test
+    # exists to exercise (the damaged-PDF tests, for one, would pass without
+    # ever reaching the repair path). The cache tests turn it back on for
+    # themselves and restore this value afterwards.
+    m.EXTRACT_CACHE_ENABLED = False
     for name, fn in sorted(globals().items()):
         if name.startswith('t_') and callable(fn):
             check(name, fn)

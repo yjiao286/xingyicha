@@ -44,3 +44,6 @@ packaging/ChineseSimplified.isl
 
 # 回放测试结果（含真实标书样本信息，禁止入库）
 output/replay_*
+
+# 提取结果缓存（按文件内容哈希，可安全删除）
+extract_cache/

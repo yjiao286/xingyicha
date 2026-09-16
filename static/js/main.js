@@ -202,7 +202,7 @@ function updateExtractProgress(event) {
     if (event.phase === 'pdf_ocr') {
       progressText.textContent = 'OCR识别扫描件: ' + _extractFileName + (event.detail ? ' - ' + event.detail : '');
     } else {
-      progressText.textContent = '提取文字: ' + _extractFileName + ' (' + event.current + '/' + event.total + ' 页)';
+      progressText.textContent = '提取文字: ' + _extractFileName + ' (' + event.current + '/' + event.total + ' ' + (event.unit || '页') + ')';
     }
     return;
   }

@@ -11,6 +11,7 @@ import shutil
 import logging
 import uuid
 import time
+import multiprocessing
 from io import BytesIO
 from pathlib import Path
 from datetime import datetime
@@ -946,8 +947,199 @@ def _fitz_page_tables_as_pipes(page):
     return '\n'.join(rows) if rows else ''
 
 
+# ── Extraction cache ─────────────────────────────────────────
+# Re-analysing an unchanged document set is the normal workflow (tuning
+# thresholds, rehearsing a demo) and extraction is by far the most expensive
+# stage, so its output is cached. The key is the file's own bytes plus every
+# setting that shapes the result — uploads land under a fresh random filename
+# each time, so a path/mtime key would never hit.
+EXTRACT_CACHE_DIR = (os.environ.get('EXTRACT_CACHE_DIR')
+                     or os.path.join(_DATA_DIR, 'extract_cache'))
+EXTRACT_CACHE_ENABLED = os.environ.get('EXTRACT_CACHE', '1') != '0'
+EXTRACT_CACHE_MAX_FILES = int(os.environ.get('EXTRACT_CACHE_MAX_FILES', 200))
+# Bump when extraction output would change for identical bytes and settings
+# (parser change, new channel, different pipe convention) — otherwise a stale
+# entry survives the upgrade and silently serves the old text.
+_EXTRACT_CACHE_VERSION = '1'
+
+
+def _extract_cache_key(filepath, max_pages):
+    """sha256 over the file's bytes plus every setting that shapes extraction.
+
+    A full-file hash measures ~1.2s across 840MB of bids against a ~40s
+    extraction pass, so there is no reason to accept a sampled hash's
+    collision risk to save it.
+    """
+    h = hashlib.sha256()
+    h.update(f'{_EXTRACT_CACHE_VERSION}|{max_pages}|{MAX_PDF_TABLE_PAGES}'
+             f'|{PDF_TABLE_LAYOUT}|{OCR_TIME_BUDGET}|{OCR_MAX_PAGES}|'.encode())
+    with open(filepath, 'rb') as f:
+        for chunk in iter(lambda: f.read(1 << 20), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _extract_cache_read(key):
+    """Cached extraction text for this key, or None. Never raises."""
+    try:
+        path = os.path.join(EXTRACT_CACHE_DIR, key + '.txt')
+        with open(path, 'r', encoding='utf-8') as f:
+            text = f.read()
+        os.utime(path, None)          # LRU touch
+        return text
+    except Exception:
+        return None
+
+
+def _extract_cache_write(key, text):
+    """Store extraction output (never raises — a failed write is not an error).
+
+    Empty results are deliberately not cached: they are what a transient
+    failure looks like too, and re-extracting a document that yielded nothing
+    is cheap (it found nothing to begin with)."""
+    try:
+        os.makedirs(EXTRACT_CACHE_DIR, exist_ok=True)
+        path = os.path.join(EXTRACT_CACHE_DIR, key + '.txt')
+        tmp = path + f'.{os.getpid()}.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            f.write(text)
+        os.replace(tmp, path)         # atomic: readers never see a partial file
+        _extract_cache_prune()
+    except Exception as e:
+        logger.debug('提取缓存写入失败（不影响本次分析）: %s', e)
+
+
+def _extract_cache_prune():
+    """Drop least-recently-used entries once the cache outgrows its cap."""
+    try:
+        entries = sorted(
+            (os.path.getmtime(os.path.join(EXTRACT_CACHE_DIR, n)),
+             os.path.join(EXTRACT_CACHE_DIR, n))
+            for n in os.listdir(EXTRACT_CACHE_DIR) if n.endswith('.txt'))
+        for _, p in entries[:max(0, len(entries) - EXTRACT_CACHE_MAX_FILES)]:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
+# ── Parallel extraction across files ─────────────────────────
+# Extraction is single-threaded (measured 1.0x CPU on an 8-core machine with
+# the layout model off) and each file is independent, so files are spread over
+# worker processes. Every path here degrades to the plain sequential loop —
+# extraction must never fail because a pool could not be built.
+EXTRACT_WORKERS = int(os.environ.get('EXTRACT_WORKERS', 0))   # 0 = auto
+# Bounded by memory rather than CPU: a worker that escalates the table channel
+# carries its own copy of the ~50MB layout model plus page buffers. On the
+# desktop build this runs on the user's machine alongside the server thread.
+EXTRACT_MAX_WORKERS = 5
+
+
+def _extract_worker(args):
+    """Pool worker: extract one file. Module-level so spawn can pickle it."""
+    idx, path, max_pages = args
+    try:
+        return idx, extract_text_with_tables(path, max_pages=max_pages)
+    except Exception:
+        return idx, ''
+
+
+def _extract_many(paths, max_pages=MAX_PDF_PAGES, cancel_event=None,
+                  on_file_done=None, on_progress=None):
+    """Extract several files, in parallel when that is safe and worthwhile.
+
+    Returns texts aligned with `paths`; a file that fails yields '' (same as
+    the per-file try/except this replaced).
+    on_file_done: callback(index, text) as each file finishes — the parallel
+                  run completes out of order, so this is how a caller streams
+                  progress. Called in the sequential fallback too.
+    on_progress:  per-page callback, forwarded only on the sequential path.
+                  Page-level callbacks cannot cross into worker processes, so
+                  a parallel run reports per file via on_file_done instead.
+    """
+    out = [''] * len(paths)
+
+    def _sequential():
+        for idx, p in enumerate(paths):
+            try:
+                text = extract_text_with_tables(p, max_pages=max_pages,
+                                                on_progress=on_progress)
+            except AnalysisCancelled:
+                raise
+            except Exception:
+                text = ''
+            out[idx] = text or ''
+            if on_file_done:
+                on_file_done(idx, out[idx])
+        return out
+
+    workers = EXTRACT_WORKERS or min(len(paths), os.cpu_count() or 1)
+    workers = max(1, min(workers, len(paths), EXTRACT_MAX_WORKERS))
+    if len(paths) < 2 or workers < 2:
+        return _sequential()
+
+    try:
+        # spawn, never fork: the caller is a server worker thread, and forking
+        # a multi-threaded process leaves the child holding locks its other
+        # threads will never release.
+        pool = multiprocessing.get_context('spawn').Pool(workers)
+    except Exception as e:
+        logger.info('多进程提取不可用，回退串行: %s', e)
+        return _sequential()
+
+    logger.info('并行提取 %d 份文档（%d 进程）', len(paths), workers)
+    try:
+        for idx, text in pool.imap_unordered(
+                _extract_worker, [(i, p, max_pages) for i, p in enumerate(paths)]):
+            if cancel_event is not None and cancel_event.is_set():
+                raise AnalysisCancelled()
+            out[idx] = text or ''
+            if on_file_done:
+                on_file_done(idx, out[idx])
+        return out
+    except AnalysisCancelled:
+        raise
+    except Exception as e:
+        logger.info('并行提取失败，回退串行: %s', e)
+        return _sequential()
+    finally:
+        # terminate() (not close()) so a cancelled run stops its workers now
+        # rather than draining the rest of the queue.
+        try:
+            pool.terminate()
+            pool.join()
+        except Exception:
+            pass
+
+
 def extract_text_with_tables(filepath, max_pages=MAX_PDF_PAGES, on_progress=None,
                              cancel_event=None):
+    """Extract text including tables from .docx, .doc, .pdf, or .txt.
+
+    Caching wrapper: a repeated file with unchanged settings returns the
+    previous extraction without re-parsing. The key is computed once and
+    reused for the write — hashing ~200MB again after extraction would cost
+    about as much as the cache lookup saves.
+    """
+    key = None
+    if EXTRACT_CACHE_ENABLED:
+        key = _extract_cache_key(filepath, max_pages)
+        cached = _extract_cache_read(key)
+        if cached is not None:
+            logger.debug('提取缓存命中: %s', os.path.basename(filepath))
+            return cached
+    text = _extract_text_uncached(filepath, max_pages=max_pages,
+                                  on_progress=on_progress,
+                                  cancel_event=cancel_event)
+    if key is not None and text:
+        _extract_cache_write(key, text)
+    return text
+
+
+def _extract_text_uncached(filepath, max_pages=MAX_PDF_PAGES, on_progress=None,
+                           cancel_event=None):
     """Extract text including tables from .docx, .doc, .pdf, or .txt.
 
     max_pages: max PDF pages to process (0 = unlimited, default MAX_PDF_PAGES).
@@ -5391,19 +5583,18 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
     # 100% duplicate extraction; only re-extract what is missing.
     if group_texts is None:
         group_texts = {}
-    for gn in display_names:
-        if gn not in group_texts:
-            paths = group_map.get(gn, [])
-            combined = ''
-            for p in paths:
-                try:
-                    combined += extract_text_with_tables(
-                        p, max_pages=MAX_PDF_PAGES, cancel_event=cancel_event) + '\n'
-                except AnalysisCancelled:
-                    raise
-                except Exception:
-                    pass
-            group_texts[gn] = combined
+    pending = [(gn, p) for gn in display_names if gn not in group_texts
+               for p in group_map.get(gn, [])]
+    if pending:
+        texts = _extract_many([p for _, p in pending], max_pages=MAX_PDF_PAGES,
+                              cancel_event=cancel_event)
+        for (gn, _), text in zip(pending, texts):
+            # A file that failed contributes nothing, exactly as the
+            # per-file try/except this replaced did.
+            if text:
+                group_texts[gn] = group_texts.get(gn, '') + text + '\n'
+            else:
+                group_texts.setdefault(gn, '')
 
     # 1. Metadata — per original file
     all_meta = {}
@@ -7086,34 +7277,65 @@ def analyze_stream():
         def extract_all():
             try:
                 total_groups = len(group_map)
-                for fi, (group, paths) in enumerate(group_map.items()):
-                    combined = ''
-                    for p in paths:
-                        base = os.path.basename(p)
-                        try:
-                            progress_queue.put({
-                                'type': 'extract', 'phase': 'start',
-                                'file': base, 'group': group,
-                                'fileIndex': fi + 1,
-                                'totalFiles': total_groups
-                            })
-                            combined += extract_text_with_tables(
-                                p, max_pages=MAX_PDF_PAGES,
-                                on_progress=_on_extract_progress,
-                                cancel_event=cancel_event
-                            ) + '\n'
-                        except AnalysisCancelled:
-                            cancelled_holder.append(True)
-                            return
-                        except Exception as e:
-                            msg = f'文件 {base} 文字提取失败: {e}'
-                            extraction_errors.append(msg)
-                            logger.warning('text extraction failed for %s: %s', base, e)
-                            progress_queue.put({
-                                'type': 'warning', 'code': 'extraction_failed',
-                                'message': msg
-                            })
-                    group_texts[group] = combined
+                jobs = [(gi, g, p)
+                        for gi, (g, ps) in enumerate(group_map.items())
+                        for p in ps]
+                combined = defaultdict(str)
+                done = [0]
+
+                def on_file_done(idx, text):
+                    gi, group, p = jobs[idx]
+                    if text:
+                        combined[group] += text + '\n'
+                    else:
+                        msg = f'文件 {os.path.basename(p)} 文字提取失败或为空'
+                        extraction_errors.append(msg)
+                        progress_queue.put({
+                            'type': 'warning', 'code': 'extraction_failed',
+                            'message': msg
+                        })
+                    done[0] += 1
+                    # Parallel runs complete out of order, so the sweep is
+                    # driven by completion count rather than by file index —
+                    # but a single-document run keeps the sequential path's
+                    # per-page events (see on_progress below) and only needs
+                    # its opening 'start'.
+                    if len(jobs) > 1:
+                        progress_queue.put({
+                            'type': 'extract', 'phase': 'pdf_page',
+                            'current': done[0], 'total': len(jobs), 'unit': '份',
+                            'hasText': bool(text),
+                            'detail': f'已完成 {done[0]}/{len(jobs)} 份文档'
+                        })
+
+                if len(jobs) > 1:
+                    progress_queue.put({
+                        'type': 'extract', 'phase': 'start',
+                        'file': f'并行提取 {len(jobs)} 份文档',
+                        'fileIndex': 1, 'totalFiles': 1
+                    })
+                elif jobs:
+                    progress_queue.put({
+                        'type': 'extract', 'phase': 'start',
+                        'file': os.path.basename(jobs[0][2]),
+                        'group': jobs[0][1], 'fileIndex': 1, 'totalFiles': 1
+                    })
+
+                _extract_many([p for _, _, p in jobs], max_pages=MAX_PDF_PAGES,
+                              cancel_event=cancel_event,
+                              on_file_done=on_file_done if jobs else None,
+                              on_progress=(_on_extract_progress
+                                           if len(jobs) == 1 else None))
+                for group in group_map:
+                    group_texts.setdefault(group, combined[group])
+                if len(jobs) > 1:
+                    progress_queue.put({
+                        'type': 'extract', 'phase': 'pdf_done',
+                        'current': len(jobs), 'total': len(jobs),
+                        'hasText': any(group_texts.values()), 'detail': ''
+                    })
+            except AnalysisCancelled:
+                cancelled_holder.append(True)
             finally:
                 extraction_done.set()
 
@@ -7322,14 +7544,15 @@ def single_upload_and_analyze():
         # Use the first file of each group as the primary, merge text internally
         group_texts = {}  # group_name -> combined_text
         extraction_warnings = []
-        for group, paths in group_map.items():
-            combined = ''
-            for p in paths:
-                try:
-                    combined += extract_text_with_tables(p, max_pages=MAX_PDF_PAGES) + '\n'
-                except Exception:
-                    pass
-            group_texts[group] = combined
+        _jobs = [(g, p) for g, ps in group_map.items() for p in ps]
+        _texts = _extract_many([p for _, p in _jobs], max_pages=MAX_PDF_PAGES)
+        for (group, _), text in zip(_jobs, _texts):
+            if text:
+                group_texts[group] = group_texts.get(group, '') + text + '\n'
+            else:
+                group_texts.setdefault(group, '')
+        for group in group_map:
+            combined = group_texts[group]
             # Check if combined text is empty (possible all-image PDF)
             if not combined.strip():
                 extraction_warnings.append(
@@ -7683,6 +7906,12 @@ def _run_macos_gui(url, host, port):
 
 
 if __name__ == '__main__':
+    # Must run before anything else: under spawn (the default on Windows and
+    # macOS, and what _extract_many asks for explicitly) the frozen exe is
+    # re-launched to serve as the worker, and this call is what turns that
+    # re-launch into a worker instead of a second server. Without it a frozen
+    # build would recursively start servers until it runs out of memory.
+    multiprocessing.freeze_support()
     if '--check' in sys.argv:
         # 离线自检：验证关键依赖可正常导入（用于便携包目标机校验）
         import flask  # noqa: F401
