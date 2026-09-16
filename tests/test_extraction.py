@@ -1958,6 +1958,17 @@ def t_parallel_progress_crosses_processes():
         m.EXTRACT_CACHE_DIR, m.EXTRACT_CACHE_ENABLED = saved_dir, saved_on
 
 
+def t_display_name_strips_upload_prefix():
+    # Progress labels must name the document the user picked, not the storage
+    # name _safe_save invented ('46e8be14_乙公司.docx').
+    assert m._display_name('/tmp/uploads/46e8be14_乙公司.docx') == '乙公司.docx'
+    assert m._display_name('ref_a1b2c3d4_招标文件.pdf') == '招标文件.pdf'
+    # A name that merely starts with hex-ish text must survive intact.
+    assert m._display_name('fedcba98x_报告.docx') == 'fedcba98x_报告.docx'
+    assert m._display_name('上海全大-投标文件.pdf') == '上海全大-投标文件.pdf'
+    assert m._display_name('') == ''
+
+
 def main():
     # Tests must be hermetic: the extraction cache lives on disk between runs,
     # and a cached PDF extraction silently skips the very code path a test

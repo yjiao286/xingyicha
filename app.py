@@ -313,6 +313,18 @@ def _safe_save(file_storage, prefix=''):
     return fpath, safe_name
 
 
+_UPLOAD_PREFIX_RE = re.compile(r'^(?:ref_)?[0-9a-f]{8}_')
+
+
+def _display_name(path_or_name):
+    """Strip the storage prefix _safe_save adds — for anything a user reads.
+
+    Progress labels otherwise show '46e8be14_乙公司.docx', which is noise the
+    uploader never chose and cannot map back to a file they picked."""
+    base = os.path.basename(path_or_name or '')
+    return _UPLOAD_PREFIX_RE.sub('', base) or base
+
+
 def _is_within_upload_folder(path):
     """Return True if the real path of `path` is inside UPLOAD_FOLDER.
 
@@ -919,7 +931,7 @@ def _ocr_docx_images(lines, images, doc, cancel_event=None, on_progress=None):
         return lines
     if on_progress:
         on_progress('docx_img_ocr_start', 0, len(candidates), False,
-                    f'正在识别文档内嵌图片（命中 {len(candidates)} 张，可能较慢）…')
+                    f'命中 {len(candidates)} 张，可能较慢')
 
     started = time.time()
     done = 0
@@ -1265,6 +1277,7 @@ def _extract_worker_count(paths):
 # the real on_progress — without this the embedded-image OCR (tens of seconds
 # on a large Word file) leaves the UI frozen with nothing to show.
 _WORKER_PROGRESS_Q = None
+_WORKER_CURRENT_FILE = ''
 
 
 def _init_extract_worker(progress_q):
@@ -1274,19 +1287,27 @@ def _init_extract_worker(progress_q):
 
 
 def _worker_progress(phase, current, total, has_text, detail):
-    """on_progress stand-in inside a worker: ship the event to the parent."""
+    """on_progress stand-in inside a worker: ship the event to the parent.
+
+    The file name rides along: with several documents in flight the parent
+    cannot tell whose '11/37' an event is, and the counts from different
+    workers interleave, so the UI would otherwise show a number that jumps
+    around with no indication of which document it belongs to.
+    """
     q = _WORKER_PROGRESS_Q
     if q is None:
         return
     try:
-        q.put((phase, current, total, has_text, detail))
+        q.put((phase, current, total, has_text, detail, _WORKER_CURRENT_FILE))
     except Exception:
         pass                    # a dead queue must never break extraction
 
 
 def _extract_worker(args):
     """Pool worker: extract one file. Module-level so spawn can pickle it."""
+    global _WORKER_CURRENT_FILE
     idx, path, max_pages = args
+    _WORKER_CURRENT_FILE = _display_name(path)
     try:
         return idx, extract_text_with_tables(path, max_pages=max_pages,
                                              on_progress=_worker_progress)
@@ -1312,8 +1333,11 @@ def _extract_many(paths, max_pages=MAX_PDF_PAGES, cancel_event=None,
     def _sequential():
         for idx, p in enumerate(paths):
             try:
-                text = extract_text_with_tables(p, max_pages=max_pages,
-                                                on_progress=on_progress)
+                text = extract_text_with_tables(
+                    p, max_pages=max_pages,
+                    on_progress=(None if on_progress is None else
+                                 (lambda ph, cur, tot, ht, det, _b=os.path.basename(p):
+                                  on_progress(ph, cur, tot, ht, det, _b))))
             except AnalysisCancelled:
                 raise
             except Exception:
@@ -7837,19 +7861,27 @@ def analyze_stream():
     # Collect extraction warnings to send as a separate event
     extraction_warnings = []
 
-    def _on_extract_progress(phase, current, total, has_text, detail):
-        """Callback for text extraction progress → sent as streaming events."""
+    def _on_extract_progress(phase, current, total, has_text, detail, file=None):
+        """Callback for text extraction progress → sent as streaming events.
+
+        `file` is set when the event came from a worker process: several
+        documents run at once there, so the UI needs to know whose '11/37'
+        this is instead of showing a count that jumps between documents.
+        """
         # Only collect "no text" final events as warnings (not every progress detail)
         if detail and phase == 'pdf_done' and not has_text:
             extraction_warnings.append(detail)
-        progress_queue.put({
+        event = {
             'type': 'extract',
             'phase': phase,
             'current': current,
             'total': total,
             'hasText': has_text,
             'detail': detail or ''
-        })
+        }
+        if file:
+            event['file'] = file
+        progress_queue.put(event)
 
     def generate():
         import threading
@@ -7923,7 +7955,7 @@ def analyze_stream():
                 elif jobs:
                     progress_queue.put({
                         'type': 'extract', 'phase': 'start',
-                        'file': os.path.basename(jobs[0][2]),
+                        'file': _display_name(jobs[0][2]),
                         'group': jobs[0][1], 'fileIndex': 1, 'totalFiles': 1
                     })
 
@@ -7933,10 +7965,12 @@ def analyze_stream():
                 # only the phases that explain a long stall — the OCR passes,
                 # where the interface would otherwise sit frozen for up to a
                 # minute and a half.
-                def _parallel_progress(phase, current, total, has_text, detail):
+                def _parallel_progress(phase, current, total, has_text, detail,
+                                       file=None):
                     if phase in ('docx_img_ocr', 'docx_img_ocr_start',
                                  'pdf_ocr', 'pdf_ocr_start', 'docx_block'):
-                        _on_extract_progress(phase, current, total, has_text, detail)
+                        _on_extract_progress(phase, current, total, has_text,
+                                             detail, file)
 
                 _extract_many([p for _, _, p in jobs], max_pages=MAX_PDF_PAGES,
                               cancel_event=cancel_event,

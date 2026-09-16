@@ -200,11 +200,13 @@ function updateExtractProgress(event) {
     var realPct = Math.min(fileStartPct + fileFraction * _fileShare, 25);
     _barSet(realPct);
     if (event.phase === 'pdf_ocr') {
-      progressText.textContent = 'OCR识别扫描件: ' + _extractFileName + (event.detail ? ' - ' + event.detail : '');
+      progressText.textContent = 'OCR识别扫描件: ' + (event.file || _extractFileName) + (event.detail ? ' - ' + event.detail : '');
     } else if (event.phase === 'docx_img_ocr') {
       // Embedded Word images: tens of seconds with no other visible activity,
-      // so the count matters more than the bar here.
-      progressText.textContent = 'OCR识别文档内嵌图片: ' + _extractFileName +
+      // so the count matters more than the bar here. With several documents
+      // in flight the counts from different workers interleave — name the
+      // document, or '11/37' is just a number that jumps around.
+      progressText.textContent = 'OCR识别文档内嵌图片: ' + (event.file || _extractFileName) +
         ' (' + event.current + '/' + event.total + ' 张)';
     } else {
       progressText.textContent = '提取文字: ' + _extractFileName + ' (' + event.current + '/' + event.total + ' ' + (event.unit || '页') + ')';
@@ -218,7 +220,9 @@ function updateExtractProgress(event) {
   }
 
   if (event.phase === 'docx_img_ocr_start') {
-    progressText.textContent = event.detail || ('正在识别文档内嵌图片: ' + _extractFileName);
+    var whoStart = event.file || _extractFileName;
+    progressText.textContent = 'OCR识别文档内嵌图片: ' + whoStart +
+      (event.detail ? '（' + event.detail + '）' : '');
     progressBar.classList.add('extracting');
     return;
   }
