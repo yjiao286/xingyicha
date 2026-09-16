@@ -1824,6 +1824,68 @@ def t_docx_tables_keep_document_order():
         assert t.index('报价一览表') < t.index('2000000') < t.index('表后段落'), repr(t)
 
 
+def t_docx_image_ocr_is_selective():
+    # Only .docx images whose NEIGHBOURING text marks them as evidence get
+    # OCRed — a 商务标 carries ~128 images and OCRing all of them costs minutes
+    # while most are seals and photos. The engine is stubbed: this test is
+    # about the selection rule, not about OCR quality.
+    try:
+        import cv2  # noqa: F401
+        from docx import Document  # noqa: F401
+    except ImportError:
+        return  # deps absent: image OCR is off in production too
+    import tempfile
+    import numpy as np
+    from docx import Document as _Doc
+
+    saved_ocr = m._get_ocr_image_fn
+    saved_flag = m.DOCX_IMAGE_OCR
+    saved_floor = m.DOCX_IMAGE_OCR_MIN_BYTES
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            img = os.path.join(td, 'i.png')
+            cv2.imwrite(img, np.full((640, 480, 3), 200, np.uint8))
+            ocr_calls = []
+
+            def _fake_ocr(blob):
+                ocr_calls.append(blob)
+                return 'OCR_TEXTLINE'
+
+            m.DOCX_IMAGE_OCR = True
+            m.DOCX_IMAGE_OCR_MIN_BYTES = 0        # isolate the trigger rule
+            m._get_ocr_image_fn = lambda: _fake_ocr
+
+            p = os.path.join(td, 'img.docx')
+            d = _Doc()
+            d.add_paragraph('4 磋商保证金凭证/交款单据电子件')   # triggers
+            d.add_picture(img)
+            d.add_paragraph('施工组织设计概述')                  # does not
+            d.add_picture(img)
+            d.save(p)
+
+            text = m.extract_text_with_tables(p)
+            assert 'OCR_TEXTLINE' in text, text[-200:]
+            assert len(ocr_calls) == 1, f'应只 OCR 触发词附近那张，实际 {len(ocr_calls)}'
+
+            # Disabled entirely → no OCR call, no injected text.
+            ocr_calls.clear()
+            m.DOCX_IMAGE_OCR = False
+            assert 'OCR_TEXTLINE' not in m.extract_text_with_tables(p)
+            assert not ocr_calls
+    finally:
+        m._get_ocr_image_fn = saved_ocr
+        m.DOCX_IMAGE_OCR = saved_flag
+        m.DOCX_IMAGE_OCR_MIN_BYTES = saved_floor
+
+
+def t_docx_image_ocr_skips_icons():
+    # The byte floor keeps logos and rules out of the OCR queue.
+    assert m.DOCX_IMAGE_OCR_MIN_BYTES > 0
+    assert not m._DOCX_IMAGE_TRIGGER.search('施工组织设计')
+    assert m._DOCX_IMAGE_TRIGGER.search('磋商保证金凭证/交款单据电子件')
+    assert m._DOCX_IMAGE_TRIGGER.search('开户许可')
+
+
 def main():
     # Tests must be hermetic: the extraction cache lives on disk between runs,
     # and a cached PDF extraction silently skips the very code path a test

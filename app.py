@@ -784,7 +784,25 @@ def _read_xlsx_text(filepath, max_rows=5000, max_sheets=30, cancel_event=None):
 # the whole analysis, so very large scanned documents can still time out.
 OCR_TIME_BUDGET = float(os.environ.get('OCR_TIME_BUDGET', 0))   # seconds/file, 0=unlimited
 OCR_MAX_PAGES = int(os.environ.get('OCR_MAX_PAGES', 0))          # pages/file, 0=unlimited
+
+# ── .docx 内嵌图片的选择性 OCR ───────────────────────────────────
+# A 商务标 embeds ~128 images (40MB) and OCRing all of them costs minutes,
+# while most are seals, photos and scanned-form thumbnails. Only the images
+# whose NEIGHBOURING TEXT says they are evidence get OCRed — 保证金凭证,
+# 资质/认证证书, 营业执照, 身份证件. Those clues exist only as pixels (a
+# shared transfer slip, a certificate issued to the other bidder), so no
+# amount of text parsing can reach them.
+DOCX_IMAGE_OCR = os.environ.get('DOCX_IMAGE_OCR', '1') != '0'
+DOCX_IMAGE_OCR_MAX = int(os.environ.get('DOCX_IMAGE_OCR_MAX', 30))     # images/file
+DOCX_IMAGE_OCR_BUDGET = float(os.environ.get('DOCX_IMAGE_OCR_BUDGET', 90))  # seconds/file
+DOCX_IMAGE_OCR_MIN_BYTES = 10_000   # below this it is an icon, not evidence
+_DOCX_IMAGE_TRIGGER = re.compile(
+    r'保证金|凭证|回执|汇款|转账|缴纳|缴款|保函|'
+    r'证书|认证|资质|执照|许可|CMMI|ISO|营业执照|开户许可|身份证')
+# Namespaces for the DrawingML image reference inside a run.
+_R_EMBED = '{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed'
 _ocr_fn = None
+_ocr_image_fn = None
 _ocr_checked = False
 
 
@@ -798,7 +816,7 @@ def _get_ocr_fn():
     Dependencies (pymupdf, rapidocr_onnxruntime) are imported lazily so the
     base deployment keeps its minimal footprint; absence degrades gracefully.
     """
-    global _ocr_fn, _ocr_checked
+    global _ocr_fn, _ocr_image_fn, _ocr_checked
     if _ocr_checked:
         return _ocr_fn
     _ocr_checked = True
@@ -812,15 +830,8 @@ def _get_ocr_fn():
             from rapidocr_onnxruntime import RapidOCR  # legacy onnxruntime engine
         engine = RapidOCR()
 
-        def _ocr_page(page, dpi=200):
-            pix = page.get_pixmap(dpi=dpi, alpha=False)
-            img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
-                pix.height, pix.width, pix.n)
-            # fitz samples are RGB; the engine consumes cv2-style BGR
-            if pix.n == 3:
-                img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-            elif pix.n == 1:
-                img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+        def _read(img):
+            """Run the engine on a BGR array and flatten its text lines."""
             out = engine(img)
             # unified rapidocr returns a RapidOCROutput with .txts
             txts = getattr(out, 'txts', None)
@@ -832,12 +843,106 @@ def _get_ocr_fn():
                 return ''
             return '\n'.join(item[1] for item in result)
 
+        def _ocr_page(page, dpi=200):
+            pix = page.get_pixmap(dpi=dpi, alpha=False)
+            img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
+                pix.height, pix.width, pix.n)
+            # fitz samples are RGB; the engine consumes cv2-style BGR
+            if pix.n == 3:
+                img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+            elif pix.n == 1:
+                img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+            return _read(img)
+
+        def _ocr_image(blob):
+            """OCR raw image bytes (a .docx media part), BGR via cv2."""
+            img = cv2.imdecode(np.frombuffer(blob, dtype=np.uint8),
+                               cv2.IMREAD_COLOR)
+            if img is None:
+                return ''
+            return _read(img)
+
         _ocr_fn = _ocr_page
+        _ocr_image_fn = _ocr_image
         logger.info('OCR fallback ready (rapidocr + pymupdf), budget %.0fs / %d pages per file',
                     OCR_TIME_BUDGET, OCR_MAX_PAGES)
     except Exception as e:
         logger.info('OCR deps unavailable, scanned PDFs will yield no text: %s', e)
     return _ocr_fn
+
+
+def _get_ocr_image_fn():
+    """The image-bytes companion to _get_ocr_fn(), or None. Shares one engine."""
+    _get_ocr_fn()
+    return _ocr_image_fn
+
+
+def _ocr_docx_images(lines, images, doc, cancel_event=None):
+    """Splice OCR text in for the .docx images that look like evidence.
+
+    `images` is [(line_index, rId)] in document order. The trigger test looks
+    at the SURROUNDING lines because the caption naming an image ('磋商保证金
+    凭证') is normally the paragraph directly above or below it, not part of
+    the image paragraph itself.
+
+    Bounded three ways — a per-file image cap, a wall-clock budget and a
+    byte-size floor — because the whole point of being selective is to stay
+    far away from the "OCR everything" cost.
+    """
+    if not images or not DOCX_IMAGE_OCR:
+        return lines
+    ocr = _get_ocr_image_fn()
+    if ocr is None:
+        return lines
+    started = time.time()
+    done = 0
+    seen = set()
+    extra = {}                      # line_index -> [ocr_text, ...]
+    for idx, rid in images:
+        if done >= DOCX_IMAGE_OCR_MAX or time.time() - started > DOCX_IMAGE_OCR_BUDGET:
+            logger.info('内嵌图片 OCR 触及预算上限（已处理 %d 张）', done)
+            break
+        _check_cancelled(cancel_event)
+        if not _DOCX_IMAGE_TRIGGER.search('\n'.join(lines[max(0, idx - 2):idx + 3])):
+            continue
+        try:
+            part = doc.part.related_parts.get(rid)
+            blob = getattr(part, 'blob', None)
+        except Exception:
+            blob = None
+        if not blob or len(blob) < DOCX_IMAGE_OCR_MIN_BYTES:
+            continue
+        digest = hashlib.sha1(blob).hexdigest()
+        if digest in seen:          # the same logo/stamp reused across pages
+            continue
+        seen.add(digest)
+        done += 1
+        try:
+            text = ocr(blob)
+        except Exception as e:
+            logger.debug('内嵌图片 OCR 失败（已跳过）: %s', e)
+            text = ''
+        if text and text.strip():
+            extra.setdefault(idx, []).append(text.strip())
+
+    if not extra:
+        return lines
+    # Append, do NOT splice at the image's position. Splitting the OCR text
+    # into the flow moved section anchors: an OCRed 营业执照 carries a
+    # 统一社会信用代码 (a 18-char digit run) and 注册资本, and landing that
+    # right after the TOC satisfied _find_bid_summary_section's "price signal
+    # within 400 chars" test — which exists to SKIP table-of-contents entries
+    # — so the 报价 section anchored on the TOC and every bidder's total was
+    # lost (measured: 3,050,000 → 50,000, the 保证金 slip's 大写). Appending
+    # keeps the evidence reachable by whole-text scans (company names for the
+    # 混装 check, contact pools, accounts) without perturbing detection.
+    out = list(lines)
+    out.append('[内嵌图片OCR]')
+    for idx in sorted(extra):
+        out.extend(extra[idx])
+    logger.info('内嵌图片 OCR：%d 张中命中 %d 张，用时 %.1fs',
+                len(images), done, time.time() - started)
+    return out
 
 
 def extract_text(filepath):
@@ -960,7 +1065,7 @@ EXTRACT_CACHE_MAX_FILES = int(os.environ.get('EXTRACT_CACHE_MAX_FILES', 200))
 # Bump when extraction output would change for identical bytes and settings
 # (parser change, new channel, different pipe convention) — otherwise a stale
 # entry survives the upgrade and silently serves the old text.
-_EXTRACT_CACHE_VERSION = '2'   # '2': docx 段落/表格按文档顺序交错 + 文本框与页眉页脚入文本
+_EXTRACT_CACHE_VERSION = '3'   # '2': docx 文档序交错+文本框/页眉；'3': 内嵌图片选择性 OCR
 
 
 def _extract_cache_key(filepath, max_pages):
@@ -972,7 +1077,8 @@ def _extract_cache_key(filepath, max_pages):
     """
     h = hashlib.sha256()
     h.update(f'{_EXTRACT_CACHE_VERSION}|{max_pages}|{MAX_PDF_TABLE_PAGES}'
-             f'|{PDF_TABLE_LAYOUT}|{OCR_TIME_BUDGET}|{OCR_MAX_PAGES}|'.encode())
+             f'|{PDF_TABLE_LAYOUT}|{OCR_TIME_BUDGET}|{OCR_MAX_PAGES}'
+             f'|{DOCX_IMAGE_OCR}|{DOCX_IMAGE_OCR_MAX}|'.encode())
     with open(filepath, 'rb') as f:
         for chunk in iter(lambda: f.read(1 << 20), b''):
             h.update(chunk)
@@ -1495,10 +1601,15 @@ def _extract_text_uncached(filepath, max_pages=MAX_PDF_PAGES, on_progress=None,
     # off an unrelated 大写 fragment.
     from docx.table import Table
     from docx.text.paragraph import Paragraph
+    images = []                     # (line_index, rId) in document order
     for child in doc.element.body.iterchildren():
         _check_cancelled(cancel_event)
         if child.tag == qn('w:p'):
             lines.append(Paragraph(child, doc).text)
+            for blip in child.iter(qn('a:blip')):
+                rid = blip.get(_R_EMBED)
+                if rid:
+                    images.append((len(lines) - 1, rid))
             # Text boxes / shapes anchored in this paragraph (w:txbxContent).
             # python-docx surfaces neither these nor headers, so the org
             # charts built out of floating text boxes were invisible to every
@@ -1524,6 +1635,7 @@ def _extract_text_uncached(filepath, max_pages=MAX_PDF_PAGES, on_progress=None,
                         lines.append(p.text)
             except Exception:
                 continue
+    lines = _ocr_docx_images(lines, images, doc, cancel_event=cancel_event)
     return '\n'.join(lines)
 
 
