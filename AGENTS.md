@@ -138,6 +138,14 @@ lsof -ti:5001 | xargs kill -9
 
 引擎复用：`_ocr_image_fn` 与扫描件用的 `_ocr_fn` 共用同一个 RapidOCR 实例（`_get_ocr_fn` 一次构建），不重复加载 ~15MB 模型。
 
+**进度回传**：图片 OCR 是分钟级静默操作，前端必须知道它在跑。新增阶段 `docx_img_ocr_start` / `docx_img_ocr`（前端显示「OCR识别文档内嵌图片: <文件> (n/m 张)」）与 `docx_block`（长文档解析期，否则首个阶段看起来就是卡住）。
+
+难点在于**回调跨不了进程**：并行提取时 worker 在独立进程里。做法是 `_extract_worker` 改传 `_worker_progress`，它把事件放进 `ctx.Queue()`（Pool 创建时经 `initializer` 交给 worker），父进程用 drainer 线程转发给真正的 `on_progress`；只在有人监听时才建队列与线程。
+
+**踩了两个坑**：① 队列是**异步 flush** 的（每个 worker 有自己的 feeder 线程），父进程若在 `finally` 里 `terminate()`，worker 缓冲区里的事件会被一起杀掉——实测表现为"运行成功但一条进度都没有"。改为正常路径 `close()+join()`（让 worker 干净退出并 flush），仅异常/取消才 `terminate()`；drainer 用 `Event` + `get(timeout=)` 轮询，不用 sentinel（跨生产者无顺序保证）。② 去重要在**候选阶段**做而非 OCR 时做，否则上报的「命中 N 张」会把跨页复用的同一张 logo 重复计数。
+
+多文件时只转发 `docx_img_ocr*` / `pdf_ocr*` / `docx_block`：N 个 worker 的逐页事件属于不同文件、同时到达，会与按文件计数的进度条打架。
+
 **仍未覆盖**：考点一「甲公司和丙公司授权委托书法人均为孙七」——`孙七` 在**甲公司**的任何可提取文本中都不存在（docx/pdf/页眉/文本框均无），且其授权书签章页即使 OCR 也只出印章图形、「仅授权书文字」提示的填写值未必在可识别清晰度内。服务线索6（他方 CMMI 证书混入）理论上被 ⑧ 覆盖（证书页若邻近"认证/资质"会被 OCR），需在服务类语料上复验。
 
 `_EXTRACT_CACHE_VERSION` 升至 `'2'`（docx 输出形态变了，不升会读到旧文本）。

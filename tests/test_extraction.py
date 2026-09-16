@@ -1886,6 +1886,78 @@ def t_docx_image_ocr_skips_icons():
     assert m._DOCX_IMAGE_TRIGGER.search('开户许可')
 
 
+def t_docx_image_ocr_reports_progress():
+    # The UI needs to know OCR is running — it is tens of seconds on a large
+    # Word file, and without an event the progress bar simply sits there.
+    try:
+        import cv2  # noqa: F401
+        from docx import Document  # noqa: F401
+    except ImportError:
+        return
+    import tempfile
+    import numpy as np
+    from docx import Document as _Doc
+
+    saved_ocr = m._get_ocr_image_fn
+    saved_floor = m.DOCX_IMAGE_OCR_MIN_BYTES
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            img = os.path.join(td, 'i.png')
+            cv2.imwrite(img, np.random.randint(0, 255, (640, 480, 3), dtype=np.uint8))
+            m._get_ocr_image_fn = lambda: (lambda blob: 'OCR_TEXTLINE')
+            m.DOCX_IMAGE_OCR_MIN_BYTES = 0
+            p = os.path.join(td, 'p.docx')
+            d = _Doc()
+            d.add_paragraph('4 磋商保证金凭证/交款单据电子件')
+            d.add_picture(img)
+            d.save(p)
+
+            events = []
+            m.extract_text_with_tables(
+                p, on_progress=lambda ph, cur, tot, ht, det: events.append(ph))
+            assert 'docx_img_ocr_start' in events, events
+            assert 'docx_img_ocr' in events, events
+            assert events.index('docx_img_ocr_start') < events.index('docx_img_ocr'), events
+    finally:
+        m._get_ocr_image_fn = saved_ocr
+        m.DOCX_IMAGE_OCR_MIN_BYTES = saved_floor
+
+
+def t_parallel_progress_crosses_processes():
+    # Workers cannot call the parent's callback, so events travel over a queue
+    # handed to the pool at creation. Getting this wrong is silent: the run
+    # succeeds and simply reports nothing (the first cut used terminate() in
+    # its finally, which killed the workers before they flushed that queue).
+    try:
+        import cv2  # noqa: F401
+        from docx import Document  # noqa: F401
+    except ImportError:
+        return
+    import tempfile
+    import numpy as np
+    from docx import Document as _Doc
+    saved_dir, saved_on = m.EXTRACT_CACHE_DIR, m.EXTRACT_CACHE_ENABLED
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            m.EXTRACT_CACHE_DIR = td
+            m.EXTRACT_CACHE_ENABLED = False
+            img = os.path.join(td, 'i.png')
+            cv2.imwrite(img, np.random.randint(0, 255, (640, 480, 3), dtype=np.uint8))
+            paths = []
+            for n in range(2):
+                p = os.path.join(td, f'{n}.docx')
+                d = _Doc()
+                d.add_paragraph('4 磋商保证金凭证/交款单据电子件')
+                d.add_picture(img)
+                d.save(p)
+                paths.append(p)
+            events = []
+            m._extract_many(paths, on_progress=lambda *a: events.append(a[0]))
+            assert 'docx_img_ocr_start' in events, events
+    finally:
+        m.EXTRACT_CACHE_DIR, m.EXTRACT_CACHE_ENABLED = saved_dir, saved_on
+
+
 def main():
     # Tests must be hermetic: the extraction cache lives on disk between runs,
     # and a cached PDF extraction silently skips the very code path a test

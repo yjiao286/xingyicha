@@ -194,13 +194,18 @@ function updateExtractProgress(event) {
     return;
   }
 
-  if (event.phase === 'pdf_page' || event.phase === 'pdf_ocr') {
+  if (event.phase === 'pdf_page' || event.phase === 'pdf_ocr' || event.phase === 'docx_img_ocr') {
     var fileFraction = event.total > 0 ? (event.current / event.total) : 0;
     var fileStartPct = 1 + (_fileIndex - 1) * _fileShare;
     var realPct = Math.min(fileStartPct + fileFraction * _fileShare, 25);
     _barSet(realPct);
     if (event.phase === 'pdf_ocr') {
       progressText.textContent = 'OCR识别扫描件: ' + _extractFileName + (event.detail ? ' - ' + event.detail : '');
+    } else if (event.phase === 'docx_img_ocr') {
+      // Embedded Word images: tens of seconds with no other visible activity,
+      // so the count matters more than the bar here.
+      progressText.textContent = 'OCR识别文档内嵌图片: ' + _extractFileName +
+        ' (' + event.current + '/' + event.total + ' 张)';
     } else {
       progressText.textContent = '提取文字: ' + _extractFileName + ' (' + event.current + '/' + event.total + ' ' + (event.unit || '页') + ')';
     }
@@ -209,6 +214,20 @@ function updateExtractProgress(event) {
 
   if (event.phase === 'pdf_ocr_start') {
     progressText.textContent = event.detail || ('OCR识别扫描件: ' + _extractFileName);
+    return;
+  }
+
+  if (event.phase === 'docx_img_ocr_start') {
+    progressText.textContent = event.detail || ('正在识别文档内嵌图片: ' + _extractFileName);
+    progressBar.classList.add('extracting');
+    return;
+  }
+
+  if (event.phase === 'docx_block') {
+    // Long Word documents spend a while in parsing before any OCR starts;
+    // without this the very first phase looks stalled.
+    progressText.textContent = event.detail || ('正在解析文档: ' + _extractFileName);
+    progressBar.classList.add('extracting');
     return;
   }
 

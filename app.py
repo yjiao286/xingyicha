@@ -877,7 +877,7 @@ def _get_ocr_image_fn():
     return _ocr_image_fn
 
 
-def _ocr_docx_images(lines, images, doc, cancel_event=None):
+def _ocr_docx_images(lines, images, doc, cancel_event=None, on_progress=None):
     """Splice OCR text in for the .docx images that look like evidence.
 
     `images` is [(line_index, rId)] in document order. The trigger test looks
@@ -894,28 +894,48 @@ def _ocr_docx_images(lines, images, doc, cancel_event=None):
     ocr = _get_ocr_image_fn()
     if ocr is None:
         return lines
-    started = time.time()
-    done = 0
+    # Candidates first, so the progress report can say how many images will
+    # actually be read — 'OCR 19 张' is far less alarming than '169 张'.
+    candidates = []
     seen = set()
-    extra = {}                      # line_index -> [ocr_text, ...]
     for idx, rid in images:
-        if done >= DOCX_IMAGE_OCR_MAX or time.time() - started > DOCX_IMAGE_OCR_BUDGET:
-            logger.info('内嵌图片 OCR 触及预算上限（已处理 %d 张）', done)
-            break
-        _check_cancelled(cancel_event)
         if not _DOCX_IMAGE_TRIGGER.search('\n'.join(lines[max(0, idx - 2):idx + 3])):
             continue
+        # De-duplicate here, not at OCR time, so the count reported to the UI
+        # is the number of images actually read (the same logo reused across
+        # pages would otherwise inflate it).
         try:
-            part = doc.part.related_parts.get(rid)
-            blob = getattr(part, 'blob', None)
+            blob = getattr(doc.part.related_parts.get(rid), 'blob', None)
         except Exception:
             blob = None
         if not blob or len(blob) < DOCX_IMAGE_OCR_MIN_BYTES:
             continue
         digest = hashlib.sha1(blob).hexdigest()
-        if digest in seen:          # the same logo/stamp reused across pages
+        if digest in seen:
             continue
         seen.add(digest)
+        candidates.append((idx, rid))
+    if not candidates:
+        return lines
+    if on_progress:
+        on_progress('docx_img_ocr_start', 0, len(candidates), False,
+                    f'正在识别文档内嵌图片（命中 {len(candidates)} 张，可能较慢）…')
+
+    started = time.time()
+    done = 0
+    seen = set()
+    extra = {}                      # line_index -> [ocr_text, ...]
+    for idx, rid in candidates:
+        if done >= DOCX_IMAGE_OCR_MAX or time.time() - started > DOCX_IMAGE_OCR_BUDGET:
+            logger.info('内嵌图片 OCR 触及预算上限（已处理 %d 张）', done)
+            break
+        _check_cancelled(cancel_event)
+        try:
+            blob = getattr(doc.part.related_parts.get(rid), 'blob', None)
+        except Exception:
+            blob = None
+        if not blob:
+            continue
         done += 1
         try:
             text = ocr(blob)
@@ -924,6 +944,9 @@ def _ocr_docx_images(lines, images, doc, cancel_event=None):
             text = ''
         if text and text.strip():
             extra.setdefault(idx, []).append(text.strip())
+        if on_progress:
+            on_progress('docx_img_ocr', done, len(candidates), bool(text),
+                        f'已识别 {done}/{len(candidates)} 张图片')
 
     if not extra:
         return lines
@@ -1237,11 +1260,36 @@ def _extract_worker_count(paths):
     return max(1, min(n, EXTRACT_MAX_WORKERS))
 
 
+# Progress queue for worker processes. A callback cannot cross a process
+# boundary, so workers push raw events here and the parent forwards them to
+# the real on_progress — without this the embedded-image OCR (tens of seconds
+# on a large Word file) leaves the UI frozen with nothing to show.
+_WORKER_PROGRESS_Q = None
+
+
+def _init_extract_worker(progress_q):
+    """Pool initializer: hand this worker the progress queue."""
+    global _WORKER_PROGRESS_Q
+    _WORKER_PROGRESS_Q = progress_q
+
+
+def _worker_progress(phase, current, total, has_text, detail):
+    """on_progress stand-in inside a worker: ship the event to the parent."""
+    q = _WORKER_PROGRESS_Q
+    if q is None:
+        return
+    try:
+        q.put((phase, current, total, has_text, detail))
+    except Exception:
+        pass                    # a dead queue must never break extraction
+
+
 def _extract_worker(args):
     """Pool worker: extract one file. Module-level so spawn can pickle it."""
     idx, path, max_pages = args
     try:
-        return idx, extract_text_with_tables(path, max_pages=max_pages)
+        return idx, extract_text_with_tables(path, max_pages=max_pages,
+                                             on_progress=_worker_progress)
     except Exception:
         return idx, ''
 
@@ -1280,11 +1328,39 @@ def _extract_many(paths, max_pages=MAX_PDF_PAGES, cancel_event=None,
     if len(paths) < 2 or workers < 2:
         return _sequential()
 
+    progress_q = None
+    drainer = None
+    stop_drain = None
     try:
         # spawn, never fork: the caller is a server worker thread, and forking
         # a multi-threaded process leaves the child holding locks its other
         # threads will never release.
-        pool = multiprocessing.get_context('spawn').Pool(workers)
+        ctx = multiprocessing.get_context('spawn')
+        if on_progress is not None:
+            # Workers cannot call the parent's callback; they put events on
+            # this queue (handed over at pool creation) and a drainer thread
+            # forwards them. Only started when someone is listening.
+            progress_q = ctx.Queue()
+            stop_drain = threading.Event()
+
+            def _drain():
+                # Polls rather than blocking on a sentinel: events reach the
+                # parent through each worker's own feeder thread, so there is
+                # no ordering guarantee against anything the parent puts.
+                while not stop_drain.is_set():
+                    try:
+                        item = progress_q.get(timeout=0.2)
+                    except Exception:
+                        continue
+                    try:
+                        on_progress(*item)
+                    except Exception:
+                        pass
+
+            drainer = threading.Thread(target=_drain, daemon=True)
+            drainer.start()
+        pool = ctx.Pool(workers, initializer=_init_extract_worker,
+                        initargs=(progress_q,))
     except Exception as e:
         logger.info('多进程提取不可用，回退串行: %s', e)
         return _sequential()
@@ -1305,13 +1381,23 @@ def _extract_many(paths, max_pages=MAX_PDF_PAGES, cancel_event=None,
         logger.info('并行提取失败，回退串行: %s', e)
         return _sequential()
     finally:
-        # terminate() (not close()) so a cancelled run stops its workers now
-        # rather than draining the rest of the queue.
+        # close()+join() on the normal path, NOT terminate(): a worker's queued
+        # progress events sit in its feeder thread's buffer until the process
+        # shuts down cleanly, and terminate() kills that buffer — which is
+        # exactly how the first cut of this shipped zero progress to the UI.
+        # terminate() stays for the abnormal paths, where stopping now matters
+        # more than flushing a progress bar.
         try:
-            pool.terminate()
+            if sys.exc_info()[0] is None:
+                pool.close()
+            else:
+                pool.terminate()
             pool.join()
         except Exception:
             pass
+        if stop_drain is not None:
+            stop_drain.set()        # give the drainer a moment to catch up
+            drainer.join(timeout=1.0)
 
 
 def extract_text_with_tables(filepath, max_pages=MAX_PDF_PAGES, on_progress=None,
@@ -1602,8 +1688,13 @@ def _extract_text_uncached(filepath, max_pages=MAX_PDF_PAGES, on_progress=None,
     from docx.table import Table
     from docx.text.paragraph import Paragraph
     images = []                     # (line_index, rId) in document order
+    _blocks = 0
     for child in doc.element.body.iterchildren():
         _check_cancelled(cancel_event)
+        _blocks += 1
+        if on_progress and _blocks % 200 == 0:
+            on_progress('docx_block', _blocks, 0, True,
+                        f'正在解析文档结构（已处理 {_blocks} 个段落/表格）…')
         if child.tag == qn('w:p'):
             lines.append(Paragraph(child, doc).text)
             for blip in child.iter(qn('a:blip')):
@@ -1635,7 +1726,8 @@ def _extract_text_uncached(filepath, max_pages=MAX_PDF_PAGES, on_progress=None,
                         lines.append(p.text)
             except Exception:
                 continue
-    lines = _ocr_docx_images(lines, images, doc, cancel_event=cancel_event)
+    lines = _ocr_docx_images(lines, images, doc, cancel_event=cancel_event,
+                             on_progress=on_progress)
     return '\n'.join(lines)
 
 
@@ -7835,11 +7927,23 @@ def analyze_stream():
                         'group': jobs[0][1], 'fileIndex': 1, 'totalFiles': 1
                     })
 
+                # Multi-file: N workers report per-page progress for different
+                # files at the same time, which would fight with the
+                # file-count sweep the UI drives from on_file_done. Forward
+                # only the phases that explain a long stall — the OCR passes,
+                # where the interface would otherwise sit frozen for up to a
+                # minute and a half.
+                def _parallel_progress(phase, current, total, has_text, detail):
+                    if phase in ('docx_img_ocr', 'docx_img_ocr_start',
+                                 'pdf_ocr', 'pdf_ocr_start', 'docx_block'):
+                        _on_extract_progress(phase, current, total, has_text, detail)
+
                 _extract_many([p for _, _, p in jobs], max_pages=MAX_PDF_PAGES,
                               cancel_event=cancel_event,
                               on_file_done=on_file_done if jobs else None,
                               on_progress=(_on_extract_progress
-                                           if len(jobs) == 1 else None))
+                                           if len(jobs) == 1
+                                           else _parallel_progress))
                 for group in group_map:
                     group_texts.setdefault(group, combined[group])
                 if len(jobs) > 1:
