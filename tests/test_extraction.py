@@ -1969,6 +1969,51 @@ def t_display_name_strips_upload_prefix():
     assert m._display_name('') == ''
 
 
+def t_cancel_reaches_extraction():
+    # _extract_many must HAND cancel_event down to extract_text_with_tables.
+    # It was dropped when the parallel rewrite replaced the per-file loops at
+    # the call sites: Stop still set the flag, but nothing inside the
+    # extractor ever looked — a 300-page scan kept OCRing (minutes) while the
+    # button sat on 正在停止.
+    try:
+        from docx import Document  # noqa: F401
+    except ImportError:
+        return
+    import tempfile
+    import threading
+    import time
+    from docx import Document as _Doc
+
+    saved_dir, saved_on = m.EXTRACT_CACHE_DIR, m.EXTRACT_CACHE_ENABLED
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            m.EXTRACT_CACHE_DIR = td
+            m.EXTRACT_CACHE_ENABLED = False
+            paths = []
+            for n in range(2):
+                p = os.path.join(td, f'{n}.docx')
+                d = _Doc()
+                for i in range(60):
+                    d.add_paragraph(f'第 {i} 段内容')
+                d.save(p)
+                paths.append(p)
+
+            # Sequential (single file) and parallel (two files) must both
+            # abort near-instantly once the flag is up.
+            for label, batch in (('串行', paths[:1]), ('并行', paths)):
+                ev = threading.Event()
+                ev.set()
+                t0 = time.time()
+                try:
+                    m._extract_many(batch, cancel_event=ev)
+                    raise AssertionError(f'{label}: 取消未生效，正常返回了')
+                except m.AnalysisCancelled:
+                    pass
+                assert time.time() - t0 < 5, f'{label}: 取消响应过慢'
+    finally:
+        m.EXTRACT_CACHE_DIR, m.EXTRACT_CACHE_ENABLED = saved_dir, saved_on
+
+
 def main():
     # Tests must be hermetic: the extraction cache lives on disk between runs,
     # and a cached PDF extraction silently skips the very code path a test

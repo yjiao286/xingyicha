@@ -1278,12 +1278,18 @@ def _extract_worker_count(paths):
 # on a large Word file) leaves the UI frozen with nothing to show.
 _WORKER_PROGRESS_Q = None
 _WORKER_CURRENT_FILE = ''
+# Set by the parent when the user hits Stop. A threading.Event cannot be
+# shared with a spawned child, and without this a worker runs its file to
+# completion — minutes, once embedded-image OCR is in play — while the UI
+# sits on "正在停止".
+_WORKER_CANCEL_EV = None
 
 
-def _init_extract_worker(progress_q):
-    """Pool initializer: hand this worker the progress queue."""
-    global _WORKER_PROGRESS_Q
+def _init_extract_worker(progress_q, cancel_ev):
+    """Pool initializer: hand this worker the progress queue and cancel flag."""
+    global _WORKER_PROGRESS_Q, _WORKER_CANCEL_EV
     _WORKER_PROGRESS_Q = progress_q
+    _WORKER_CANCEL_EV = cancel_ev
 
 
 def _worker_progress(phase, current, total, has_text, detail):
@@ -1310,7 +1316,8 @@ def _extract_worker(args):
     _WORKER_CURRENT_FILE = _display_name(path)
     try:
         return idx, extract_text_with_tables(path, max_pages=max_pages,
-                                             on_progress=_worker_progress)
+                                             on_progress=_worker_progress,
+                                             cancel_event=_WORKER_CANCEL_EV)
     except Exception:
         return idx, ''
 
@@ -1334,7 +1341,7 @@ def _extract_many(paths, max_pages=MAX_PDF_PAGES, cancel_event=None,
         for idx, p in enumerate(paths):
             try:
                 text = extract_text_with_tables(
-                    p, max_pages=max_pages,
+                    p, max_pages=max_pages, cancel_event=cancel_event,
                     on_progress=(None if on_progress is None else
                                  (lambda ph, cur, tot, ht, det, _b=os.path.basename(p):
                                   on_progress(ph, cur, tot, ht, det, _b))))
@@ -1355,11 +1362,26 @@ def _extract_many(paths, max_pages=MAX_PDF_PAGES, cancel_event=None,
     progress_q = None
     drainer = None
     stop_drain = None
+    worker_cancel = None
+    stop_relay = threading.Event()
     try:
         # spawn, never fork: the caller is a server worker thread, and forking
         # a multi-threaded process leaves the child holding locks its other
         # threads will never release.
         ctx = multiprocessing.get_context('spawn')
+        # Mirror the caller's threading.Event into a mp.Event the workers can
+        # see, so Stop aborts the file in flight instead of waiting for it.
+        if cancel_event is not None:
+            worker_cancel = ctx.Event()
+
+            def _relay_cancel():
+                while not stop_relay.wait(0.2):
+                    if cancel_event.is_set():
+                        worker_cancel.set()
+                        return
+
+            relay = threading.Thread(target=_relay_cancel, daemon=True)
+            relay.start()
         if on_progress is not None:
             # Workers cannot call the parent's callback; they put events on
             # this queue (handed over at pool creation) and a drainer thread
@@ -1384,7 +1406,7 @@ def _extract_many(paths, max_pages=MAX_PDF_PAGES, cancel_event=None,
             drainer = threading.Thread(target=_drain, daemon=True)
             drainer.start()
         pool = ctx.Pool(workers, initializer=_init_extract_worker,
-                        initargs=(progress_q,))
+                        initargs=(progress_q, worker_cancel))
     except Exception as e:
         logger.info('多进程提取不可用，回退串行: %s', e)
         return _sequential()
@@ -1419,6 +1441,7 @@ def _extract_many(paths, max_pages=MAX_PDF_PAGES, cancel_event=None,
             pool.join()
         except Exception:
             pass
+        stop_relay.set()
         if stop_drain is not None:
             stop_drain.set()        # give the drainer a moment to catch up
             drainer.join(timeout=1.0)

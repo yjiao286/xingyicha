@@ -154,6 +154,16 @@ PDF 扫描件 OCR（`pdf_ocr` / `pdf_ocr_start`）走同一套：**文件名由�
 
 `_EXTRACT_CACHE_VERSION` 升至 `'2'`（docx 输出形态变了，不升会读到旧文本）。
 
+### 取消传播（停止按钮）
+
+`_extract_many` **必须把 `cancel_event` 传下去**。并行化重构在替换三处调用点时把它漏掉了——调用点原本是 `extract_text_with_tables(..., cancel_event=cancel_event)`，而 `_extract_many` 的签名虽然收下了 `cancel_event`，串行分支却没往下传。后果是静默的：点停止后事件照常置位，但提取器内部**没有任何一处会去看它**，300 页扫描件继续 OCR 数分钟，界面一直卡在"正在停止"。实测修复后串行 0.2s / 并行 0.4s 内中止。
+
+两条路径分别处理：
+- **串行**：`cancel_event` 直接透传给 `extract_text_with_tables`，PDF 逐页循环与 `_ocr_docx_images` 逐张循环本来就有 `_check_cancelled` 检查点；
+- **并行**：`threading.Event` 无法跨 spawn 进程，故新建 `ctx.Event()` 经 Pool `initializer` 交给 worker（`_WORKER_CANCEL_EV`），父进程用中继线程把调用方的 Event 镜像过去。否则 worker 会把整份文件跑完。
+
+`t_cancel_reaches_extraction` 覆盖两条路径（并已用变异测试确认：去掉那一行转发，测试立刻失败）。
+
 ### 并行度自适应（多机部署）
 
 应用要装到各种机器上，进程数由 `_extract_worker_count(paths)` 现算，取四者最小值：**批次数 / 可用核数 / 内存预算 / 硬上限 16**。任一环境变量 `EXTRACT_WORKERS` 设了就完全覆盖自动值。
