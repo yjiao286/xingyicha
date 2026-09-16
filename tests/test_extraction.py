@@ -1686,11 +1686,11 @@ def t_extract_worker_sizing():
     assert budget is None or budget > 0, budget
 
 
-# ══ 围串标考点：电话池 / 环境噪声 / 新增判定条款 ══
+# ══ 围串标信号：电话池 / 环境噪声 / 新增判定条款 ══
 
 def t_phone_pool_includes_landlines():
     # The cross-matching pool used to be mobile-only, so a shared 座机 on the
-    # 供应商基本情况表 (考点三 / 线索9) could never pair two documents.
+    # 供应商基本情况表 (shared contact) could never pair two documents.
     r = m.extract_personnel('联系人：陈二 电话：010-88886666 传真：010-77775555')
     assert '010-88886666' in r['phones'], r['phones']
     assert '010-77775555' in r['phones'], r['phones']
@@ -1702,7 +1702,7 @@ def t_phone_pool_includes_landlines():
 def t_env_demotion_prefers_reference_doc():
     # A value the TENDER document reprints is environmental. A value shared by
     # EVERY bidder but absent from the tender document is the strongest signal
-    # there is — 考点三 is *defined* as the shared case, so the old frequency
+    # there is — a shared contact is *defined* as the shared case, so the old frequency
     # rule (which degenerates to "in every document" at 3 bidders) deleted
     # exactly the evidence it existed to protect.
     shared = '13911112222'
@@ -1726,7 +1726,7 @@ def t_env_demotion_prefers_reference_doc():
 def t_project_manager_parenthesized_hint():
     # '（项目经理姓名）吴九' — bracket hint then fill, in free-standing 承诺书
     # prose no section marker covers. 丙公司's 承诺书 names 吴九 while its
-    # 简历表 names 郑明; only the 承诺书 ties the file to 乙公司 (考点九).
+    # 简历表 names 郑明; only the 承诺书 ties the file to 乙公司 (标注项九).
     r = m.extract_personnel(
         '我方拟派往（工程名称）某改造工程工程 的项目经理 （项目经理姓名）吴九 '
         '现阶段没有担任任何在施建设工程项目的项目经理。')
@@ -1771,7 +1771,7 @@ def t_verdict_has_article34_and_mixing_clauses():
 
 
 def t_total_price_ladder_detected():
-    # 考点六: three totals in equal steps. The pairwise loop only reported
+    # 标注项六: three totals in equal steps. The pairwise loop only reported
     # EQUAL totals, so 295万/300万/305万 produced no finding at all.
     import tempfile
     saved = m.EXTRACT_CACHE_ENABLED

@@ -1820,7 +1820,7 @@ def _extract_text_uncached(filepath, max_pages=MAX_PDF_PAGES, on_progress=None,
                         images.append((len(lines) - 1, rid))
     # Page headers/footers, once per section. python-docx's .paragraphs never
     # includes them, and a bidder's name left in ANOTHER bidder's page header
-    # is exactly the 混装 clue (考点七) — the text has to be present before any
+    # is exactly the 混装 clue (标注项七) — the text has to be present before any
     # check can see it.
     for section in doc.sections:
         for part in (section.header, section.footer):
@@ -2338,7 +2338,7 @@ def _extract_from_personnel_table(section_text, info):
         # holds a printed HINT and the filled value follows the closing one.
         # Company extraction already knew '（投标人名称）…'; the person side
         # did not, so 丙公司's 项目经理承诺书 naming 吴九 was invisible and
-        # 考点九 (same 拟派项目经理 as 乙公司's) could never be seen — the
+        # 标注项九 (same 拟派项目经理 as 乙公司's) could never be seen — the
         # 简历表 in the same file says 郑明, so the two files looked
         # unrelated while a single clause of prose tied them together.
         r'[（(]\s*(?:拟派)?(?:项目经理|项目负责人|经理|负责人)\s*姓名\s*[）)]\s*'
@@ -2858,7 +2858,7 @@ def _iter_landlines(src):
 def _iter_phones(src):
     """Mobiles then landlines — the contact pool behind phone cross-matching.
 
-    Landlines matter as much as mobiles here: 考点三/线索9-style collusion is
+    Landlines matter as much as mobiles here: shared-contact-style collusion is
     routinely carried by a shared 座机 on the 供应商基本情况表, and a
     mobile-only pool can never pair those documents."""
     return _iter_mobiles(src) + _iter_landlines(src)
@@ -2959,7 +2959,7 @@ def extract_personnel(text):
     # standing 承诺书, so the section-scoped extractors never saw it and the
     # 拟派项目经理 named there stayed invisible — 丙公司's 项目承诺书 names
     # 吴九 while the 简历表 in the same file names 郑明, and it is the
-    # 承诺书 that ties the file to 乙公司 (考点九). The form is unambiguous
+    # 承诺书 that ties the file to 乙公司 (标注项九). The form is unambiguous
     # (bracket hint + fill), so a whole-text scan is safe.
     for m in re.finditer(
             r'[（(]\s*(?:拟派)?(项目经理|项目负责人|经理|负责人)\s*姓名\s*[）)]\s*'
@@ -3127,7 +3127,7 @@ def _demote_environmental_pool_values(all_personnel, group_names, ref_texts=None
     definition, whatever its frequency among bidders. The previous frequency
     test — "in >= min_groups documents AND >= ratio of them" — collapses to
     "in every document" at three bidders, which is precisely the strongest
-    possible evidence for 考点三 (不同投标人的联系人、电话或者地址相同: a
+    possible evidence for shared-contact collusion ("不同投标人的联系人、电话或者地址相同": a
     shared contact is *defined* by being shared). Measured on the competition
     corpus it deleted the planted clue itself: all three bidders' 供应商基本
     情况表 carry phone 13911112222, and the filter removed it from every one,
@@ -6006,7 +6006,7 @@ def _build_sub_item_comparison(all_prices, filenames):
         # footing says more), but plenty of bids quote only a 含税 total —
         # the 工程类 sample fills in nothing but 含税 2,950,000 / 3,000,000 /
         # 3,050,000. Requiring 不含税 for the ladder test meant the planted
-        # 5万元 arithmetic progression (考点六) could never be reported.
+        # 5万元 arithmetic progression (标注项六) could never be reported.
         if len(prices_excl) >= 2:
             prices_cmp, price_basis, price_item_key = prices_excl, '不含税', 'totalPrice'
         else:
