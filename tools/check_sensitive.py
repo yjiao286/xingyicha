@@ -24,6 +24,7 @@ Usage:
     tools/check_sensitive.py --staged          # pre-commit
     tools/check_sensitive.py --message FILE    # commit-msg
     tools/check_sensitive.py --all             # audit the whole worktree
+    tools/check_sensitive.py --revs A..B       # pre-push: commits about to publish
 Exit status 1 when something matches.
 """
 import os
@@ -168,6 +169,36 @@ def main(argv):
         pairs = list(staged_blobs())
     elif mode == '--all':
         pairs = list(tracked_texts())
+    elif mode == '--revs':
+        # pre-push: everything about to be published. Covers the gap that
+        # `git commit --no-verify` leaves open — the commit hooks are advisory
+        # to anyone who knows the flag, and by push time the only way back is
+        # rewriting published history.
+        revs = argv[2:]
+        if revs:
+            out = subprocess.run(
+                ['git', 'log', '--format=%H%x01%s%x01%b%x02'] + revs,
+                capture_output=True, text=True).stdout
+            for rec in out.split('\x02'):
+                if not rec.strip():
+                    continue
+                parts = rec.split('\x01')
+                if len(parts) < 3:
+                    continue
+                pairs.append((f'commit {parts[0][:9]} message',
+                              parts[1] + '\n' + parts[2]))
+            names = subprocess.run(
+                ['git', 'diff', '--name-only', '--diff-filter=ACMR'] + revs,
+                capture_output=True, text=True).stdout.split('\n')
+            for path in names:
+                path = path.strip()
+                if not path or path.lower().endswith(BINARY_SUFFIXES):
+                    continue
+                try:
+                    with open(path, 'r', encoding='utf-8') as f:
+                        pairs.append((path, f.read()))
+                except (OSError, UnicodeDecodeError):
+                    continue
     elif mode == '--message':
         if len(argv) < 3:
             return 0
