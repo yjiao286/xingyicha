@@ -863,14 +863,30 @@ _PDF_TABLE_TRIGGER = re.compile(
     r'姓名|人员|职务|职称|电话|身份证|授权|账号)')
 MAX_PDF_TABLE_PAGES = 300
 
+# When to consult the layout analyzer (pymupdf-layout's ONNX model) in the
+# table channel. The model costs ~110-140ms/page against the line-based
+# finder's ~20ms, so the default spends it only where it can pay off:
+#   'auto'   — line-based first; escalate to the model only on pages where
+#              that came back empty (see _fitz_page_tables_as_pipes).
+#   'always' — fuse the model's grids on every page (highest recall ceiling,
+#              5-13x slower; also suppresses line-only tables, see below).
+#   'off'    — never load the model at all; identical to the code before
+#              pymupdf-layout existed.
+PDF_TABLE_LAYOUT = os.environ.get('PDF_TABLE_LAYOUT', 'auto').strip().lower()
 
-def _fitz_page_tables_as_pipes(page):
-    """Extract tables from one PyMuPDF page as pipe-separated lines."""
-    rows_out = []
+
+def _fitz_tables_as_pipe_rows(page, **kwargs):
+    """Run page.find_tables(**kwargs) and flatten its tables to ' | ' rows.
+
+    Returns None when the call itself fails — pymupdf old enough to reject the
+    keyword — so the caller can pick a fallback instead of misreading a broken
+    call as "this page has no tables".
+    """
     try:
-        finder = page.find_tables()
+        finder = page.find_tables(**kwargs)
     except Exception:
-        return ''
+        return None
+    rows_out = []
     for tbl in getattr(finder, 'tables', []):
         try:
             rows = tbl.extract()
@@ -881,7 +897,53 @@ def _fitz_page_tables_as_pipes(page):
                      for c in row]
             if any(cells):
                 rows_out.append(' | '.join(cells))
-    return '\n'.join(rows_out)
+    return rows_out
+
+
+def _fitz_page_tables_as_pipes(page):
+    """Extract tables from one PyMuPDF page as pipe-separated lines.
+
+    Two sources, and the layout analyzer is consulted only where the cheap one
+    cannot answer (PDF_TABLE_LAYOUT, default 'auto'):
+
+    - line-based finder — ~20ms/page, but blind to borderless tables, which is
+      exactly why an empty result here is worth escalating.
+    - pymupdf-layout's ONNX layout model (union=True) — ~110-140ms/page, 5-13x
+      the above; it reads the page's object structure and so recovers
+      grid-less tables the line finder never sees.
+
+    Escalating only on an empty line pass is what makes the model a strict
+    gain. Its table classifier is conservative on diagram-heavy pages — it
+    reports layout boxes but none of class 'table' — and when it is consulted
+    anyway its grids suppress the line finder's results, because the default
+    use_layout=True path bails out with an empty TableFinder as soon as layout
+    ran and found no table. That is no corner case: on one real report it cost
+    rows on 16 pages and gained on 2, losing good table text on each. Gating
+    the other way round (run the model first, keep only what it agrees with)
+    is what the previous always-union code did.
+
+    use_layout=False on the cheap pass is load-bearing: once pymupdf.layout is
+    imported, the find_tables default (use_layout=True) runs the model — both
+    the 5-13x slowdown and the suppression above. Passing it reproduces the
+    exact rows and cost of the pre-pymupdf-layout code.
+
+    Without the package installed the model branch degrades to plain line
+    detection, same as before the dependency existed.
+    """
+    if PDF_TABLE_LAYOUT != 'always':
+        rows = _fitz_tables_as_pipe_rows(page, use_layout=False)
+        if rows is None:
+            # pymupdf too old for the keyword — the bare call is the same
+            # line-based finder anyway.
+            rows = _fitz_tables_as_pipe_rows(page)
+        if rows or PDF_TABLE_LAYOUT == 'off':
+            return '\n'.join(rows) if rows else ''
+
+    rows = _fitz_tables_as_pipe_rows(page, union=True)
+    if rows is None:
+        # Older pymupdf without the union parameter: plain detection.
+        rows = _fitz_tables_as_pipe_rows(page)
+    return '\n'.join(rows) if rows else ''
 
 
 def extract_text_with_tables(filepath, max_pages=MAX_PDF_PAGES, on_progress=None,
@@ -922,6 +984,15 @@ def extract_text_with_tables(filepath, max_pages=MAX_PDF_PAGES, on_progress=None
                     _pm.TOOLS.mupdf_display_errors(False)
                 except Exception:
                     pass
+                try:
+                    _pm.no_recommend_layout()
+                except Exception:
+                    pass
+                if PDF_TABLE_LAYOUT != 'off':
+                    try:
+                        import pymupdf.layout  # noqa: F401 — see _open_fitz note
+                    except Exception:
+                        pass
                 fallback_doc = _pm.open(filepath)
             except Exception:
                 pass
@@ -983,6 +1054,27 @@ def extract_text_with_tables(filepath, max_pages=MAX_PDF_PAGES, on_progress=None
                         fitz.TOOLS.mupdf_display_errors(False)
                     except Exception:
                         pass  # older bindings without the switch keep default
+                    # find_tables() also prints a one-time AD for the optional
+                    # pymupdf-layout package ('Consider using the pymupdf_layout
+                    # package…') — silence the advertisement, not the feature.
+                    try:
+                        fitz.no_recommend_layout()
+                    except Exception:
+                        pass  # pre-1.28 bindings never print it anyway
+                    # Activate the layout analyzer when pymupdf-layout is
+                    # installed (registers pymupdf._get_layout; find_tables'
+                    # union mode then fuses its grids with line candidates).
+                    # pymupdf itself never auto-imports it — without this the
+                    # package stays inert even when installed.
+                    # PDF_TABLE_LAYOUT='off' skips the import entirely:
+                    # _get_layout then stays None and every find_tables call is
+                    # line-based, so the ~50MB model never loads (saves the
+                    # 0.26s import and ~110MB of RSS).
+                    if PDF_TABLE_LAYOUT != 'off':
+                        try:
+                            import pymupdf.layout  # noqa: F401
+                        except Exception:
+                            pass  # optional: union degrades to line-based
                     fitz_doc = fitz.open(filepath)
                 except Exception as e:
                     logger.info('PyMuPDF unavailable, scanned-page OCR and PDF '

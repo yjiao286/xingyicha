@@ -7,6 +7,9 @@ gunicorn>=21.0
 openpyxl>=3.1
 # 扫描件 PDF 的 OCR 回退（可选，缺失时扫描件自动跳过，不影响其他功能）
 pymupdf>=1.24
+# PDF 结构化表格通道增强（可选）：版面分析模型与线框检测融合，find_tables(union)。
+# 注意该包精确锁 PyMuPDF==1.28.2；缺失时表格通道自动降级回纯线框检测。
+pymupdf-layout>=1.28
 # rapidocr-onnxruntime（旧引擎包）不支持 Python>=3.13：py<3.13 走旧包，
 # py>=3.13 走统一新包 rapidocr（app.py 对两种引擎的 import 与返回值均兼容）
 rapidocr-onnxruntime>=1.3; python_version < "3.13"

@@ -42,6 +42,17 @@ datas += _ocr_datas
 binaries += _ocr_binaries
 hiddenimports += _ocr_hiddenimports
 
+# pymupdf.layout（pymupdf-layout 发行包）同理：~50MB ONNX 模型 + yaml 配置
+# 在 resources/onnx 下作为 package data 分发，且 app.py 在函数内动态 import，
+# collect_all 兜底收集（包缺失时 collect_all 返回空三元组，不影响构建）。
+try:
+    _layout_datas, _layout_binaries, _layout_hiddenimports = collect_all('pymupdf.layout')
+    datas += _layout_datas
+    binaries += _layout_binaries
+    hiddenimports += _layout_hiddenimports
+except Exception:
+    pass
+
 a = Analysis(
     [os.path.join(PROJECT, 'app.py')],
     pathex=[PROJECT],

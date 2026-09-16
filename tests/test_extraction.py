@@ -1305,7 +1305,6 @@ def t_price_xiaoxie_thin_space():
 
 # ══ 损坏 PDF 处理：MuPDF 诊断静音 + pypdf 打不开时降级 ══
 
-
 def _make_classic_pdf_in(td, name):
     """Build the classic-xref fixture inside `td` and return (path, offsets).
 
@@ -1330,6 +1329,48 @@ def _destroy_startxref(path):
     """Break the startxref keyword so pypdf cannot open the file at all."""
     raw = open(path, 'rb').read().replace(b'startxref', b'startxreaF')
     open(path, 'wb').write(raw)
+
+
+def _draw_cjk_grid_table(path):
+    """Draw a 3x4 line grid with CJK cell text (china-s built-in font)."""
+    import pymupdf
+    d = pymupdf.open()
+    p = d.new_page()
+    rows, cols = 3, 4
+    x0, y0, cw, ch = 72, 72, 90, 22
+    for r in range(rows + 1):
+        p.draw_line((x0, y0 + r * ch), (x0 + cols * cw, y0 + r * ch))
+    for c in range(cols + 1):
+        p.draw_line((x0 + c * cw, y0), (x0 + c * cw, y0 + rows * ch))
+    data = [['姓名', '职务', '联系电话', '备注'],
+            ['王强', '项目经理', '13900000001', ''],
+            ['李芳', '监理工程师', '13900000002', '']]
+    for r, row in enumerate(data):
+        for c, v in enumerate(row):
+            if v:
+                p.insert_text((x0 + c * cw + 4, y0 + r * ch + 15), v,
+                              fontname='china-s')
+    d.save(path)
+    d.close()
+
+
+def _draw_cjk_borderless_table(path):
+    """Same 3x4 CJK table as _draw_cjk_grid_table but with no ruling lines —
+    the case only the layout analyzer can see."""
+    import pymupdf
+    d = pymupdf.open()
+    p = d.new_page()
+    x0, y0, cw, ch = 72, 72, 90, 22
+    data = [['姓名', '职务', '联系电话', '备注'],
+            ['王强', '项目经理', '13900000001', ''],
+            ['李芳', '监理工程师', '13900000002', '']]
+    for r, row in enumerate(data):
+        for c, v in enumerate(row):
+            if v:
+                p.insert_text((x0 + c * cw + 4, y0 + r * ch + 15), v,
+                              fontname='china-s')
+    d.save(path)
+    d.close()
 
 
 def _make_classic_pdf(path):
@@ -1383,6 +1424,69 @@ def t_pdf_pypdf_dead_mupdf_fallback():
         _destroy_startxref(path)
         t = m.extract_text_with_tables(path)
         assert 'bid price' in t, repr(t[:80])
+
+
+def t_pdf_table_channel_union():
+    # Structured table channel: find_tables(union=True) fuses the layout
+    # analyzer's grids (pymupdf-layout) with line-based candidates. Draws a
+    # real line grid with CJK cell text (china-s) and checks the pipe rows.
+    # NOTE: the page-level text is read through pypdf in the full pipeline,
+    # and pypdf cannot decode china-s without a ToUnicode map — so this test
+    # exercises _fitz_page_tables_as_pipes directly.
+    try:
+        import pymupdf
+    except ImportError:
+        return  # pymupdf absent: channel disabled in production too
+    import os as _os
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        path, _ = _make_classic_pdf_in(td, 'table.pdf')
+        _draw_cjk_grid_table(path)
+        d2 = pymupdf.open(path)
+        pipes = m._fitz_page_tables_as_pipes(d2[0])
+        assert '姓名' in pipes and '王强' in pipes and '项目经理' in pipes, pipes
+
+
+def t_pdf_table_layout_modes():
+    # PDF_TABLE_LAYOUT gating. The layout analyzer costs ~5-13x the line finder
+    # and, once consulted, suppresses line-only tables: its classifier returns
+    # no 'table' box for diagram-ish pages, and the default use_layout=True
+    # path then bails out with an empty TableFinder, discarding rows the line
+    # finder had already recovered. So 'auto' has to be a superset of 'off' —
+    # escalate for borderless tables, never trade away a line-found one.
+    try:
+        import pymupdf
+    except ImportError:
+        return  # pymupdf absent: channel disabled in production too
+    import tempfile
+    saved = m.PDF_TABLE_LAYOUT
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            # Borderless: the line finder is blind, so 'off' yields nothing
+            # and 'auto' must recover the table by escalating to the model.
+            path = os.path.join(td, 'nolines.pdf')
+            _draw_cjk_borderless_table(path)
+            doc = pymupdf.open(path)
+            m.PDF_TABLE_LAYOUT = 'off'
+            assert m._fitz_page_tables_as_pipes(doc[0]) == '', '线框检测不应认出无框线表'
+            m.PDF_TABLE_LAYOUT = 'auto'
+            pipes = m._fitz_page_tables_as_pipes(doc[0])
+            assert '王强' in pipes and '项目经理' in pipes, pipes
+            doc.close()
+
+            # Framed: the line pass answers, so 'auto' must return exactly its
+            # rows and never escalate — that is the whole suppression guard.
+            path2 = os.path.join(td, 'lines.pdf')
+            _draw_cjk_grid_table(path2)
+            doc2 = pymupdf.open(path2)
+            m.PDF_TABLE_LAYOUT = 'off'
+            plain = m._fitz_page_tables_as_pipes(doc2[0])
+            assert '王强' in plain, plain
+            m.PDF_TABLE_LAYOUT = 'auto'
+            assert m._fitz_page_tables_as_pipes(doc2[0]) == plain
+            doc2.close()
+    finally:
+        m.PDF_TABLE_LAYOUT = saved
 
 
 def main():
