@@ -960,7 +960,7 @@ EXTRACT_CACHE_MAX_FILES = int(os.environ.get('EXTRACT_CACHE_MAX_FILES', 200))
 # Bump when extraction output would change for identical bytes and settings
 # (parser change, new channel, different pipe convention) — otherwise a stale
 # entry survives the upgrade and silently serves the old text.
-_EXTRACT_CACHE_VERSION = '1'
+_EXTRACT_CACHE_VERSION = '2'   # '2': docx 段落/表格按文档顺序交错 + 文本框与页眉页脚入文本
 
 
 def _extract_cache_key(filepath, max_pages):
@@ -1485,14 +1485,45 @@ def _extract_text_uncached(filepath, max_pages=MAX_PDF_PAGES, on_progress=None,
 
     doc = Document(filepath)
     lines = []
-    for p in doc.paragraphs:
+    # Paragraphs and tables must be emitted in DOCUMENT ORDER. Walking
+    # doc.paragraphs and then doc.tables puts every table after every
+    # paragraph, which tears a table away from the heading that introduces it:
+    # in the 工程类 corpus the '报价一览表' heading landed at offset ~500 while
+    # its price table was pushed to ~16700, so _find_bid_summary_section could
+    # never see the price inside its 3000-char window and all three bidders'
+    # totals (295万/300万/305万) were lost — one of them mis-parsed to 50000
+    # off an unrelated 大写 fragment.
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+    for child in doc.element.body.iterchildren():
         _check_cancelled(cancel_event)
-        lines.append(p.text)
-    for table in doc.tables:
-        for row in table.rows:
-            _check_cancelled(cancel_event)
-            row_text = ' | '.join(cell.text for cell in row.cells)
-            lines.append(row_text)
+        if child.tag == qn('w:p'):
+            lines.append(Paragraph(child, doc).text)
+            # Text boxes / shapes anchored in this paragraph (w:txbxContent).
+            # python-docx surfaces neither these nor headers, so the org
+            # charts built out of floating text boxes were invisible to every
+            # parser — one 技术部分 carried 114 of them (项目部/监理/质量组/
+            # 技术负责人…), all silently dropped.
+            for box in child.iter(qn('w:txbxContent')):
+                box_text = '\n'.join(t.text or '' for t in box.iter(qn('w:t')))
+                if box_text.strip():
+                    lines.append(box_text)
+        elif child.tag == qn('w:tbl'):
+            for row in Table(child, doc).rows:
+                _check_cancelled(cancel_event)
+                lines.append(' | '.join(cell.text for cell in row.cells))
+    # Page headers/footers, once per section. python-docx's .paragraphs never
+    # includes them, and a bidder's name left in ANOTHER bidder's page header
+    # is exactly the 混装 clue (考点七) — the text has to be present before any
+    # check can see it.
+    for section in doc.sections:
+        for part in (section.header, section.footer):
+            try:
+                for p in part.paragraphs:
+                    if p.text.strip():
+                        lines.append(p.text)
+            except Exception:
+                continue
     return '\n'.join(lines)
 
 
@@ -1692,6 +1723,21 @@ def _is_person_name(name):
     # start with real surnames (项/关/管) and would pass every check below,
     # but no genuine person name contains a collective/organizational word.
     if re.search(r'项目|項目|人员|人員|团队|團隊|成员|成員|机构|機構|分工|部门|部門|简历|簡歷|配备|配備|配置|一览|一覽', name_stripped):
+        return False
+
+    # Business/technical nouns that are never part of a person name but survive
+    # the surname + length checks. Observed leaking into all_persons from table
+    # cells: '经营范围' (→ team_member, cross-matched across all three bidders),
+    # '管理模块' / '通知用户' (→ project_manager), '成影响的' (→ project_manager).
+    # Containment rather than equality — these arrive as 3-4 char fragments
+    # glued off a table row, so the noun is rarely the whole capture. Two-char
+    # minimums keep this from grazing real names (管明 ≠ 管理).
+    if re.search(r'经营|範圍|范围|模块|模組|管理|通知|用户|用戶|影响|影響|'
+                 r'系统|系統|部数|部署|服务|服務|数据|數據|平台|功能|流程|'
+                 r'界面|参数|參數|版本|需求|方案|产品|產品|业务|業務|内容|'
+                 r'信息|标准|標準|规范|規範|制度|机制|機制|模型|算法|接口|'
+                 r'清单|清單|明细|明細|报表|報表|台账|臺賬|预算|預算|成本|'
+                 r'费用|費用|合同|条款|條款|协议|協議', name_stripped):
         return False
 
     # Minority-ethnic names use a middle-dot separator (· U+00B7, •, ・),
@@ -1980,6 +2026,15 @@ def _extract_from_personnel_table(section_text, info):
         r'姓名[_＿\s]*[：:][_＿\s]*([一-鿿](?:[ \t]*[一-鿿]){1,3}?(?:[ \t]*[·•・][ \t]*[一-鿿](?:[ \t]*[一-鿿]){1,3}?){0,2})(?![一-鿿]|：|:)',
         # Colon-less bare name '姓名 张三' (flattened table / cell-per-line).
         r'姓名\s+([一-鿿](?:[ \t]*[一-鿿]){1,3}?(?:[ \t]*[·•・][ \t]*[一-鿿](?:[ \t]*[一-鿿]){1,3}?){0,2})(?![一-鿿]|：|:)',
+        # Parenthesized role-then-name: '（项目经理姓名）吴九' — the bracket
+        # holds a printed HINT and the filled value follows the closing one.
+        # Company extraction already knew '（投标人名称）…'; the person side
+        # did not, so 丙公司's 项目经理承诺书 naming 吴九 was invisible and
+        # 考点九 (same 拟派项目经理 as 乙公司's) could never be seen — the
+        # 简历表 in the same file says 郑明, so the two files looked
+        # unrelated while a single clause of prose tied them together.
+        r'[（(]\s*(?:拟派)?(?:项目经理|项目负责人|经理|负责人)\s*姓名\s*[）)]\s*'
+        r'([一-鿿](?:[ \t]*[一-鿿]){1,3}?(?:[ \t]*[·•・][ \t]*[一-鿿](?:[ \t]*[一-鿿]){1,3}?){0,2})(?![一-鿿])',
     ]
     # 'role name' immediately before a match start means the pairing belongs
     # to pattern 3 above ('项目经理 王强 技术负责人 李四'): re-pairing that
@@ -2092,7 +2147,7 @@ def _parse_personnel_pipe_table(text, info):
                 role = _infer_role_label(role_str) if role_str else 'team_member'
                 info['all_persons'].append({'name': name, 'role': role, 'confidence': 0.75})
                 if phone_col is not None and phone_col < len(cells):
-                    for num in _iter_mobiles(cells[phone_col]):
+                    for num in _iter_phones(cells[phone_col]):
                         _append_unique(info['phones'], num)
                         if not info.get('phone'):
                             info['phone'] = num
@@ -2457,6 +2512,50 @@ def _iter_mobiles(src):
     return out
 
 
+# Landlines ('010-88886666', '0755-12345678', '(021) 12345678'). The area-code
+# separator is REQUIRED in this unanchored scan: an 11-digit run starting with
+# 0 is indistinguishable from an account/reference number, and feeding 账号
+# digits into the contact pool would pair unrelated bidders. Separator-less
+# forms are only accepted when a 电话/座机 label anchors them (see _iter_phones).
+_LANDLINE_PATTERNS = (
+    re.compile(r'(?<![\d-])\(?0\d{2,3}\)?[-\s]\d{7,8}(?![\d-])'),
+    # Label-anchored, separator optional: '电话：01056216031'.
+    re.compile(r'(?:电话|座机|联系方式)[：:\s]*\(?(0\d{2,3})\)?[-\s]?(\d{7,8})(?![\d-])'),
+)
+
+
+def _iter_landlines(src):
+    """Yield landline numbers normalized to '0xx-xxxxxxxx'."""
+    out, seen = [], set()
+    for pat in _LANDLINE_PATTERNS:
+        for match in pat.finditer(src or ''):
+            # group(0) spans exactly the number — including the label on the
+            # anchored pattern, whose non-digits fall away here.
+            digits = re.sub(r'\D', '', match.group(0))
+            # 3- or 4-digit area code + 7- or 8-digit subscriber number.
+            if not re.fullmatch(r'0\d{2,3}\d{7,8}', digits):
+                continue
+            for split in (3, 4):
+                if len(digits) - split in (7, 8):
+                    num = f'{digits[:split]}-{digits[split:]}'
+                    break
+            else:
+                continue
+            if num not in seen:
+                seen.add(num)
+                out.append(num)
+    return out
+
+
+def _iter_phones(src):
+    """Mobiles then landlines — the contact pool behind phone cross-matching.
+
+    Landlines matter as much as mobiles here: 考点三/线索9-style collusion is
+    routinely carried by a shared 座机 on the 供应商基本情况表, and a
+    mobile-only pool can never pair those documents."""
+    return _iter_mobiles(src) + _iter_landlines(src)
+
+
 def extract_personnel(text):
     """Extract personnel information from bid text using chapter-scoped extraction.
 
@@ -2545,6 +2644,28 @@ def extract_personnel(text):
     # ── 5. Pipe-table personnel (docx/xlsx tables, appended at text end) ──
     _parse_personnel_pipe_table(text, info)
 
+    # ── 5b. Parenthesized hint-then-fill, whole text ──
+    # '（项目经理姓名）吴九' — a printed bracket hint followed by its filled
+    # value, the shape 承诺书 prose uses ('我方拟派往（工程名称）某改造工程工程
+    # 的项目经理（项目经理姓名）吴九…'). No section marker covers a free-
+    # standing 承诺书, so the section-scoped extractors never saw it and the
+    # 拟派项目经理 named there stayed invisible — 丙公司's 项目承诺书 names
+    # 吴九 while the 简历表 in the same file names 郑明, and it is the
+    # 承诺书 that ties the file to 乙公司 (考点九). The form is unambiguous
+    # (bracket hint + fill), so a whole-text scan is safe.
+    for m in re.finditer(
+            r'[（(]\s*(?:拟派)?(项目经理|项目负责人|经理|负责人)\s*姓名\s*[）)]\s*'
+            r'([一-鿿](?:[ \t]*[一-鿿]){1,3}?'
+            r'(?:[ \t]*[·•・][ \t]*[一-鿿](?:[ \t]*[一-鿿]){1,3}?){0,2})(?![一-鿿])',
+            text):
+        role_str, name = m.group(1), m.group(2).strip()
+        if not _is_person_name(name):
+            continue
+        role = _infer_role_label(role_str)
+        if any(p['name'] == name and p['role'] == role for p in info['all_persons']):
+            continue
+        info['all_persons'].append({'name': name, 'role': role, 'confidence': 0.85})
+
     # ── 6. Section-less / empty-result fallback ──
     # Documents without any recognized section marker (short response letters,
     # OCR output, unusual structures) would otherwise yield zero personnel.
@@ -2583,7 +2704,7 @@ def extract_personnel(text):
     # unrelated numbers stay apart (anything non-digit breaks the join).
     _id_src = re.sub(r'(?<=\d)\s+(?=\d)', '', text)
     for src in (text, _ocr_digit_normalize(text)):
-        for num in _iter_mobiles(src):
+        for num in _iter_phones(src):
             _append_unique(info['phones'], num)
     for m in re.finditer(r'(?<!\d)\d{6}(?:18|19|20)\d{2}'
                          r'(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])'
@@ -2684,31 +2805,58 @@ def extract_personnel(text):
     return info
 
 
-def _demote_environmental_pool_values(all_personnel, group_names,
+def _demote_environmental_pool_values(all_personnel, group_names, ref_texts=None,
                                       min_groups=3, ratio=0.8):
-    """Drop contact-pool values that appear in nearly EVERY document.
+    """Drop contact-pool values that come from the TENDER side, not the bidders.
 
     Tender-side data (招标代理联系电话, 保证金收款账号, platform notification
-    emails) is reprinted inside every bidder's document. A value shared by
-    ALL bidders cannot discriminate collusion — it only generates pairwise
-    false positives ("联系电话相同" for every file pair). A value must appear
-    in >= min_groups documents AND >= ratio of all documents to be treated
-    as environmental.
+    emails) is reprinted inside every bidder's document. It cannot discriminate
+    collusion — it only generates pairwise false positives ("联系电话相同" for
+    every file pair) — so it must leave the pool before pairwise matching.
 
-    Filters all_personnel in place; returns the removed values (for logging
-    and tests). With fewer than min_groups documents nothing is removed:
-    with 2 files a shared phone is still genuine evidence.
+    The discriminator is WHERE a value comes from, not how often it appears:
+    a value the reference (tender) document itself contains is tender-side by
+    definition, whatever its frequency among bidders. The previous frequency
+    test — "in >= min_groups documents AND >= ratio of them" — collapses to
+    "in every document" at three bidders, which is precisely the strongest
+    possible evidence for 考点三 (不同投标人的联系人、电话或者地址相同: a
+    shared contact is *defined* by being shared). Measured on the competition
+    corpus it deleted the planted clue itself: all three bidders' 供应商基本
+    情况表 carry phone 13911112222, and the filter removed it from every one,
+    leaving the cross-match with nothing to find.
+
+    Falls back to the frequency rule only when no reference document was
+    supplied (there is then no way to tell tender-side data apart), and to
+    removing nothing below min_groups documents.
+
+    Filters all_personnel in place; returns the removed values.
     """
     n = len(group_names)
-    if n < min_groups:
-        return set()
+    ref_norm = [_normalize_for_match(rt) for rt in (ref_texts or []) if rt]
+
+    def _is_environmental(value, pool_key):
+        if ref_norm:
+            # Digits are compared without separators so '010-88886666' still
+            # matches a reference that prints '010 56216031'.
+            if pool_key in ('phones', 'id_numbers', 'bank_accounts'):
+                digits = re.sub(r'\D', '', str(value))
+                return bool(digits) and any(digits in re.sub(r'\D', '', rt)
+                                            for rt in ref_norm)
+            return any(str(value) in rt for rt in ref_norm)
+        return counts.get(value, 0) >= min_groups and counts.get(value, 0) / n >= ratio
+
     removed = set()
     for pool_key in ('phones', 'id_numbers', 'emails', 'bank_accounts'):
         counts = {}
-        for gn in group_names:
-            for v in set(all_personnel.get(gn, {}).get(pool_key) or []):
-                counts[v] = counts.get(v, 0) + 1
-        env = {v for v, c in counts.items() if c >= min_groups and c / n >= ratio}
+        if not ref_norm:
+            if n < min_groups:
+                continue
+            for gn in group_names:
+                for v in set(all_personnel.get(gn, {}).get(pool_key) or []):
+                    counts[v] = counts.get(v, 0) + 1
+        env = {v for gn in group_names
+               for v in set(all_personnel.get(gn, {}).get(pool_key) or [])
+               if _is_environmental(v, pool_key)}
         if not env:
             continue
         for gn in group_names:
@@ -2717,7 +2865,7 @@ def _demote_environmental_pool_values(all_personnel, group_names,
                 all_personnel[gn][pool_key] = [v for v in pool if v not in env]
         removed |= env
     if removed:
-        logger.info('环境噪声降权：%d 项跨全部标书普遍出现的联系方式已从交叉比对剔除', len(removed))
+        logger.info('环境噪声降权：%d 项来自参照文件的联系方式已从交叉比对剔除', len(removed))
     return removed
 
 
@@ -3052,6 +3200,41 @@ def extract_prices(text):
     # This is the MOST RELIABLE source for total price. Run it before global
     # text search to avoid matching bid bonds, deposits, or other small amounts.
     bid_section = _find_bid_summary_section(text)
+
+    # ── Channel 0b: 报价一览表 quote row (包号 | 供应商名称 | 大写 | 小写) ──
+    # The canonical quote row names no label at all — the whole row is
+    # '01 | 甲公司工程集团有限公司 | 贰百万元整 | 2000000 元'. Every symbol
+    # and label channel misses it (no ￥/人民币/投标总价 token anywhere in the
+    # row), which is how three bidders' totals — 2,950,000 / 3,000,000 /
+    # 3,050,000, planted as a 5万元 ladder — were lost, one of them mis-read as
+    # 50,000 off the 伍万 fragment of its own 大写.
+    # The 大写 cell is the anchor: a pure Chinese-numeral cell parses via
+    # _cn_to_number and nothing else in a bid section looks like one, so this
+    # stays clear of 分项报价表 rows (Arabic quantities only).
+    if result['totalPriceInTax'] is None and bid_section:
+        for line in bid_section.split('\n'):
+            if '|' not in line:
+                continue
+            cn_vals, ar_vals = [], []
+            for cell in (c.strip() for c in line.split('|')):
+                if not cell or re.search(r'保证金|押金|保函|限价|控制价|预算金额', cell):
+                    continue
+                cnv = _cn_to_number(cell)
+                if cnv and cnv >= 50000:
+                    cn_vals.append(cnv)
+                elif not cnv:
+                    arv = _parse_amount(cell)
+                    if arv >= 50000 and not _is_yyyymmdd(arv):
+                        ar_vals.append(arv)
+            if not cn_vals:
+                continue
+            # 大写 and 小写 of the same row must agree; trust 大写 when they
+            # do, and fall back to it alone when the 小写 cell is absent.
+            if ar_vals and abs(cn_vals[-1] - ar_vals[-1]) <= max(1.0, cn_vals[-1] * 0.01):
+                result['totalPriceInTax'] = cn_vals[-1]
+            else:
+                result['totalPriceInTax'] = cn_vals[-1]
+            break
 
     # ── Bond-amount echo set ──
     # The bid bond value echoes through the document: labeled once in the
@@ -5506,6 +5689,16 @@ def _build_sub_item_comparison(all_prices, filenames):
         prices_excl = [it['totalPrice'] for it in items if it.get('totalPrice')]
         files_involved = [it['file'] for it in items]
 
+        # 不含税 is the preferred basis (a spread measured on one consistent
+        # footing says more), but plenty of bids quote only a 含税 total —
+        # the 工程类 sample fills in nothing but 含税 2,950,000 / 3,000,000 /
+        # 3,050,000. Requiring 不含税 for the ladder test meant the planted
+        # 5万元 arithmetic progression (考点六) could never be reported.
+        if len(prices_excl) >= 2:
+            prices_cmp, price_basis, price_item_key = prices_excl, '不含税', 'totalPrice'
+        else:
+            prices_cmp, price_basis, price_item_key = prices_incl, '含税', 'totalPriceInTax'
+
         # 1. All prices identical → suspicious
         if len(set(prices_excl)) == 1 and len(prices_excl) >= 2:
             findings.append(f'{len(prices_excl)}家供应商不含税报价完全一致({prices_excl[0]:,.0f}元)，可疑')
@@ -5513,25 +5706,24 @@ def _build_sub_item_comparison(all_prices, filenames):
             findings.append(f'{len(prices_incl)}家供应商含税报价完全一致({prices_incl[0]:,.0f}元)，可疑')
 
         # 2. Price differences analysis
-        if len(prices_excl) >= 2:
-            pmin, pmax = min(prices_excl), max(prices_excl)
+        if len(prices_cmp) >= 2:
+            pmin, pmax = min(prices_cmp), max(prices_cmp)
             if pmax > 0:
                 diff_pct = (pmax - pmin) / pmax * 100
+                files_with_price = [(it['file'], it[price_item_key]) for it in items
+                                    if it.get(price_item_key)]
+                detail = ' | '.join(f'{os.path.basename(f)}: {p:,.0f}元' for f, p in files_with_price)
                 if diff_pct < 2:
-                    files_with_price = [(it['file'], it['totalPrice']) for it in items if it.get('totalPrice')]
-                    detail = ' | '.join(f'{os.path.basename(f)}: {p:,.0f}元' for f, p in files_with_price)
-                    findings.append(f'不含税报价差异仅{diff_pct:.1f}%（{detail}），高度接近')
+                    findings.append(f'{price_basis}报价差异仅{diff_pct:.1f}%（{detail}），高度接近')
                 elif diff_pct < 10:
-                    files_with_price = [(it['file'], it['totalPrice']) for it in items if it.get('totalPrice')]
-                    detail = ' | '.join(f'{os.path.basename(f)}: {p:,.0f}元' for f, p in files_with_price)
-                    findings.append(f'不含税报价差异{diff_pct:.1f}%（{detail}）')
+                    findings.append(f'{price_basis}报价差异{diff_pct:.1f}%（{detail}）')
 
         # 3. Sequential pattern detection
-        if len(prices_excl) >= 3:
-            sorted_prices = sorted(prices_excl)
+        if len(prices_cmp) >= 3:
+            sorted_prices = sorted(prices_cmp)
             gaps = [sorted_prices[i+1] - sorted_prices[i] for i in range(len(sorted_prices)-1)]
-            if len(set(gaps)) == 1:
-                findings.append(f'报价呈等差数列（公差{gaps[0]:,.0f}元），存在规律性差异')
+            if len(set(gaps)) == 1 and gaps[0] > 0:
+                findings.append(f'{price_basis}报价呈等差数列（公差{gaps[0]:,.0f}元），存在规律性差异')
 
         c['findings'] = findings
 
@@ -5894,8 +6086,10 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
         persons = all_personnel.get(gn, {}).get('all_persons', [])
         all_persons_map[gn] = persons
 
-    # Environmental noise demotion BEFORE pairwise matching (see helper docstring)
-    _demote_environmental_pool_values(all_personnel, out_names)
+    # Environmental noise demotion BEFORE pairwise matching (see helper
+    # docstring). ref_texts let it tell tender-side data apart from a clue the
+    # bidders happen to share — without them it can only guess from frequency.
+    _demote_environmental_pool_values(all_personnel, out_names, ref_texts=ref_texts)
 
     if len(out_names) >= 2:
         for i in range(len(out_names)):
@@ -6077,6 +6271,37 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
                     'severity': 'medium'
                 })
 
+    # ── Document-mixing check (条例第四十条第五项：投标文件相互混装) ──
+    # One bidder's own company name appearing inside another bidder's file —
+    # a stray page header, a cover page left over from the reused template, an
+    # embedded certificate issued to the other company. Requires the name to
+    # be a company name extracted FROM one of the bids, so shared tender-side
+    # names cannot trip it, and it is looked up in the other file's raw text
+    # rather than in any pool, because the whole point is that it does not
+    # belong there.
+    _co_names = {gn: (all_personnel.get(gn, {}) or {}).get('company_name') or ''
+                 for gn in out_names}
+    for i in range(len(out_names)):
+        for j in range(len(out_names)):
+            if i == j:
+                continue
+            gi, gj = out_names[i], out_names[j]
+            other = _co_names.get(gj, '').strip()
+            if len(other) < 6:
+                continue          # too short to be distinctive
+            if _co_names.get(gi, '').strip() == other:
+                continue          # same-name groups are merged upstream
+            if other in (all_text.get(gi) or ''):
+                key = f'mix|{gi}|{other}'
+                if key in personnel_dedup:
+                    continue
+                personnel_dedup.add(key)
+                personnel_matches.append({
+                    'type': '文件混装（他方公司名出现）',
+                    'detail': f'{gi} 的投标文件中出现 {gj} 的公司名称"{other}"',
+                    'severity': 'high',
+                })
+
     _progress('personnel', '人员交叉比对', 86, f'交叉比对法定代表人、授权代表、项目成员等，发现 {len(personnel_matches)} 处异常')
 
     # ── Text similarity findings (summary before pricing) ──
@@ -6148,6 +6373,26 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
                 if pi.get('totalPriceInTax') and pj.get('totalPriceInTax') and pi['totalPriceInTax'] == pj['totalPriceInTax']:
                     price_risk_findings.append(f'{out_names[i]} 和 {out_names[j]} 含税总价一致: {pi["totalPriceInTax"]:,.0f}元')
 
+        # ── Total-price ladder (规律性差异) ──
+        # The pairwise loop above only reports EQUAL totals, so a spread that
+        # marches in equal steps goes unreported — which is the classic 围标
+        # shape and the planted clue in the 工程类 sample (2,950,000 /
+        # 3,000,000 / 3,050,000: 公差5万元). Three bidders or more, all
+        # distinct, equal gaps.
+        _totals = []
+        for gn in out_names:
+            v = all_prices.get(gn, {}).get('totalPriceInTax') or all_prices.get(gn, {}).get('totalPrice')
+            if v:
+                _totals.append((gn, v))
+        if len(_totals) >= 3:
+            _ordered = sorted(_totals, key=lambda x: x[1])
+            _gaps = [round(_ordered[k + 1][1] - _ordered[k][1], 2)
+                     for k in range(len(_ordered) - 1)]
+            if len(set(_gaps)) == 1 and _gaps[0] > 0:
+                _detail = ' | '.join(f'{gn}: {v:,.0f}元' for gn, v in _ordered)
+                price_risk_findings.append(
+                    f'各家总价呈等差数列（公差{_gaps[0]:,.0f}元，{_detail}），存在规律性差异')
+
         for gn, prices in all_prices.items():
             has_total = prices.get('totalPrice') is not None or prices.get('totalPriceInTax') is not None
             has_details = prices.get('costDetails') or prices.get('subItemPrice')
@@ -6187,6 +6432,20 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
     CLAUSE2_TYPES = {'授权代表姓名相同', '联系电话相同', '身份证号相同', '邮箱相同', '授权代表与创建者交叉'}
     clauses = [
         {
+            # 《招标投标法实施条例》第三十四条：单位负责人为同一人或者存在
+            # 控股、管理关系的不同单位，不得参加同一项目投标，违反的相关
+            # 投标均无效。此前完全没有对应条款——服务类样本里「周八」以
+            # legal_rep 身份同时出现在两家投标人，早已在 personnel_matches
+            # 里检出（severity=high），却没有任何条款可以承载它，因此判定
+            # 结论里一个字都不出现。
+            'clause': '第（三十四）条',
+            'description': '单位负责人为同一人或者存在控股、管理关系的不同单位，参加同一项目投标',
+            'satisfied': any(m.get('type') == '人员重叠（同角色）'
+                             and m.get('role') == 'legal_rep'
+                             for m in personnel_matches),
+            'evidence': []
+        },
+        {
             'clause': '第（一）项',
             'description': '不同投标人的投标文件由同一单位或者个人编制',
             'satisfied': any(m['field'] == 'WPS保存记录(硬件ID+用户ID)' for m in meta_matches) or
@@ -6205,6 +6464,14 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
             'description': '不同投标人的投标文件载明的项目管理成员为同一人',
             'satisfied': any(m['type'] == '人员高度重叠' for m in personnel_matches) or
                          any(m.get('type') == '人员重叠（同角色）' and m.get('role') in PM_ROLES
+                             for m in personnel_matches),
+            'evidence': []
+        },
+        {
+            # 条例第四十条第五项：投标文件相互混装。
+            'clause': '第（五）项',
+            'description': '不同投标人的投标文件相互混装',
+            'satisfied': any(m.get('type') == '文件混装（他方公司名出现）'
                              for m in personnel_matches),
             'evidence': []
         },
@@ -6267,6 +6534,18 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
                     c['evidence'].append(f'存在 1 项元数据一致（{circumstantial[0]["field"]}），间接证据较弱')
                 else:
                     c['evidence_level'] = '无'
+        elif c['clause'] == '第（三十四）条':
+            for m in personnel_matches:
+                if m.get('type') == '人员重叠（同角色）' and m.get('role') == 'legal_rep':
+                    c['evidence'].append(m.get('detail', ''))
+                    c['evidence'].append('单位负责人为同一人的不同单位参加同一项目投标，相关投标均无效')
+            if c['satisfied']:
+                c['evidence_level'] = '强'
+            elif personnel_bucket_empty:
+                c['evidence_level'] = '无法判断'
+                c['evidence'].append('未提取到任何法定代表人信息，无法进行单位负责人比对')
+            else:
+                c['evidence_level'] = '无'
         elif c['clause'] == '第（二）项':
             if c['satisfied']:
                 c['evidence_level'] = '强'
@@ -6293,6 +6572,17 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
                     c['evidence'].append('已提取项目团队人员，但未发现同名项目管理成员，重叠率未达判定阈值')
                 else:
                     c['evidence'].append('标书中未明确列出项目团队成员信息，无法判断')
+        elif c['clause'] == '第（五）项':
+            for m in personnel_matches:
+                if m.get('type') == '文件混装（他方公司名出现）':
+                    c['evidence'].append(m.get('detail', ''))
+            if c['satisfied']:
+                c['evidence_level'] = '强'
+            elif text_bucket_empty:
+                c['evidence_level'] = '无法判断'
+                c['evidence'].append('未提取到任何文本内容，无法判断文件是否混装')
+            else:
+                c['evidence_level'] = '无'
         elif c['clause'] == '第（四）项-a':
             substantial_count = len(similarity.get('substantial_abnormal', []))
             suspicious_count = len(similarity.get('suspicious_template', []))
@@ -6329,8 +6619,12 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
     # 权重分布避免两极分化，中间分数段（25-50）由多项硬证据叠加产生
     # 第（一）项命中即达高度嫌疑线，其他硬证据叠加推高置信度
     clause_weights = {
+        # 与第（一）项同级：法律后果是"相关投标均无效"，且单位负责人同一人
+        # 是工商登记层面的事实，比文档线索更难辩解
+        '第（三十四）条': 50,   # 硬证据: 法定代表人姓名跨投标人重叠
         '第（一）项': 50,       # 硬证据: WPS ID、授权代表=创建者交叉、最后修改人同一
         '第（二）项': 25,       # 硬证据: 授权代表重叠，同一人办理投标
+        '第（五）项': 25,       # 硬证据: 他方公司名出现在本方投标文件中
         '第（三）项': 15,       # 硬证据: 项目管理人员姓名重叠
         '第（四）项-a': 5,      # 软证据: 文本相似度
         '第（四）项-b': 4,      # 软证据: 报价规律
@@ -6394,7 +6688,8 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
         if '份标书' in f_text and '两份' in f_text:
             time_findings[i] = f_text.replace('两份标书', f'{bid_word}标书')
 
-    _progress('verdict', '综合判定', 96, f'依据《招标投标法实施条例》第四十条判定：{conclusion}')
+    _progress('verdict', '综合判定', 96,
+              f'依据《招标投标法实施条例》第三十四条、第四十条判定：{conclusion}')
 
     return {
         'metadata': {
@@ -6493,6 +6788,8 @@ _REPORT_ADVICE = {
 _REPORT_CLAUSE_ADVICE = {
     '第（一）项': '投标文件由同一单位或个人编制：封存投标文件原件，核查文档创建者、最后保存者及WPS硬件记录所指向的实际编制人，必要时调取投标单位的授权与用印台账比对；',
     '第（二）项': '委托同一单位或个人办理投标事宜：约谈相关投标人的授权代表，核验其劳动关系、社保缴纳单位与身份证明，确认是否存在同一人员或中介代办的情形；',
+    '第（三十四）条': '单位负责人为同一人或存在控股、管理关系：调取各投标人工商登记信息，核实法定代表人及股东构成，确认是否存在同一自然人任职或控股关系，违反的投标均无效；',
+    '第（五）项': '投标文件相互混装：调取投标文件原件核对页眉页脚、封面及所附证书的归属，确认是否存在将他方文件混入本方投标文件的情形；',
     '第（三）项': '项目管理成员为同一人：要求相关投标人提供拟投入项目管理人员的劳动合同与社保缴纳记录，核实人员是否真实在编在岗、是否存在同时受聘于多家投标人的情形；',
     '第（四）项-a': '投标文件异常一致：要求投标人对技术方案等异常一致内容作出书面澄清，提交独立编制过程的证明材料；',
     '第（四）项-b': '投标报价异常一致或呈规律性差异：复核各投标人报价编制依据与成本构成，逐项比对分项报价明细，核查是否存在事先合意抬价、压价或轮流中标的迹象；',

@@ -1686,6 +1686,144 @@ def t_extract_worker_sizing():
     assert budget is None or budget > 0, budget
 
 
+# ══ 围串标考点：电话池 / 环境噪声 / 新增判定条款 ══
+
+def t_phone_pool_includes_landlines():
+    # The cross-matching pool used to be mobile-only, so a shared 座机 on the
+    # 供应商基本情况表 (考点三 / 线索9) could never pair two documents.
+    r = m.extract_personnel('联系人：陈二 电话：010-88886666 传真：010-77775555')
+    assert '010-88886666' in r['phones'], r['phones']
+    assert '010-77775555' in r['phones'], r['phones']
+    # Account / ID / date digit runs must NOT reach the pool.
+    r2 = m.extract_personnel('账号：11000000000000000999 身份证号：320101199001011234')
+    assert not [p for p in r2['phones'] if len(p) > 13], r2['phones']
+
+
+def t_env_demotion_prefers_reference_doc():
+    # A value the TENDER document reprints is environmental. A value shared by
+    # EVERY bidder but absent from the tender document is the strongest signal
+    # there is — 考点三 is *defined* as the shared case, so the old frequency
+    # rule (which degenerates to "in every document" at 3 bidders) deleted
+    # exactly the evidence it existed to protect.
+    shared = '13911112222'
+    pools = {n: {'phones': [shared]} for n in ('甲', '乙', '丙')}
+    ref = ['招标代理联系电话：01000000000']
+    removed = m._demote_environmental_pool_values(pools, list(pools), ref_texts=ref)
+    assert removed == set(), removed
+    assert all(pools[n]['phones'] == [shared] for n in pools)
+
+    # …but a value that IS in the tender document still goes.
+    pools2 = {n: {'phones': ['01000000000', '13900000001']} for n in ('甲', '乙', '丙')}
+    removed2 = m._demote_environmental_pool_values(pools2, list(pools2), ref_texts=ref)
+    assert removed2 == {'01000000000'}, removed2
+    assert all(pools2[n]['phones'] == ['13900000001'] for n in pools2)
+
+    # No reference supplied → frequency fallback, unchanged from before.
+    pools3 = {n: {'phones': [shared, f'1390000000{i}']} for i, n in enumerate('甲乙丙')}
+    assert m._demote_environmental_pool_values(pools3, list(pools3)) == {shared}
+
+
+def t_project_manager_parenthesized_hint():
+    # '（项目经理姓名）吴九' — bracket hint then fill, in free-standing 承诺书
+    # prose no section marker covers. 丙公司's 承诺书 names 吴九 while its
+    # 简历表 names 郑明; only the 承诺书 ties the file to 乙公司 (考点九).
+    r = m.extract_personnel(
+        '我方拟派往（工程名称）某改造工程工程 的项目经理 （项目经理姓名）吴九 '
+        '现阶段没有担任任何在施建设工程项目的项目经理。')
+    pms = [p['name'] for p in r['all_persons'] if p['role'] == 'project_manager']
+    assert pms == ['吴九'], pms
+
+
+def t_non_name_business_nouns_rejected():
+    # Table-cell fragments that survived the surname + length checks used to
+    # reach all_persons — '经营范围' even cross-matched across all three
+    # bidders as a team_member.
+    for bad in ('经营范围', '管理模块', '通知用户', '成影响的'):
+        assert not m._is_person_name(bad), bad
+    for good in ('陈二', '张三', '李四', '蒋五', '周八', '冯强', '吴九'):
+        assert m._is_person_name(good), good
+
+
+def t_verdict_has_article34_and_mixing_clauses():
+    # 条例第三十四条 (单位负责人为同一人) and 第四十条第五项 (文件混装) had no
+    # clause at all: the 周八 legal_rep overlap was detected as a cross-match
+    # yet appeared nowhere in the verdict.
+    import tempfile
+    saved = m.EXTRACT_CACHE_ENABLED
+    try:
+        m.EXTRACT_CACHE_ENABLED = False
+        with tempfile.TemporaryDirectory() as td:
+            paths = {}
+            for name, tpl in (('甲', '姓名：周八 投标人名称：甲公司\n'),
+                              ('乙', '姓名：周八 投标人名称：乙公司\n')):
+                p = os.path.join(td, f'{name}.txt')
+                with open(p, 'w', encoding='utf-8') as f:
+                    f.write(tpl)
+                paths[name] = p
+            gt = {n: m.extract_text_with_tables(p) for n, p in paths.items()}
+            res = m.run_full_analysis(list(paths.values()), [], group_map={n: [p] for n, p in paths.items()},
+                                      group_texts=gt)
+            clauses = {c['clause']: c for c in res['verdict']['clauses']}
+            assert '第（三十四）条' in clauses, list(clauses)
+            assert '第（五）项' in clauses, list(clauses)
+    finally:
+        m.EXTRACT_CACHE_ENABLED = saved
+
+
+def t_total_price_ladder_detected():
+    # 考点六: three totals in equal steps. The pairwise loop only reported
+    # EQUAL totals, so 295万/300万/305万 produced no finding at all.
+    import tempfile
+    saved = m.EXTRACT_CACHE_ENABLED
+    try:
+        m.EXTRACT_CACHE_ENABLED = False
+        with tempfile.TemporaryDirectory() as td:
+            paths = {}
+            for name, row in (('甲', '01 | 甲公司 | 壹佰玖拾伍万元整 | 1950000 元'),
+                              ('乙', '01 | 乙公司 | 贰百万元整 | 2000000 元'),
+                              ('丙', '01 | 丙公司 | 贰佰零伍万元整 | 2050000 元')):
+                p = os.path.join(td, f'{name}.txt')
+                with open(p, 'w', encoding='utf-8') as f:
+                    f.write(f'投标人名称：{name}公司\n7 报价一览表\n报价一览表\n'
+                            f'包号 | 供应商名称 | 大写 | 小写\n{row}\n')
+                paths[name] = p
+            gt = {n: m.extract_text_with_tables(p) for n, p in paths.items()}
+            for n, t in gt.items():
+                got = m.extract_prices(t)['totalPriceInTax']
+                assert got, f'{n} 未提取到总价'
+            res = m.run_full_analysis(list(paths.values()), [],
+                                      group_map={n: [p] for n, p in paths.items()},
+                                      group_texts=gt)
+            ev = next(c for c in res['verdict']['clauses']
+                      if c['clause'] == '第（四）项-b')['evidence']
+            assert any('等差数列' in e for e in ev), ev
+    finally:
+        m.EXTRACT_CACHE_ENABLED = saved
+
+
+def t_docx_tables_keep_document_order():
+    # Paragraphs used to be emitted first and every table appended after, so a
+    # table was torn from the heading that introduced it (报价一览表 heading at
+    # ~500, its price table pushed to ~16700).
+    try:
+        from docx import Document  # noqa: F401
+    except ImportError:
+        return
+    import tempfile
+    from docx import Document as _Doc
+    with tempfile.TemporaryDirectory() as td:
+        p = os.path.join(td, 'order.docx')
+        d = _Doc()
+        d.add_paragraph('7 报价一览表')
+        tb = d.add_table(rows=1, cols=2)
+        tb.rows[0].cells[0].text = '包号'
+        tb.rows[0].cells[1].text = '2000000'
+        d.add_paragraph('表后段落')
+        d.save(p)
+        t = m.extract_text_with_tables(p)
+        assert t.index('报价一览表') < t.index('2000000') < t.index('表后段落'), repr(t)
+
+
 def main():
     # Tests must be hermetic: the extraction cache lives on disk between runs,
     # and a cached PDF extraction silently skips the very code path a test
