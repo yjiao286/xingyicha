@@ -4921,16 +4921,20 @@ def classify_abnormal_reason(text):
         reasons.append('长段落逐字相同，排除独立编制的可能性')
     return reasons if reasons else ['内容异常一致']
 
-def _is_in_reference(segment, ref_texts):
+def _is_in_reference(segment, ref_texts_norm):
     """Check if a text segment appears in any reference document.
-    Uses normalized comparison (whitespace-insensitive) for accuracy."""
-    if not ref_texts or not segment:
+    Uses normalized comparison (whitespace-insensitive) for accuracy.
+
+    `ref_texts_norm` must already be run through _normalize_for_match — see
+    the note at the call site for why.
+    """
+    if not ref_texts_norm or not segment:
         return False
     seg_norm = _normalize_for_match(segment)
     if len(seg_norm) < 12:
         return False
-    for rt in ref_texts:
-        if seg_norm in _normalize_for_match(rt):
+    for rt in ref_texts_norm:
+        if seg_norm in rt:
             return True
     return False
 
@@ -5039,7 +5043,14 @@ def text_similarity_analysis(texts_dict, ref_texts_list=None, on_progress=None,
         'rule_template_count': 0,
     }
 
-    ref_texts = ref_texts_list or []
+    # Normalise the reference documents once, up front. _is_in_reference runs
+    # once per matched segment (~3.8k times on a five-document set) and used
+    # to re-normalise every reference inside that loop — ~380M iterations of
+    # a per-character Python loop, which profiling showed at 94% of the whole
+    # analysis. The document text never changes, so its normalised form is
+    # computed here and reused; results are identical, it is just no longer
+    # recomputed 3.8k times.
+    ref_texts_norm = [_normalize_for_match(rt) for rt in (ref_texts_list or [])]
 
     total_pairs = len(filenames) * (len(filenames) - 1) // 2
     pair_idx = 0
@@ -5067,7 +5078,7 @@ def text_similarity_analysis(texts_dict, ref_texts_list=None, on_progress=None,
 
             for idx, (pos1, pos2, length, seg_text, ctx1, ctx2) in enumerate(segments):
                 # ── Filter 1: Reference document match ──
-                in_ref = _is_in_reference(seg_text, ref_texts)
+                in_ref = _is_in_reference(seg_text, ref_texts_norm)
                 if in_ref:
                     pair_result['template_count'] += 1
                     results['template_matches'] += 1

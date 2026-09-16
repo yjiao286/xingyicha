@@ -1614,6 +1614,21 @@ def t_extract_many_matches_sequential():
         m.EXTRACT_CACHE_DIR, m.EXTRACT_CACHE_ENABLED = saved_dir, saved_on
 
 
+def t_reference_filter_normalized():
+    # _is_in_reference takes *pre-normalized* reference documents (it used to
+    # re-normalize them on every call, which profiling put at 94% of the whole
+    # analysis). The comparison must still see through whitespace, full-width
+    # punctuation and case on both sides.
+    ref = ['本项目采用三层架构设计，核心交换节点采用双机热备冗余部署策略。']
+    ref_norm = [m._normalize_for_match(r) for r in ref]
+
+    same_content = '本项目采用三层架构设计， 核心交换节点采用双机热备冗余部署策略。'
+    assert m._is_in_reference(same_content, ref_norm), '空白差异应仍判为同一段'
+    assert not m._is_in_reference('完全无关的另一段技术描述，用于确认不会误判', ref_norm)
+    assert not m._is_in_reference('三层架构', ref_norm), '过短不应判为命中'
+    assert not m._is_in_reference(same_content, []), '无参照文件时不应命中'
+
+
 def main():
     # Tests must be hermetic: the extraction cache lives on disk between runs,
     # and a cached PDF extraction silently skips the very code path a test

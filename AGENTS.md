@@ -113,6 +113,12 @@ lsof -ti:5001 | xargs kill -9
 - 离线验证：`tools/replay_extraction.py <语料目录>` 批量回放文本/人员/报价提取（报告固定写到当前目录 `replay_report.json`）；`tests/test_extraction.py` 单元样本回归（105 例）
 - 分析结果字段：`pricing.files[].bidRate`（费率/下浮率报价）；`personnel.files[].phones[]/id_numbers[]/emails[]`（多值联系池，前端与 .docx 报告均已展示）；顶层 `project_name`（跨文档投票提取的项目名——标签正则含"项目名称/工程名称/标段名称"等，值经引号书名号剥离/填空下划线剔除/标签词与日期值过滤，≥2 份文档一致优先；`_prepare_history_data` 保留顶层键，旧历史记录缺失时报告命名自动退化）。报告下载名：`围串标风险识别分析报告_[项目名_]判定等级_YYYYMMDD_HHMMSS.docx`（前端优先取 Content-Disposition 的服务端文件名）
 
+### Similarity Performance（参照文件归一化）
+
+`text_similarity_analysis` 曾把分析阶段 94% 的时间花在 `_is_in_reference` 里——它对每个匹配到的段落（5 份标书约 3,824 次）都把整份参照文件**从头归一化一遍**，累计约 3.8 亿次 Python 逐字符循环。参照文件的内容全程不变，故改为在 `text_similarity_analysis` 开头归一化一次（`ref_texts_norm`），`_is_in_reference` 接收已归一化的列表。
+
+**实测分析阶段 35.0s → 4.5s（7.8x），且整个结果对象的 sha256 与修改前完全相同**（`fbfe9b80…`，非仅判定分数一致）。`find_common_segments` 的 k-gram 索引本身不慢——剖析中仅占 2.8s，真正的开销全在这个重复归一化上。
+
 ### Extraction Performance（缓存 + 并行）
 
 提取是全线最贵的阶段（实测 5 份标书 4287 页：提取 40.3s / 相似度 2.3s / 人员+报价 1.6s），两项优化都不改变输出，都有独立的测试覆盖。
