@@ -1065,7 +1065,9 @@ def _find_personnel_sections(text):
     section_markers = {
         'auth_letter': [
             '法定代表人授权委托书', '法定代表人授权书', '授权委托书',
-            '法人授权书', '法人代表授权书', '法人授权委托书'
+            '法人授权书', '法人代表授权书', '法人授权委托书',
+            # bare two-char titles (docs titled just 授权书/委托书)
+            '授权书', '委托书'
         ],
         'legal_rep_proof': [
             '法定代表人身份证明', '法定代表人证明', '法人代表证明',
@@ -1083,7 +1085,10 @@ def _find_personnel_sections(text):
             '人员配备', '人员配置', '岗位人员', '主要管理人员',
             '人员一览表', '主要人员一览', '项目人员', '关键人员',
             '人员简历', '劳动力计划', '技术人员情况', '管理人员情况',
-            '人员与分工'
+            '人员与分工',
+            # 第三批扩充：项目管理班子 / 劳动力安排 / 现场人员
+            '项目管理班子', '项目管理团队', '劳动力安排', '现场人员',
+            '人员到位', '项目部人员',
         ],
         'qualification': [
             '投标人基本情况表', '资格审查资料', '投标人资格',
@@ -1110,6 +1115,9 @@ def _find_personnel_sections(text):
                     '\n一、', '\n二、', '\n三、', '\n四、', '\n五、',
                     '\n1.', '\n2.', '\n3.', '\n4.', '\n5.',
                     '\n六、', '\n七、', '\n八、',
+                    # 更多编号形态：6-9 号小节、（一）（二）（三）汉字括号号
+                    '\n6.', '\n7.', '\n8.', '\n9.',
+                    '\n（一）', '\n（二）', '\n（三）', '\n（四）',
                 ]:
                     ep = text.find(next_marker, idx + 10)
                     if ep > idx and ep < end:
@@ -1232,6 +1240,15 @@ def _is_person_name(name):
     # column label into all_persons as a project_manager.
     if re.search(r'(?:职务|職務|岗位|崗位|职称|職稱|角色|职责|職責)$', name_stripped):
         return False
+    # Field-label suffix rule: a 4-char capture that swallowed the NEXT
+    # field label off the same line ('联系人：王五 传真：…' → '王五传真',
+    # '代理人：李四 电话：…' → '李四电话') is never a real person name —
+    # no Chinese name ends in a contact/field word. Backstop for greedy
+    # captures the lazy quantifiers above already prevent in most layouts.
+    if re.search(r'(?:电话|電話|传真|傳真|手机|手機|邮箱|郵箱|地址|住址|邮编|郵編|'
+                 r'账号|賬號|账户|帳戶|开户|開戶|银行|銀行|编号|編號|'
+                 r'性别|性別|民族|日期|时间|時間|签字|簽字|盖章|蓋章|手机号码)$', name_stripped):
+        return False
     # Collective-word rule: section headers and table captions
     # ('项目团队', '关键人员', '管理人员', '项目成员', '项目分工', '项目部'…)
     # start with real surnames (项/关/管) and would pass every check below,
@@ -1289,17 +1306,21 @@ def _extract_from_auth_section(section_text, info):
     # disappeared too). The paren label after the company varies by template:
     # （投标人名称）/（单位名称）… alongside the classic （供应商名称）.
     _P0_LABEL = r'[（(](?:投标人名称|供应商名称|单位名称|公司名称|企业名称)[）)]'
+    # 姓名 capture class + underscore form-fill between name and （姓名）
+    # ('张三__（姓名）' — values written over an underline that OCR/PDF keeps).
+    _NAME = (r'[一-鿿](?:[ \t]*[一-鿿]){1,3}?'
+             r'(?:[ \t]*[·•・][ \t]*[一-鿿](?:[ \t]*[一-鿿]){1,3}?){0,2}')
     # (?<![一-鿿]) keeps the capture from starting mid-word: without it the
     # name class happily grabs '权委托书' out of '三、授权委托书↵（姓名）…'
     # (the real name line sits above the run-in heading).
-    m = re.search(r'(?:本人\s*)?我?\s*(?<![一-鿿])([一-鿿](?:[ 	]*[一-鿿]){1,3}(?:[ 	]*[·•・][ 	]*[一-鿿](?:[ 	]*[一-鿿]){1,3}){0,2})\s*[（(]姓名[）)]\s*系\s*(.{1,40}?)\s*' + _P0_LABEL + r'\s*的法定代表人', section_text)
+    m = re.search(r'(?:本人\s*)?我?\s*(?<![一-鿿])(' + _NAME + r')[_＿\s]*[（(]姓名[）)]\s*系\s*(.{1,40}?)\s*' + _P0_LABEL + r'\s*的法定代表人', section_text)
     if not m:
         # Form-layout retry: the chapter header sits BETWEEN the name line and
         # the （姓名） continuation — PDF flattening puts the run-in heading
         # on its own line ('本人 王强' ↵ '三、授权委托书' ↵ '（姓名） 系 …').
         # Tolerate a short junk gap there; the （姓名）+系+名称+法定代表人
         # anchor chain stays specific enough.
-        m = re.search(r'(?:本人\s*)?我?\s*(?<![一-鿿])([一-鿿](?:[ 	]*[一-鿿]){1,3}(?:[ 	]*[·•・][ 	]*[一-鿿](?:[ 	]*[一-鿿]){1,3}){0,2})[\s\S]{0,40}?[（(]姓名[）)]\s*系\s*(.{1,40}?)\s*' + _P0_LABEL + r'\s*的法定代表人', section_text)
+        m = re.search(r'(?:本人\s*)?我?\s*(?<![一-鿿])(' + _NAME + r')[\s\S]{0,40}?[（(]姓名[）)]\s*系\s*(.{1,40}?)\s*' + _P0_LABEL + r'\s*的法定代表人', section_text)
     if m:
         if not info.get('company_name'):
             info['company_name'] = _clean_company(m.group(2).strip())
@@ -1309,7 +1330,7 @@ def _extract_from_auth_section(section_text, info):
 
     # Pattern 0b: "（张某某）系（北京某某航天技术有限公司）的法定代表人"
     # 法定代表人资格证明书 form: name AND company in unlabeled parentheses.
-    m = re.search(r'[（(]\s*([一-鿿](?:[ 	]*[一-鿿]){1,3}(?:[ 	]*[·•・][ 	]*[一-鿿](?:[ 	]*[一-鿿]){1,3}){0,2})\s*[）)]\s*系\s*[（(]?\s*(.{2,40}?)\s*[）)]?\s*的法定代表人', section_text)
+    m = re.search(r'[（(]\s*(' + _NAME + r')\s*[）)]\s*系\s*[（(]?\s*(.{2,40}?)\s*[）)]?\s*的法定代表人', section_text)
     if m:
         if not info.get('company_name'):
             info['company_name'] = _clean_company(m.group(2).strip())
@@ -1319,9 +1340,11 @@ def _extract_from_auth_section(section_text, info):
 
     # Pattern 1: "姓名：XXX 职务：XXX 系 XXX 的法定代表人"
     if not info['legal_rep']:
-        m = re.search(r'姓名[：:]\s*([^\s]{2,10})\s*[\s\S]{0,100}?系\s*(.{1,30}?)\s*的法定代表人', section_text)
+        # [_＿\s]* around the colon tolerates the form-fill underline
+        # ('姓名：___张三___'); the captured cand is underscore-stripped below.
+        m = re.search(r'姓名[_＿\s]*[：:][_＿\s]*([^\s]{2,10})\s*[\s\S]{0,100}?系\s*(.{1,30}?)\s*的法定代表人', section_text)
         if m:
-            cand = m.group(1).strip().rstrip('：:')
+            cand = m.group(1).strip().strip('_＿').rstrip('：:')
             # Validate the captured name: PDF form layouts leave blank-field
             # fragments like '姓名：性别：男' where the colon survives.
             if _is_person_name(cand):
@@ -1332,7 +1355,7 @@ def _extract_from_auth_section(section_text, info):
 
     # Pattern 2: "本人 XXX 系 XXX 的法定代表人"
     if not info['legal_rep']:
-        m = re.search(r'(?:本人\s*)?([一-鿿](?:[ 	]*[一-鿿]){1,3}(?:[ 	]*[·•・][ 	]*[一-鿿](?:[ 	]*[一-鿿]){1,3}){0,2})\s*(?:[（(]姓名[）)])?\s*系\s*(.{1,30}?)\s*的法定代表人', section_text)
+        m = re.search(r'(?:本人\s*)?(' + _NAME + r')[_＿\s]*(?:[（(]姓名[）)])?\s*系\s*(.{1,30}?)\s*的法定代表人', section_text)
         if m:
             if not info.get('company_name'):
                 info['company_name'] = _clean_company(m.group(2).strip())
@@ -1375,41 +1398,65 @@ def _extract_from_auth_section(section_text, info):
 
     # Pattern 5: "现委托 XXX（姓名）为我方代理人"
     if not info['authorized_rep']:
-        m = re.search(r'(?:现委托|委托)\s*([一-鿿](?:[ 	]*[一-鿿]){1,3}(?:[ 	]*[·•・][ 	]*[一-鿿](?:[ 	]*[一-鿿]){1,3}){0,2})\s*[（(]姓名[）)]', section_text)
+        m = re.search(r'(?:现委托|委托)\s*[_＿\s]*(' + _NAME + r')[_＿\s]*[（(]姓名[）)]', section_text)
         if m:
             info['authorized_rep'] = m.group(1).strip()
             info['all_persons'].append({'name': info['authorized_rep'], 'role': 'authorized_rep', 'confidence': 0.90})
 
-    # Pattern 6: "代理人：XXX" or "授权代表：XXX" — with person name validation
+    # Pattern 6: "代理人：XXX" or "授权代表：XXX" — with person name validation.
+    # The label may carry a short paren qualifier before the colon
+    # ('授权代表（签字）：张三' / '（签字或盖章）' combined forms), and the
+    # value an underline form fill.
     if not info['authorized_rep']:
-        m = re.search(r'(?:授权委托代理人|委托代理人|代理人|授权代表|被授权人|受托人|签字代表|投标代表)[：:]\s*([一-鿿](?:[ 	]*[一-鿿]){1,3}(?:[ 	]*[·•・][ 	]*[一-鿿](?:[ 	]*[一-鿿]){1,3}){0,2})(?![一-鿿])', section_text)
+        m = re.search(r'(?:授权委托代理人|委托代理人|代理人|授权代表|被授权人|受托人|签字代表|投标代表)'
+                      r'(?:[（(][^（）()]{0,12}[）)])?'
+                      r'[_＿\s]*[：:][_＿\s]*(' + _NAME + r')(?![一-鿿])', section_text)
         if m:
             name = m.group(1).strip()
             if _is_person_name(name):
                 info['authorized_rep'] = name
                 info['all_persons'].append({'name': name, 'role': 'authorized_rep', 'confidence': 0.80})
 
-    # Pattern 7: "法定代表人：XXX"
+    # Pattern 7: "法定代表人：XXX" / "法定代表人（签字）：XXX" /
+    # "法定代表人（单位负责人）：XXX" — any short paren insert tolerated.
     if not info['legal_rep']:
-        m = re.search(r'(?:法定代表人|单位负责人|法人代表)[：:]\s*([一-鿿](?:[ 	]*[一-鿿]){1,3}(?:[ 	]*[·•・][ 	]*[一-鿿](?:[ 	]*[一-鿿]){1,3}){0,2})(?![一-鿿])', section_text)
+        m = re.search(r'(?:法定代表人|单位负责人|法人代表)'
+                      r'(?:[（(][^（）()]{0,12}[）)])?'
+                      r'[_＿\s]*[：:][_＿\s]*(' + _NAME + r')(?![一-鿿])', section_text)
         if m:
             name = m.group(1).strip()
             if _is_person_name(name):
                 info['legal_rep'] = name
                 info['all_persons'].append({'name': name, 'role': 'legal_rep', 'confidence': 0.80})
 
-    # Pattern 8: "兹委托 XXX（同志）为我(方/公司)…代理人" / "现授权/特授权"
+    # Pattern 7b: colon-less flattened-table form '法定代表人 王强' / label and
+    # value on separate lines ('法定代表人\n王强' — PDF cell-per-line). The name
+    # still passes _is_person_name, so label words can never pose as names.
+    if not info['legal_rep']:
+        m = re.search(r'(?:法定代表人|单位负责人|法人代表)\s+(' + _NAME + r')(?![一-鿿])', section_text)
+        if m:
+            name = m.group(1).strip()
+            if _is_person_name(name):
+                info['legal_rep'] = name
+                info['all_persons'].append({'name': name, 'role': 'legal_rep', 'confidence': 0.75})
+
+    # Pattern 8: "兹委托 XXX（同志）为我(方/公司)…代理人" / "现授权/特授权".
+    # 委派/委任 are common verb variants in construction bids.
     if not info['authorized_rep']:
-        m = re.search(r'(?:兹委托|现委托|兹授权|现授权|特授权|特此委托)\s*'
-                      r'([一-鿿]{2,4}(?:[ 	]*[·•・][ 	]*[一-鿿]{2,4}){0,2})\s*(?:同志)?\s*'
+        _VERBS = r'(?:兹委托|现委托|兹授权|现授权|特授权|特此委托|兹委派|现委派|兹委任|现委任|委派|委任)'
+        # Lazy {2,4}? so '孙七同志为…' captures 孙七 and leaves 同志 to the
+        # optional suffix — a greedy class would swallow 同志 into the name
+        # and _cleanup_name would then null the whole result.
+        m = re.search(_VERBS + r'\s*[_＿\s]*'
+                      r'([一-鿿]{2,4}?(?:[ \t]*[·•・][ \t]*[一-鿿]{2,4}){0,2})\s*(?:同志)?\s*'
                       r'(?:为|作为)[^。]{0,40}?代理\s*人', section_text)
         if not m:
             # Spaced-name retry ('兹委托 李 明 同志为我方代理人'). The trailing
             # guard is safe HERE only because the strict pass above already
             # handled zero-separator '现委托李四为…' forms, where 为 sits right
             # after the name and the guard would reject the correct capture.
-            m = re.search(r'(?:兹委托|现委托|兹授权|现授权|特授权|特此委托)\s*'
-                          r'([一-鿿](?:[ 	]*[一-鿿]){1,3}(?:[ 	]*[·•・][ 	]*[一-鿿](?:[ 	]*[一-鿿]){1,3}){0,2})(?![一-鿿])\s*'
+            m = re.search(_VERBS + r'\s*[_＿\s]*'
+                          r'(' + _NAME + r')(?![一-鿿])\s*'
                           r'(?:同志)?\s*'
                           r'(?:为|作为)[^。]{0,40}?代理\s*人', section_text)
         if m and _is_person_name(m.group(1).strip()):
@@ -1418,7 +1465,7 @@ def _extract_from_auth_section(section_text, info):
 
     # Pattern 9: "委托：XXX" / "代理人 XXX（签字）" — bare agent label without colon
     if not info['authorized_rep']:
-        m = re.search(r'(?:委托|代理人)\s+([一-鿿](?:[ 	]*[一-鿿]){1,3}(?:[ 	]*[·•・][ 	]*[一-鿿](?:[ 	]*[一-鿿]){1,3}){0,2})\s*[（(]?(?:签字|签章|盖章|姓名)', section_text)
+        m = re.search(r'(?:委托|委派|代理人)\s+(' + _NAME + r')[_＿\s]*[（(]?(?:签字|签章|盖章|姓名)', section_text)
         if m and _is_person_name(m.group(1).strip()):
             info['authorized_rep'] = m.group(1).strip()
             info['all_persons'].append({'name': info['authorized_rep'], 'role': 'authorized_rep', 'confidence': 0.75})
@@ -1438,6 +1485,10 @@ _ROLE_KEYWORDS = [
     '核心人员', '核心团队成员', '项目核心人员',
     '总协调人', '总负责人', '总协调助理',
     '工作组组长', '小组组长', '评估助理',
+    # 第三批扩充：监理/施工/造价等细分角色（监理标、施工标人员表常见）
+    '施工负责人', '商务负责人', '安全总监', '总监理工程师', '监理工程师',
+    '专业监理工程师', '造价工程师', '咨询工程师', '质检员', '试验员',
+    '测量员', '机械员', '劳务员', '标准员', '总监',
 ]
 
 
@@ -1445,45 +1496,62 @@ def _extract_from_personnel_table(section_text, info):
     """Extract project members from personnel/team tables."""
     # 职称/级别词（表格"职称"列的值，如"张伟 中级 项目负责人"）— 绝不能当姓名
     _TITLE_WORDS = r'(?:高级|中级|初级|正高级|副高级|教授|副教授|讲师|助教|研究员|副研究员|工程师|高级工程师|助理工程师|技师|高级技师|助理)?'
+    # Role alternation content shared by patterns 2/3 — extended vocabulary
+    # covers supervision/construction/cost bids (监理/施工/造价…) alongside
+    # IT roles. Wrap at use site: '(' + _ROLES + ')' to capture.
+    _ROLES = (r'项目经理|项目负责人|技术负责人|技术总监|总工程师|安全员|质量员|施工员|材料员|'
+              r'资料员|造价员|预算员|施工负责人|商务负责人|设计负责人|财务负责人|安全总监|'
+              r'总监理工程师|监理工程师|专业监理工程师|造价工程师|质检员|试验员|测量员')
+    # Label→value separator: colon form may cross a line break (cell-per-line
+    # PDF); colon-less form is SAME-LINE space only — otherwise the role at
+    # the end of one table row would grab the next row's name
+    # ('王强 项目经理\n李勇 施工员' must not pair 李勇 with 项目经理).
+    _LBL_SEP = r'(?:[：:][_＿\s]*|[ \t][＿_ \t]*)'
     patterns = [
         # '姓名：...' and '职务：...' often sit on different lines in resume
         # forms; the span may cross newlines but never another 姓名 label
         # (which would pair this row's name with the NEXT row's role).
-        r'姓名[：:]\s*([一-鿿]{2,4}(?:[ 	]*[·•・][ 	]*[一-鿿]{2,4}){0,2})\s*(?:(?!姓名[：:])[\s\S]){0,60}?(?:职务|岗位|角色|职称)[：:]\s*([一-鿿]{2,10})',
-        # Single space or tab between name and role is common in both docx
-        # and PDF extraction ('王强 项目经理'); require the role keyword
-        # so a bare space-separated line cannot be a false positive.
-        # PDF "序号 姓名 职称 分工" tables produce '张伟 中级 项目负责人' —
-        # allow one title word between name and role so 张伟 is captured
-        # instead of the 职称 column value 中级.
-        # Flattened rows may also carry a duty-LABEL column between name and
-        # role ('陈刚 任中职务 项目经理'): skip one label word so the real
-        # name before it is captured instead of the label itself (which
-        # '任中职务' starts with surname 任 and would otherwise look like one).
-        # The colon/zero-space tolerance covers '陈刚 任中职务：项目经理';
-        # traditional label forms (任職務) are skipped the same way.
-        r'([一-鿿]{2,4}(?:[ 	]*[·•・][ 	]*[一-鿿]{2,4}){0,2})\s+(?:[一-鿿]{0,2}(?:职务|職務|岗位|崗位|职称|職稱|角色|职责|職責)[：:]?\s*)?' + _TITLE_WORDS + r'\s*(项目经理|项目负责人|技术负责人|技术总监|总工程师|安全员|质量员|施工员|材料员|资料员|造价员|预算员)',
-        r'(项目经理|项目负责人|技术负责人|技术总监|总工程师)[：:]\s*([一-鿿](?:[ 	]*[一-鿿]){1,3}(?:[ 	]*[·•・][ 	]*[一-鿿](?:[ 	]*[一-鿿]){1,3}){0,2})(?![一-鿿])',
+        # [_＿\s]* tolerates the underline form fill ('姓名：___张三___').
+        r'姓名[_＿\s]*[：:][_＿\s]*([一-鿿]{2,4}(?:[ \t]*[·•・][ \t]*[一-鿿]{2,4}){0,2})\s*(?:(?!姓名[_＿\s]*[：:])[\s\S]){0,60}?(?:职务|岗位|角色|职称)' + _LBL_SEP + r'([一-鿿]{2,10})',
+        # Colon-less flattened form '姓名 张三 … 职务 项目经理' (PDF cell runs).
+        # Requiring the role label keeps the anchor specific; _LBL_SEP keeps
+        # the role value on the label's line or after a colon.
+        r'姓名\s+([一-鿿](?:[ \t]*[一-鿿]){1,3}?(?:[ \t]*[·•・][ \t]*[一-鿿](?:[ \t]*[一-鿿]){1,3}?){0,2})\s*(?:(?!姓名\s)[\s\S]){0,40}?(?:职务|岗位|角色|职称)' + _LBL_SEP + r'([一-鿿]{2,10})',
+        # Single space / tab / 顿号逗号 between name and role is common in
+        # both docx and PDF extraction ('王强 项目经理' / '王强、项目经理');
+        # require the role keyword so a bare separated line cannot be a false
+        # positive. PDF "序号 姓名 职称 分工" tables produce '张伟 中级 项目
+        # 负责人' — allow one title word between name and role so 张伟 is
+        # captured instead of the 职称 column value 中级. Flattened rows may
+        # also carry a duty-LABEL column between name and role ('陈刚 任中
+        # 职务 项目经理'): skip one label word so the real name before it is
+        # captured instead of the label itself. The colon/zero-space
+        # tolerance covers '陈刚 任中职务：项目经理'; traditional label forms
+        # (任職務) are skipped the same way.
+        r'([一-鿿]{2,4}(?:[ \t]*[·•・][ \t]*[一-鿿]{2,4}){0,2})[\s、，,]+(?:[一-鿿]{0,2}(?:职务|職務|岗位|崗位|职称|職稱|角色|职责|職責)[：:]?\s*)?' + _TITLE_WORDS + r'\s*(' + _ROLES + r')',
+        r'(' + _ROLES + r')[：:][_＿\s]*([一-鿿](?:[ \t]*[一-鿿]){1,3}?(?:[ \t]*[·•・][ \t]*[一-鿿](?:[ \t]*[一-鿿]){1,3}?){0,2})(?![一-鿿])',
         # Role-then-name pairs must stay on ONE line: with '\s+' the role at
         # the end of one table row grabbed the next row's name
         # ('王强 项目经理\n李勇 施工员' made 李勇 a project_manager).
-        r'(项目经理|项目负责人|技术负责人|安全负责人)[ \t]+([一-鿿]{2,4}(?:[ 	]*[·•・][ 	]*[一-鿿]{2,4}){0,2})(?![一-鿿])',
+        r'(' + _ROLES + r')[ \t]+([一-鿿]{2,4}(?:[ \t]*[·•・][ \t]*[一-鿿]{2,4}){0,2})(?![一-鿿])',
         # Reversed label order: "职务：项目经理 ... 姓名：张三" (role first)
-        r'(?:职务|岗位|职称)[：:]\s*([一-鿿]{2,10})\s*[\s\S]{0,60}?姓名[：:]\s*([一-鿿](?:[ 	]*[一-鿿]){1,3}(?:[ 	]*[·•・][ 	]*[一-鿿](?:[ 	]*[一-鿿]){1,3}){0,2})(?![一-鿿])',
-        # Bare "姓名：张三" without a role label (name-only tables, resumes).
-        # The lookahead rejects the next label ('姓名：性别：男' → '性别' is
-        # followed by a colon and never captured).
-        r'姓名[：:]\s*([一-鿿](?:[ 	]*[一-鿿]){1,3}(?:[ 	]*[·•・][ 	]*[一-鿿](?:[ 	]*[一-鿿]){1,3}){0,2})(?![一-鿿]|：|:)',
+        r'(?:职务|岗位|职称)' + _LBL_SEP + r'([一-鿿]{2,10})\s*[\s\S]{0,60}?姓名[_＿\s]*[：:][_＿\s]*([一-鿿](?:[ \t]*[一-鿿]){1,3}?(?:[ \t]*[·•・][ \t]*[一-鿿](?:[ \t]*[一-鿿]){1,3}?){0,2})(?![一-鿿])',
+        # Bare "姓名：张三" without a role label (name-only tables, resumes),
+        # plus the underline form fill. The lookahead rejects the next label
+        # ('姓名：性别：男' → '性别' is followed by a colon and never captured).
+        r'姓名[_＿\s]*[：:][_＿\s]*([一-鿿](?:[ \t]*[一-鿿]){1,3}?(?:[ \t]*[·•・][ \t]*[一-鿿](?:[ \t]*[一-鿿]){1,3}?){0,2})(?![一-鿿]|：|:)',
+        # Colon-less bare name '姓名 张三' (flattened table / cell-per-line).
+        r'姓名\s+([一-鿿](?:[ \t]*[一-鿿]){1,3}?(?:[ \t]*[·•・][ \t]*[一-鿿](?:[ \t]*[一-鿿]){1,3}?){0,2})(?![一-鿿]|：|:)',
     ]
     # 'role name' immediately before a match start means the pairing belongs
-    # to pattern 2 above ('项目经理 王强 技术负责人 李四'): re-pairing that
+    # to pattern 3 above ('项目经理 王强 技术负责人 李四'): re-pairing that
     # name with the FOLLOWING role would double-tag the person. A post-filter
     # instead of a lookbehind so any run of spaces/tabs is covered.
     _ROLE_BEFORE_NAME = re.compile(
-        r'(?:项目经理|项目负责人|技术负责人|安全负责人|技术总监|总工程师)[ \t]+$')
+        r'(?:项目经理|项目负责人|技术负责人|安全负责人|施工负责人|技术总监|总工程师|安全总监|总监理工程师)[ \t]+$')
     for pi, pat in enumerate(patterns):
         for m in re.finditer(pat, section_text):
-            if pi == 1 and _ROLE_BEFORE_NAME.search(section_text, 0, m.start()):
+            if pi == 2 and _ROLE_BEFORE_NAME.search(section_text, 0, m.start()):
                 continue
             groups = m.groups()
             if len(groups) == 2:
@@ -1526,9 +1594,9 @@ def _parse_personnel_pipe_table(text, info):
     columns explicitly instead of relying on inline sentence patterns.
     """
     _NAME_HDR = re.compile(r'(?:姓\s*名|人员姓名|成员姓名|拟投入.{0,6}人员|人员名称|主要人员|关键人员|项目人员)')
-    _ROLE_HDR = re.compile(r'(?:职\s*务|岗\s*位|职\s*称|角\s*色|担任职务|项?目?角色)')
+    _ROLE_HDR = re.compile(r'(?:职\s*务|岗\s*位|职\s*称|角\s*色|担任职务|项?目?角色|职\s*责)')
     _PHONE_HDR = re.compile(r'(?:联?系?电话|手\s*机|移动电?话|联系方式)')
-    _ID_HDR = re.compile(r'(?:身份证|证件号码|身份证明)')
+    _ID_HDR = re.compile(r'(?:身\s*份\s*证\s*号?[码字]?|证件号码|身份证明)')
     _CERT_HDR = re.compile(r'(?:证书|资格|执业|注册)')
 
     lines = text.split('\n')
@@ -1591,7 +1659,7 @@ def _parse_personnel_pipe_table(text, info):
                         if not info.get('phone'):
                             info['phone'] = num
                 if id_col is not None and id_col < len(cells):
-                    im = re.search(r'\d{17}[\dXx]', cells[id_col].replace(' ', ''))
+                    im = re.search(r'\d{17}[\dXx]', re.sub(r'\s', '', cells[id_col]))
                     if im:
                         _append_unique(info['id_numbers'], im.group(0))
                         if not info.get('id_number'):
@@ -1607,11 +1675,17 @@ def _append_unique(lst, value, cap=30):
 
 def _extract_from_signature_page(section_text, info):
     """Extract signatory names from signature/seal pages."""
-    m = re.search(r'法定代表人或其委托代理人[：:][（(]?\s*(?:签字|签章|盖章|签名)\s*[）)]?\s*([一-鿿](?:[ 	]*[一-鿿]){1,3}(?:[ 	]*[·•・][ 	]*[一-鿿](?:[ 	]*[一-鿿]){1,3}){0,2})(?![一-鿿])', section_text)
+    # '法定代表人或其委托代理人' tolerates the missing 其 and PDF-inserted
+    # spaces; a short paren qualifier may sit before or after the colon
+    # ('（签字或盖章）' combined forms included), and the value may be
+    # written over an underline fill ('…：___张三___').
+    m = re.search(r'法定代表人\s*或\s*(?:其)?\s*委托代理\s*人\s*'
+                  r'(?:[（(][^（）()]{0,12}[）)]\s*[：:]?|[_＿\s]*[：:])\s*'
+                  r'[_＿\s]*([一-鿿](?:[ \t]*[一-鿿]){1,3}?(?:[ \t]*[·•・][ \t]*[一-鿿](?:[ \t]*[一-鿿]){1,3}?){0,2})(?![一-鿿])', section_text)
     if m and _is_person_name(m.group(1).strip()):
         info['all_persons'].append({'name': m.group(1).strip(), 'role': 'signatory', 'confidence': 0.75})
 
-    m = re.search(r'投标人[：:]\s*[（(]?(?:盖章|公章|单位章)[）)]?\s*(.{2,40}?)(?:\n|$)', section_text)
+    m = re.search(r'(?:投标人|供应商|报价人)[：:]?\s*[（(]?\s*(?:盖章|公章|单位章)\s*[）)]?\s*[：:]?[_＿\s]*(.{2,40}?)(?:\n|$)', section_text)
     if m and not info.get('company_name'):
         company = m.group(1).strip()
         # Reject form-layout captures like '法定代表人或授权代表: （签字' where
@@ -1624,12 +1698,25 @@ def _extract_from_signature_page(section_text, info):
 def _extract_from_cover(section_text, info):
     """Extract company name and authorized rep from cover/bid letter."""
     if not info.get('company_name'):
-        m = re.search(r'(?:投标人|供应商|申请.?|报价.?)[：:]\s*(.{2,40}?)(?:\n|$)', section_text)
+        # Label family covers 投标人名称/供应商名称/投标单位/报价人/响应人 …
+        # with the underline form fill ('投标人名称：___北京某某大学___').
+        m = re.search(r'(?:投标人|供应商|报价人|申请人|投标单位|报价单位|响应人)(?:名称)?\s*[_＿\s]*[：:][_＿\s]*(.{2,40}?)(?:\n|$)', section_text)
         if m:
             company = m.group(1).strip()
             # Blank form fills like '投标人：____（盖单位章' are not companies
             if len(company) >= 4 and not re.search(r'(?:法定代表|授权代表|签字|盖章|单位章|公章|委托|日期|年月|^_{2,})', company):
                 info['company_name'] = _clean_company(company)
+
+    # 联系人：XXX — the bid letter's contact person. Feeds the same-name
+    # cross-file matching via all_persons (role 'bid_contact' already mapped
+    # in the report/frontend label tables; previously the slot had no
+    # producer at all). Label-anchored + name-validated + fill-tolerant.
+    for m in re.finditer(r'(?:项目联系人|商务联系人|技术联系人|联系人)[：:][_＿\s]*'
+                         r'([一-鿿](?:[ \t]*[一-鿿]){1,3}?(?:[ \t]*[·•・][ \t]*[一-鿿](?:[ \t]*[一-鿿]){1,3}?){0,2})(?![一-鿿])', section_text):
+        name = m.group(1).strip()
+        if _is_person_name(name) and not any(p['name'] == name for p in info['all_persons']):
+            info['all_persons'].append({'name': name, 'role': 'bid_contact', 'confidence': 0.75})
+            break
 
     # Extract authorized rep from "签字代表（name、role）" in cover/bid letter
     if not info.get('authorized_rep'):
@@ -1651,9 +1738,12 @@ def _extract_from_cover(section_text, info):
 
     # "授权代表：XXX" / "代理人：XXX" often appears in the bid letter itself
     # (not only in the authorization-letter section), e.g. the signature line
-    # "授权代表（签字）：张三". Same label family as _extract_from_auth_section.
+    # "授权代表（签字）：张三" / "授权代表（签字或盖章）：张三". Same label
+    # family as _extract_from_auth_section.
     if not info.get('authorized_rep'):
-        m = re.search(r'(?:授权委托代理人|委托代理人|代理人|授权代表|被授权人|受托人|投标代表)[（(]?\s*(?:签字|签章|盖章|签名)?\s*[）)]?[：:]\s*([一-鿿](?:[ 	]*[一-鿿]){1,3}(?:[ 	]*[·•・][ 	]*[一-鿿](?:[ 	]*[一-鿿]){1,3}){0,2})(?![一-鿿])', section_text)
+        m = re.search(r'(?:授权委托代理人|委托代理人|代理人|授权代表|被授权人|受托人|投标代表)'
+                      r'(?:[（(][^（）()]{0,12}[）)])?'
+                      r'[_＿\s]*[：:][_＿\s]*([一-鿿](?:[ 	]*[一-鿿]){1,3}(?:[ 	]*[·•・][ 	]*[一-鿿](?:[ 	]*[一-鿿]){1,3}){0,2})(?![一-鿿])', section_text)
         if m:
             name = m.group(1).strip()
             if _is_person_name(name):
@@ -1668,11 +1758,15 @@ def _infer_role_label(role_str):
         '项目经理': 'project_manager', '项目负责人': 'project_manager',
         '项目副经理': 'project_manager', '商务经理': 'project_manager',
         '财务负责人': 'project_manager', '设计负责人': 'project_manager',
+        '施工负责人': 'project_manager', '商务负责人': 'project_manager',
+        '总监理工程师': 'project_manager', '专业监理工程师': 'tech_lead',
         '技术负责人': 'tech_lead', '技术总监': 'tech_lead', '总工程师': 'tech_lead',
-        '安全负责人': 'tech_lead',
+        '安全负责人': 'tech_lead', '安全总监': 'tech_lead',
         '安全员': 'team_member', '质量员': 'team_member', '施工员': 'team_member',
         '材料员': 'team_member', '资料员': 'team_member', '造价员': 'team_member',
-        '预算员': 'team_member',
+        '预算员': 'team_member', '监理工程师': 'team_member',
+        '造价工程师': 'team_member', '质检员': 'team_member',
+        '试验员': 'team_member', '测量员': 'team_member',
     }
     for cn, en in mapping.items():
         if cn in role_str:
@@ -1723,11 +1817,15 @@ def _cleanup_name(info, key):
 
 def _clean_phone(v):
     """Strip junk around a captured phone number (leading '_' form-label
-    fill, trailing punctuation) — defensive for OCR/form-wide captures."""
+    fill, trailing punctuation, parenthesized area codes) — defensive for
+    OCR/form-wide captures."""
     if not v:
         return v
-    v = re.sub(r'^[^\d]+', '', str(v).strip())
-    v = re.sub(r'[^0-9\-]+$', '', v).strip()
+    v = re.sub(r'^[^\d(（]+', '', str(v).strip())
+    v = re.sub(r'[^0-9\-()（）]+$', '', v).strip()
+    # '(010)12345678' → '01012345678': drop area-code parens but keep the
+    # dash structure.
+    v = re.sub(r'[()（）]', '', v)
     # PDF column padding inserts spaces inside a landline ('010 - 1234 5678');
     # keep the dash structure but remove the padding.
     v = re.sub(r'(?<=\d)[ \t]+(?=\d)', '', v)
@@ -1757,6 +1855,13 @@ _GLUE_PHRASES = [
     '开标一览表', '报价一览表', '投标报价表', '分项报价表', '报价明细表',
     '分项明细表', '投标总价', '含税总价', '不含税总价', '投标函',
     '人民币', '人民币大写', '报价函', '报价单',
+    # 第三批扩充：总价/合计/总计 这类 2 字标签同样会被 PDF 从中间拆开
+    # （'总\n价：98万'），标签通道失配。短语重粘只删字符间空白，安全。
+    '总价', '合计', '总计', '金额', '单价',
+    '投标价格', '投标总报价', '首次报价', '最终报价', '最终投标报价',
+    '磋商报价', '谈判报价', '响应报价', '报价总额', '报价金额',
+    '大写金额', '小写金额', '含税报价', '不含税报价', '报价总表',
+    '银行卡号', '现委派', '兹委派',
 ]
 
 
@@ -1893,7 +1998,10 @@ def _fix_ocr_label_confusions(text):
 # grouped '139-1234-5678' / '139 1234 5678' from formatted PDF cells.
 _MOBILE_PATTERNS = (
     re.compile(r'(?<!\d)(?:\+?86)?1[3-9]\d{9}(?!\d)'),
-    re.compile(r'(?<![\d-])(?:\+?86[- \t]?)?1[3-9]\d[- \t]?\d{4}[- \t]?\d{4}(?![\d-])'),
+    # '[-\s]?' (not '[- \t]?') so a group split at a LINE BREAK still matches
+    # ('1391234\n5678' — PDF cell-per-line layout); the 11-digit fullmatch
+    # validation below keeps the looser separator safe.
+    re.compile(r'(?<![\d-])(?:\+?86[-\s]?)?1[3-9]\d[-\s]?\d{4}[-\s]?\d{4}(?![\d-])'),
 )
 
 
@@ -2031,13 +2139,17 @@ def extract_personnel(text):
     # ── Multi-value contact pools (phones / ID numbers / emails) ──
     # Scan the whole document: table columns and signature blocks often carry
     # contact info without section headers. IDs tolerate internal whitespace
-    # ('3201 23 19…') which PDF extraction frequently inserts.
+    # ('3201 23 19…') which PDF extraction frequently inserts; the digit-join
+    # below only fuses whitespace BETWEEN digits so a newline split
+    # ('320123\n19900101\n123X' — cell-per-line layout) heals too, while
+    # unrelated numbers stay apart (anything non-digit breaks the join).
+    _id_src = re.sub(r'(?<=\d)\s+(?=\d)', '', text)
     for src in (text, _ocr_digit_normalize(text)):
         for num in _iter_mobiles(src):
             _append_unique(info['phones'], num)
     for m in re.finditer(r'(?<!\d)\d{6}(?:18|19|20)\d{2}'
                          r'(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])'
-                         r'\d{3}[\dXx](?![\dXx])', text.replace(' ', '')):
+                         r'\d{3}[\dXx](?![\dXx])', _id_src):
         _append_unique(info['id_numbers'], m.group(0))
     for m in re.finditer(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', text):
         _append_unique(info['emails'], m.group(0).lower())
@@ -2047,7 +2159,7 @@ def extract_personnel(text):
     # reprinted in EVERY bidder's document and would falsely pair all files.
     # The bidder's own 基本户 account (开户行：X / 账号：Y in qualification
     # pages) is the collusion-relevant signal and has no such context.
-    for m in re.finditer(r'[账帐]\s*户?\s*号[：:\s]+\d(?:[\d\s]{7,27}\d)?', text):
+    for m in re.finditer(r'(?:[账帐]\s*户?\s*号|[账帐]\s*户|银行\s*卡\s*号)[：:\s_＿]+\d(?:[\d\s]{7,27}\d)?', text):
         prefix = text[max(0, m.start() - 40):m.start()]
         if re.search(r'(?:保证金|投标保证|汇[入至款]|缴[纳付交]|招标|代理|'
                      r'工本费|标书[款费]|平台|收费)', prefix):
@@ -2063,9 +2175,16 @@ def extract_personnel(text):
     # Cover/bid-letter block (投标函) commonly carries the bidder's own
     # 地址/电话/传真 lines ("投标人：X（盖单位章）…电话：010-12345678") —
     # include cover_sections so a landline there is not missed. The capture
-    # tolerates the PDF column padding inside a landline ('010 - 1234 5678').
+    # tolerates the PDF column padding inside a landline ('010 - 1234 5678')
+    # and the underline form fill around the value ('电话：___010-12345678').
+    _TEL_LABEL = (r'(?:电话|手机|联系电话|联系方式|移动电话|手机号码|电话号码|传真电话|传真)'
+                  r'[_＿\s]*[：:][_＿\s]*')
+    # Value class tolerates parenthesized area codes ('(010)12345678' /
+    # '（010）1234-5678') — a shared fax/landline across bidders is collusion
+    # evidence just like a shared mobile.
+    _TEL_VAL = r'([（(]?\d[\d\- \t()（）]{5,22})'
     for sec in auth_sections + personnel_sections + sig_sections + cover_sections:
-        m = re.search(r'(?:电话|手机|联系电话|联系方式|移动电话|手机号码|电话号码)[：:]\s*(\d[\d\- \t]{6,19})', sec['text'])
+        m = re.search(_TEL_LABEL + _TEL_VAL, sec['text'])
         if m:
             phone = _clean_phone(m.group(1))
             if not info.get('phone'):
@@ -2077,7 +2196,7 @@ def extract_personnel(text):
     # the loop above — run the same label-anchored scan on the full text so a
     # landline there is not lost, mirroring the step-6 name-rescan fallback.
     if not (auth_sections or personnel_sections or sig_sections or cover_sections):
-        m = re.search(r'(?:电话|手机|联系电话|联系方式|移动电话|手机号码|电话号码)[：:]\s*(\d[\d\- \t]{6,19})', text)
+        m = re.search(_TEL_LABEL + _TEL_VAL, text)
         if m:
             phone = _clean_phone(m.group(1))
             if not info.get('phone'):
@@ -2085,15 +2204,18 @@ def extract_personnel(text):
             if not info['contacts'].get('phone'):
                 info['contacts']['phone'] = phone
 
-    for sec in auth_sections:
-        m = re.search(r'地址[：:]\s*(.{8,80})', sec['text'])
+    # Address labels live in the auth letter AND on bid-letter covers /
+    # signature pages ('投标函 … 地址：… 电话：…'); scan them all. Value
+    # side tolerates the underline fill, stripped before the length check.
+    for sec in auth_sections + cover_sections + sig_sections:
+        m = re.search(r'地址[_＿\s]*[：:][_＿\s]*(.{8,80})', sec['text'])
         if m and not info.get('address'):
-            addr = m.group(1).strip()
+            addr = m.group(1).strip('_＿ ').strip()
             # Cover blocks put the next field on the SAME line — cut the
             # address at the first following label so it does not swallow
             # '电话：…' / '联系人：…' fragments.
             addr = re.split(r'\s*(?:电话|手机|联系电话|联系方式|传真|邮编|邮政编码|联系人|'
-                            r'电子邮箱|邮箱|开户行|开户银行|账号|账户|网址)', addr, 1)[0][:100]
+                            r'电子邮箱|邮箱|开户行|开户银行|账号|账户|网址)', addr, 1)[0][:100].strip('_＿ ')
             if len(addr) >= 8:
                 info['address'] = addr
                 info['contacts']['address'] = addr
@@ -2314,6 +2436,30 @@ _AMT_ARABIC = r'[\d,]+(?: \d{3})*\.?\d*\s*(?:万|亿)?\s*元?'
 # Full Chinese uppercase / informal numeral string (incl. 元/角/分/整).
 _AMT_CN = r'[壹贰叁肆伍陆柒捌玖拾佰仟万亿零一二三四五六七八九十百千元整角分圆]+'
 _AMT = r'(?:' + _AMT_ARABIC + r'|' + _AMT_CN + r')'
+# ── 第三批扩充：跨行断裂的大写金额（仅用于有标签锚点的通道）──
+# PDF 提取常把大写金额从中间拆行（'大写：壹佰贰拾\n叁万元整'）。FLEX 版允许
+# 数字位与单位位之间夹空白；终结符（元/整/角/分）之后的空白绝不跨接——两个
+# 完整相邻的大写金额（'壹佰万元整\n贰拾万元整'）永远各归各，不会粘连。
+# 因此 FLEX 只能用在 大写/小写 标签锚定之后，不能用于无锚点扫描。
+_CN_RUN = '零壹贰叁肆伍陆柒捌玖一二三四五六七八九拾佰仟万亿百千'
+_AMT_CN_FLEX = (r'[' + _CN_RUN + r']+(?:\s+[' + _CN_RUN + r']+)*'
+                r'(?:[元圆]\s*[整正]?\s*(?:[' + _CN_RUN + r']?\s*[角毛]\s*[整零]?\s*[' + _CN_RUN + r']?\s*分?)*|[整正])?')
+_AMT_FLEX = r'(?:' + _AMT_ARABIC + r'|' + _AMT_CN_FLEX + r')'
+# ── 第三批扩充：标签→值的分隔形态 ──
+# 表单填空下划线（'投标总价：____98.6万元____'）、冒号可有可无的空格分隔
+# （'投标总价 980000元'）、标签后的括号注记（'投标总价（含税）：…'）。
+_LBL_FILL = r'[_＿：:=\s]+'     # ≥1 个分隔字符：冒号/等号/下划线/空白任意组合
+_FILL_OPT = r'[_＿\s]*'          # 纯填充（可零长），用于冒号已单独匹配处
+# Specific bid-total labels may also connect with 为/是 ('投标总价为98万元' /
+# '总报价是350万') — kept to the specific-label tier only; the generic
+# 总价/合计 tier stays colon/whitespace-only.
+_BID_SEP = r'(?:[_＿：:=\s]+|为|是)'
+# Cell-shaped number for flattened table rows: thousands commas, thin-space
+# groups, optional 1-2 decimals, optional directly-attached 万元/元 suffix.
+# (?!\d) ends the number at a real boundary so a thin-space group can never
+# bite into the NEXT column number ('1838529 5002800' must stay two numbers);
+# no trailing whitespace tolerance (see Channel 5 note on magnitude blow-up).
+_AMT_CELL = r'[\d,]+(?: \d{3})*\.?\d{0,2}(?!\d)(?:万元?|元)?'
 # Contexts that are amounts but NOT the bidder's own price. Shared by the
 # price channels and post-validation so an amount is judged consistently:
 # bid bonds / deposits, reference contract amounts, document prices, capital,
@@ -2322,7 +2468,7 @@ _AMT = r'(?:' + _AMT_ARABIC + r'|' + _AMT_CN + r')'
 # all bidders look identical.
 _NON_BID_AMOUNT_CTX = (r'(?:保证金|投标保证|押金|投标保函|银行保函|履约保证|'
                        r'合同金额|合同价款|签约合同价|中标金额|结算金额|成交金额|'
-                       r'售价|注册[资]*金|出资|暂列金额|'
+                       r'售价|注册[资]*金|出资|暂列金额|暂定价|暂定金额|'
                        r'最高限价|招标控制价|控制价|拦标价|暂估价|预算[金额财]*[额为]?|'
                        r'违约金|赔偿金|罚金|代理服务费|中标服务费|交易服务费|'
                        r'平台使用费|工本费|标书款|手续费|佣金)')
@@ -2392,8 +2538,10 @@ def _fw_digits_to_ascii(s):
 
     PDF text layers occasionally emit full-width digits ('小写：１２３４５'),
     which the ASCII-digit regexes would silently skip. ＠ joins so a
-    full-width email address still matches the ASCII email pattern."""
-    return s.translate(str.maketrans('０１２３４５６７８９：，％％＠', '0123456789:,%%@'))
+    full-width email address still matches the ASCII email pattern; Ｘｘ join
+    so a full-width ID-card check digit still matches the X-digit classes;
+    ＝ joins so a full-width equals separator still matches the = classes."""
+    return s.translate(str.maketrans('０１２３４５６７８９：，％％＠Ｘｘ＝', '0123456789:,%%@Xx='))
 
 
 def _ocr_digit_normalize(s):
@@ -2436,6 +2584,14 @@ def extract_prices(text):
     text = _fw_digits_to_ascii(text)
     text = _glue_phrases(text)
     text = _normalize_cjk_whitespace(text)
+    # Lowercase currency tokens ('rmb 98000') normalize to RMB so the
+    # case-sensitive currency patterns match them too.
+    text = re.sub(r'(?i)\b(?:cny|rmb)\b', lambda mo: mo.group(0).upper(), text)
+    # Traditional-script numeral glyphs in 大写 amounts (萬/億/貳/陸/圓) —
+    # HK/TW-flavored templates and OCR of scanned bids. Every mapping lands
+    # on the simplified form already used by _CN_* tables and _AMT classes.
+    text = (text.replace('萬', '万').replace('億', '亿')
+                .replace('貳', '贰').replace('陸', '陆').replace('圓', '圆'))
 
     # Track whether the accepted price came from Chinese numerals only (no
     # Arabic digits in the source). Validation then skips the "value must
@@ -2480,17 +2636,20 @@ def extract_prices(text):
     # line (e.g. '投标函' matched mid-letter), so narrowing the search to the
     # section alone would lose the price.
     symbol_patterns = [
-        # 'RMB￥：126181976.30元' - combined prefix+symbol, optional colon
-        r'(?:CNY|RMB)\s*[￥¥]?\s*[：:]?\s*(' + _AMT_ARABIC + r')',
-        # '￥12.5万元' keeps its 万元 magnitude via _AMT_ARABIC suffix
-        r'[￥¥]\s*[：:]?\s*(' + _AMT + r')',
+        # 'RMB￥：126181976.30元' - combined prefix+symbol, optional colon.
+        # _FILL_OPT tolerates the underline form fill ('￥：__126181976.30__').
+        r'(?:CNY|RMB)\s*[￥¥]?\s*[：:]?' + _FILL_OPT + r'(' + _AMT_ARABIC + r')',
+        # '￥12.5万元' keeps its 万元 magnitude via _AMT_ARABIC suffix.
+        # FLEX variant lets a 大写 amount split across a line break survive
+        # ('￥壹佰贰拾\n叁万元整') — the ￥ symbol anchors the match.
+        r'[￥¥]\s*[：:]?' + _FILL_OPT + r'(' + _AMT_FLEX + r')',
         # 人民币 and its amount must stay on ONE line: with '\s+' the label
         # at the end of '2000万元人民币' grabs the next line's '2014年1月20日'
         # (a founding date), and the later-nulled value blocks all lower
-        # channels from retrying.
-        r'人民币[：:]?[ \t]*(' + _AMT + r')',
-        r'(?:CNY|RMB)\s*(' + _AMT_ARABIC + r')',
-        r'USD\s*([\d,]+\.?\d*)',
+        # channels from retrying. Same-line fill only ([_＿ \t]*, no \n).
+        r'人民币[：:]?[_＿ \t]*(' + _AMT_FLEX + r')',
+        r'(?:CNY|RMB)\s*' + _FILL_OPT + r'(' + _AMT_ARABIC + r')',
+        r'USD\s*' + _FILL_OPT + r'([\d,]+\.?\d*)',
     ]
     sources = ([(bid_section, False)] if bid_section else []) + [(text, True)]
     for search_text, _from_global_hit in sources:
@@ -2518,32 +2677,43 @@ def extract_prices(text):
                 # Unit rates ('22000元/月', '340000/人月') are not totals.
                 if _amount_is_unit_rate(search_text, m.end()):
                     continue
-                val = _parse_amount(m.group(1))
+                _g = re.sub(r'\s+', '', m.group(1))
+                val = _parse_amount(_g)
+                if _is_yyyymmdd(val):
+                    continue
                 if any(abs(val - b) < 1 for b in bond_amounts):
                     continue
                 if val >= 100:
                     result['totalPriceInTax'] = val
                     result['totalPrice'] = val
-                    _mark_cn_only(m.group(1))
+                    _mark_cn_only(_g)
                     if _from_global_hit:
                         _mark_global()
                     break
 
     # ── Channel 2: Label-based (标签通道) ── confidence: 0.90
     if result['totalPriceInTax'] is None:
+        # Specific total-price labels (longest-first so 投标价 never shadows
+        # 投标价格/投标报价). Third-batch additions: 磋商/谈判/最后/二次报价
+        # (multi-round bargaining), 报价总额/合计报价/响应总价 etc.
+        _BID_LBL = (r'(?:投标总价|投标总报价|投标总价格|总报价|总报价额|报价总额|报价总金额|'
+                    r'合计报价|报价金额|投标报价|投标价格|项目总价|投标总金额|总金额|'
+                    r'最终报价|最终投标报价|最后报价|首次报价|首轮报价|二次报价|'
+                    r'响应报价|响应总价|磋商报价|谈判报价|含税总报价|含税报价|'
+                    r'投标金额|响应文件总价|竞标报价|投标价)')
+        # Short annotation paren between label and colon: （含税）/（元）/
+        # （单位：万元）/（人民币）/（大写）… — anything short that is not
+        # itself an amount.
+        _LBL_PAREN = r'(?:[（(][^（）()]{0,12}[）)])?'
         label_patterns = [
             # Same-line 人民币 prefix (see Channel 1 note on the newline grab)
-            r'人民币[：:]?[ \t]*(' + _AMT + r')',
-            r'小写[（(]?\s*[:：]?\s*[）)]?\s*(' + _AMT_ARABIC + r')',
-            r'(?:投标总价|投标总报价|总报价|报价金额|投标报价|项目总价|投标总金额|总金额|'
-            r'最终报价|首轮报价|响应报价|谈判报价|含税总报价|投标金额|响应文件总价|'
-            r'首次报价|最终投标报价|投标总价格)[：:\s]+(' + _AMT + r')',
-            # Label with unit in parentheses: "投标总价（元）：123000" /
-            # "合计（万元）：89.3" — the 万元 suffix keeps magnitude via _AMT.
-            r'(?:投标总价|投标总报价|总报价|报价金额|投标报价|项目总价|总金额|总价|总计|合计)'
-            r'[（(]\s*(?:万元?|元)\s*[）)]\s*[：:]?\s*(' + _AMT + r')',
-            r'(?:总价|总计|合计)[：:]\s*(' + _AMT + r')',
-            r'(?:金额|报价)[（(]元[）)][：:]\s*([\d,]+\.?\d*)',
+            r'人民币[：:]?[_＿ \t]*(' + _AMT_FLEX + r')',
+            # 小写 variants: （小写）￥：98万 / 小写金额：__980,000__ — the
+            # class-run separator allows ￥/colon/underscores in any order.
+            r'小写\s*(?:金额)?\s*[）)]?\s*[￥¥：:＿_\s]*[（(]?\s*(' + _AMT_ARABIC + r')',
+            _BID_LBL + r'\s*' + _LBL_PAREN + _BID_SEP + r'(' + _AMT_FLEX + r')',
+            r'(?:总价|总计|合计)\s*(?:金额)?\s*[：:]' + _FILL_OPT + r'(' + _AMT_FLEX + r')',
+            r'(?:金额|报价)[（(]元[）)]\s*[：:]' + _FILL_OPT + r'([\d,]+\.?\d*)',
         ]
         for search_text, _from_global_hit in sources:
             if result['totalPriceInTax'] is not None:
@@ -2560,15 +2730,55 @@ def extract_prices(text):
                         continue
                     if _amount_is_unit_rate(search_text, m.end()):
                         continue
-                    val = _parse_amount(m.group(1))
+                    _g = re.sub(r'\s+', '', m.group(1))
+                    val = _parse_amount(_g)
+                    if _is_yyyymmdd(val):
+                        continue
                     if any(abs(val - b) < 1 for b in bond_amounts):
                         continue
                     if val >= 100:
                         result['totalPriceInTax'] = val
                         result['totalPrice'] = val
-                        _mark_cn_only(m.group(1))
+                        _mark_cn_only(_g)
                         if _from_global_hit:
                             _mark_global()
+                        break
+
+    # ── Channel 2b: paren-unit labels ──
+    # '合计（万元）：89.3' / '合计（单位：万元）：89.3' — the unit lives in the
+    # PAREN and the value is bare; _AMT alone would read 89.3 and lose the
+    # magnitude, so the paren unit is captured and applied as a multiplier
+    # when the value itself carries none. '投标总价（元）：123000' / '总报价
+    # （人民币）：500000' need no multiplier.
+    if result['totalPriceInTax'] is None:
+        for search_text, _from_global_hit in sources:
+            if result['totalPriceInTax'] is not None:
+                break
+            for m in re.finditer(
+                    r'(?:投标总价|投标总报价|总报价|报价金额|投标报价|项目总价|总金额|总价|总计|合计)'
+                    r'\s*[（(]\s*(?:单位\s*[：:]?\s*)?(?:人民币\s*)?(万元?|元)\s*[）)]\s*[：:]?' + _FILL_OPT +
+                    r'(' + _AMT_FLEX + r')', search_text):
+                if _amount_in_non_bid_context(search_text, m.start()):
+                    continue
+                if _amount_in_payment_voucher(search_text, m.start()):
+                    continue
+                if _amount_is_unit_rate(search_text, m.end()):
+                    continue
+                _g = re.sub(r'\s+', '', m.group(2))
+                val = _parse_amount(_g)
+                if '万' in m.group(1) and not re.search(r'[万亿]', _g):
+                    val *= 10000
+                    # Scaled value has no literal form in the text; validation
+                    # must not demand one (same trust level as _cn_only).
+                    result['_paren_wan_scaled'] = True
+                if _is_yyyymmdd(val):
+                    continue
+                if val >= 100:
+                    result['totalPriceInTax'] = val
+                    result['totalPrice'] = val
+                    _mark_cn_only(_g)
+                    if _from_global_hit:
+                        _mark_global()
                         break
 
     # ── Channel 3: 大写/小写 pair ── confidence: 0.88
@@ -2576,14 +2786,19 @@ def extract_prices(text):
         for search_text, _from_global_hit in sources:
             if result['totalPriceInTax'] is not None:
                 break
-            m = re.search(r'大写[：:]?\s*[（(]?\s*' + _AMT_CN + r'\s*[）)]?[\s\S]{0,100}?'
-                          r'小写[：:]?\s*[（(]?\s*([\d,]+\.?\d*)', search_text)
+            # '大写金额：' inserts the word 金额 between label and colon;
+            # _AMT_CN_FLEX lets the CN amount itself split across a line
+            # break ('大写：壹佰贰拾\n叁万元整  小写：…').
+            m = re.search(r'大写\s*(?:金额)?\s*[）)]?\s*[：:]?' + _FILL_OPT + r'[（(]?\s*(' + _AMT_CN_FLEX + r')\s*[）)]?[\s\S]{0,100}?'
+                          r'小写\s*(?:金额)?\s*[）)]?\s*[￥¥：:＿_\s]*[（(]?\s*([\d,]+\.?\d*)', search_text)
             if not m:
                 # Reversed order: 小写 first, 大写 after
-                m = re.search(r'小写[：:]?\s*[（(]?\s*([\d,]+\.?\d*)\s*[）)]?[\s\S]{0,100}?'
-                              r'大写[：:]?\s*[（(]?\s*' + _AMT_CN, search_text)
+                m = re.search(r'小写\s*(?:金额)?\s*[）)]?\s*[￥¥：:＿_\s]*[（(]?\s*([\d,]+\.?\d*)\s*[）)]?[\s\S]{0,100}?'
+                              r'大写\s*(?:金额)?\s*[）)]?\s*[：:]?' + _FILL_OPT + r'[（(]?\s*(' + _AMT_CN_FLEX + r')', search_text)
             if m:
                 val = _parse_amount(m.group(1))
+                if _is_yyyymmdd(val):
+                    continue
                 if val >= 100:
                     result['totalPriceInTax'] = val
                     result['totalPrice'] = val
@@ -2599,9 +2814,12 @@ def extract_prices(text):
         for search_text, _from_global_hit in sources:
             if result['totalPriceInTax'] is not None:
                 break
-            m = re.search(r'(?:大写|人民币\s*[（(]\s*大写\s*[）)])[：:]?\s*[（(]?\s*(' + _AMT_CN + r')', search_text)
+            m = re.search(r'(?:大写|人民币\s*[（(]\s*大写\s*[）)])\s*(?:金额)?\s*[：:]?' + _FILL_OPT + r'[（(]?\s*(' + _AMT_CN_FLEX + r')', search_text)
             if m:
-                val = _parse_amount(m.group(1))
+                _g = re.sub(r'\s+', '', m.group(1))
+                val = _parse_amount(_g)
+                if _is_yyyymmdd(val):
+                    continue
                 if val >= 1000:
                     result['totalPriceInTax'] = val
                     result['totalPrice'] = val
@@ -2616,11 +2834,11 @@ def extract_prices(text):
     # ── Channel 4: Table-based (detailed search in bid section) ── confidence: 0.85
     if bid_section and result['totalPriceInTax'] is None:
         for pat in [
-            r'(?:CNY|RMB)\s*[￥¥]?\s*[：:]?\s*(' + _AMT_ARABIC + r')',
-            r'[￥¥]\s*[：:]?\s*(' + _AMT + r')',
-            r'人民币[：:\s]+(' + _AMT + r')',
-            r'小写[：:]?\s*(' + _AMT_ARABIC + r')',
-            r'(?:总价|总计|合计|报价)[：:]?\s*(' + _AMT + r')',
+            r'(?:CNY|RMB)\s*[￥¥]?\s*[：:]?' + _FILL_OPT + r'(' + _AMT_ARABIC + r')',
+            r'[￥¥]\s*[：:]?' + _FILL_OPT + r'(' + _AMT_FLEX + r')',
+            r'人民币[：:\s]+(' + _AMT_FLEX + r')',
+            r'小写\s*(?:金额)?\s*[）)]?\s*[￥¥：:＿_\s]*[（(]?\s*(' + _AMT_ARABIC + r')',
+            r'(?:总价|总计|合计|报价)[：:]?' + _FILL_OPT + r'(' + _AMT_FLEX + r')',
         ]:
             if result['totalPriceInTax'] is not None:
                 break
@@ -2629,11 +2847,14 @@ def extract_prices(text):
                 # 最高限价 line inside the bid section would be captured here.
                 if _amount_in_non_bid_context(bid_section, m.start()):
                     continue
-                val = _parse_amount(m.group(1))
+                _g = re.sub(r'\s+', '', m.group(1))
+                val = _parse_amount(_g)
+                if _is_yyyymmdd(val):
+                    continue
                 if val >= 100:
                     result['totalPriceInTax'] = val
                     result['totalPrice'] = val
-                    _mark_cn_only(m.group(1))
+                    _mark_cn_only(_g)
                     break
 
     # ── Channel 5: Docx pipe-separated total (总计 | 893000) ── confidence: 0.83
@@ -2666,60 +2887,69 @@ def extract_prices(text):
 
         # Fallback: "合计 NNN" space-separated (common in PDF tables without colons).
         # PDF text layers often render empty cells as '\' or '/', so the row
-        # '合计 \ 1838529 5002800 \' must be accepted: separators [\/ ] between
+        # '合计 \ 1838529 5002800 \' must be accepted: separators [\/ _]between
         # 合计 and the first number, and an optional second price column
-        # (不含税 / 含税 pair).
+        # (不含税 / 含税 pair). Third-batch: thousands commas and thin-space
+        # groups in the cells ('1,838,529'), underline fill ('合计 ____ 98万'),
+        # 金额 insert ('合计金额：…') and 总价合计/报价合计 prefixed forms;
+        # amounts may carry 万元 magnitude (parsed via _parse_amount).
         if result['totalPriceInTax'] is None:
-            _SEP = r'(?:\s|\\|/|、)*'
-            for m in re.finditer(r'^合\s*计\s*' + _SEP + r'(\d{5,12}(?:\.\d{1,2})?)'
-                                 r'(?:' + _SEP + r'(\d{5,12}(?:\.\d{1,2})?))?'
+            _SEP = r'(?:\s|\\|/|、|_)*'
+            # Second price column requires 4+ digit chars so a trailing
+            # 1-2 digit TAX RATE is not eaten as a price.
+            for m in re.finditer(r'^(?:总价|报价|金额)?合\s*计\s*(?:金额)?\s*[：:]?\s*' + _SEP +
+                                 r'(' + _AMT_CELL + r')'
+                                 r'(?:' + _SEP + r'(?=[\d,]{4})(' + _AMT_CELL + r'))?'
                                  r'(?:' + _SEP + r'(\d{1,2})(?=\s|$))?', text, re.MULTILINE):
                 val = _parse_amount(m.group(1))
-                if val >= 50000:
-                    v2 = float(m.group(2).replace(',', '')) if m.group(2) else None
-                    if v2 is not None and v2 >= 50000:
-                        lo, hi = min(val, v2), max(val, v2)
-                        if hi / max(lo, 1) <= 1.5:
-                            # plausibly 不含税 + 含税 pair
-                            result['totalPrice'] = lo
-                            result['totalPriceInTax'] = hi
-                        else:
-                            result['totalPrice'] = val
-                            result['totalPriceInTax'] = v2
+                if _is_yyyymmdd(val) or val < 50000:
+                    continue
+                v2 = _parse_amount(m.group(2)) if m.group(2) else None
+                if v2 is not None and (not _is_yyyymmdd(v2)) and v2 >= 50000:
+                    lo, hi = min(val, v2), max(val, v2)
+                    if hi / max(lo, 1) <= 1.5:
+                        # plausibly 不含税 + 含税 pair
+                        result['totalPrice'] = lo
+                        result['totalPriceInTax'] = hi
                     else:
-                        result['totalPriceInTax'] = val
                         result['totalPrice'] = val
-                    if m.group(3) and 1 <= int(m.group(3)) <= 30:
-                        result['taxRate'] = m.group(3) + '%'
-                    break
+                        result['totalPriceInTax'] = v2
+                else:
+                    result['totalPriceInTax'] = val
+                    result['totalPrice'] = val
+                if m.group(3) and 1 <= int(m.group(3)) <= 30:
+                    result['taxRate'] = m.group(3) + '%'
+                break
 
         # Fallback: simple "合计 NNN" anywhere (no colons, just space)
         if result['totalPriceInTax'] is None:
-            m = re.search(r'(?:合计|总计)\s+(\d{5,12}(?:\.\d{2})?)', text)
+            m = re.search(r'(?:合\s*计|总\s*计)[\s_＿]+(' + _AMT_CELL + r')', text)
             if m:
                 val = _parse_amount(m.group(1))
-                if val >= 50000:
+                if not _is_yyyymmdd(val) and val >= 50000:
                     result['totalPriceInTax'] = val
                     result['totalPrice'] = val
 
         # Fallback: simple "总计 | number" pattern
         if result['totalPrice'] is None:
-            m = re.search(r'总计\s*\|\s*(\d{4,10}(?:\.\d{2})?)', text)
+            m = re.search(r'总\s*计\s*\|\s*(' + _AMT + r')', text)
             if m:
                 val = _parse_amount(m.group(1))
                 if val >= 100:
                     result['totalPrice'] = val
                     result['totalPriceInTax'] = val
 
-        # Fallback: "不含税总价：" / "含税总价：" labels
+        # Fallback: "不含税总价：" / "含税总价：" / 税前/税后 and 价/价格/金额
+        # suffix variants — _AMT keeps the 万元 magnitude ('含税总价：98万元'
+        # → 980000, not 98), fill tolerated.
         if result['totalPrice'] is None:
-            m = re.search(r'不含税总价[：:]\s*([\d,]+\.?\d*)', text)
+            m = re.search(r'(?:不含税|税前)(?:总价|总价格|价格|金额|价)(?:款)?\s*[：:]' + _FILL_OPT + r'(' + _AMT + r')', text)
             if m:
                 val = _parse_amount(m.group(1))
                 if val >= 100:
                     result['totalPrice'] = val
         if result['totalPriceInTax'] is None:
-            m = re.search(r'含税总价[：:]\s*([\d,]+\.?\d*)', text)
+            m = re.search(r'(?:含税|税后)(?:总价|总价格|价格|金额|价)(?:款)?\s*[：:]' + _FILL_OPT + r'(' + _AMT + r')', text)
             if m:
                 val = _parse_amount(m.group(1))
                 if val >= 100:
@@ -2752,12 +2982,15 @@ def extract_prices(text):
     if result.get('bidRate') is None:
         search_text = bid_section if bid_section else text
         for pat in [
-            # label filler must not eat the digits: [^…\d]* stops at numbers
-            r'(?:下浮率|下浮比例|下浮幅度)[（(]?[^）)：:\d]*[）)]?\s*[：:]?\s*([\d.]+)\s*([%％‰])',
-            r'(?:投标|报价|评审)?费率[（(]?[^）)：:\d]*[）)]?\s*[：:]?\s*([\d.]+)\s*([%％‰])',
+            # label filler must not eat the digits: [^…\d]* stops at numbers;
+            # [_＿\s]* tolerates the underline fill around the value
+            # ('下浮率：__8__%'). 优惠率/折扣率 join for procurement bids;
+            # the unit may be 个百分点 ('下浮率：8.5个百分点', no % sign).
+            r'(?:下浮率|下浮比例|下浮幅度|优惠率|优惠幅度|折扣率)[（(]?[^）)：:\d]*[）)]?\s*[：:]?[_＿\s]*([\d.]+)[_＿\s]*([%％‰]|个百分点)',
+            r'(?:投标|报价|评审)?费率[（(]?[^）)：:\d]*[）)]?\s*[：:]?[_＿\s]*([\d.]+)[_＿\s]*([%％‰]|个百分点)',
             r'投标报价\s*下浮\s*([\d.]+)\s*([%％])',
             # Percent-quote format: "投标报价（%）：98.5" (price as % of 控制价)
-            r'投标报价\s*[（(]\s*[%％]\s*[）)]\s*[：:]?\s*([\d.]+)',
+            r'投标报价\s*[（(]\s*[%％]\s*[）)]\s*[：:]?[_＿\s]*([\d.]+)',
             # Chinese-style discount wording: "下浮 6 个百分点"
             r'(?:下浮|费率)\s*([\d.]+)\s*个?百分点',
         ]:
@@ -2767,10 +3000,10 @@ def extract_prices(text):
                 unit = m.group(2) if m.lastindex and m.lastindex >= 2 else None
                 if not 0 < val < 100:
                     continue
-                if unit is None:
+                if unit is None or unit in ('%', '％', '个百分点'):
                     result['bidRate'] = m.group(1) + '%'
                 else:
-                    result['bidRate'] = m.group(1) + ('%' if unit in ('%', '％') else '‰')
+                    result['bidRate'] = m.group(1) + '‰'
                 break
 
     # ── Always try to extract subItemPrice and costDetails ──
@@ -2781,6 +3014,7 @@ def extract_prices(text):
 
     result.pop('_cn_only', None)     # internal provenance flags, not API data
     result.pop('_from_global', None)
+    result.pop('_paren_wan_scaled', None)
     return result
 
 
@@ -2789,7 +3023,9 @@ def _find_bid_summary_section(text):
     Returns a section that actually contains price data (currency + numbers)."""
     keywords = ['开标一览表', '开标一览', '投标报价表', '报价一览表', '报价总表', '投标总价',
                 '报价汇总表', '价格汇总表', '报价单', '最高限价', '投标函附录', '唱标单',
-                '开标记录表', '投标一览表', '投标函']
+                '开标记录表', '投标一览表', '投标函',
+                # 第三批扩充：常见报价章节别名
+                '投标总报价', '报价书', '投标报价一览', '分项报价表']
     for kw in keywords:
         idx = text.find(kw)
         while idx >= 0:
@@ -2885,14 +3121,16 @@ def _extract_tax_decomposition(text, section, result):
     # Patterns 0-3: profit format (price1, tax_rate, price2)
     # Pattern 4:   万 format (price1+万, price2+万, tax_rate)
     # Pattern 5:   plain-number format (price1, price2, tax_rate)
+    # Digit classes tolerate thousands commas ('1,838,529') since _parse_amount
+    # strips them downstream.
     patterns = [
-        (r'(?:￥|¥)?(\d{5,10}(?:\.\d{2})?)\s+(\d{1,2})\s*[%％]\s*(?:￥|¥)?(\d{5,10}(?:\.\d{2})?)', 1, 3, 2),
-        (r'人民币[：:\s]*(\d{5,10}(?:\.\d{2})?)\s*元?\s+(\d{1,2})\s*[%％]?\s+人民币[：:\s]*(\d{5,10}(?:\.\d{2})?)', 1, 3, 2),
+        (r'(?:￥|¥)?([\d,]{5,13}(?:\.\d{2})?)\s+(\d{1,2})\s*[%％]\s*(?:￥|¥)?([\d,]{5,13}(?:\.\d{2})?)', 1, 3, 2),
+        (r'人民币[：:\s]*([\d,]{5,13}(?:\.\d{2})?)\s*元?\s+(\d{1,2})\s*[%％]?\s+人民币[：:\s]*([\d,]{5,13}(?:\.\d{2})?)', 1, 3, 2),
         (r'([\d.]+\s*万)\s+([\d.]+\s*万)\s+(\d{1,2})', 1, 2, 3),
-        (r'小写[：:]\s*(\d{5,10}(?:\.\d{2})?)\s*元[\s\S]{0,80}?(\d{1,2})\s*[%％][\s\S]{0,80}?小写[：:]\s*(\d{5,10}(?:\.\d{2})?)', 1, 3, 2),
+        (r'小写[：:]\s*([\d,]{5,13}(?:\.\d{2})?)\s*元[\s\S]{0,80}?(\d{1,2})\s*[%％][\s\S]{0,80}?小写[：:]\s*([\d,]{5,13}(?:\.\d{2})?)', 1, 3, 2),
         # Plain numeric prices: two ≥5-digit numbers + 1-2 digit tax rate
         # e.g. "1228000 1264840 3" (不含税 含税 税率)
-        (r'(?<!\d)(\d{5,10})\s+(\d{5,10})\s+(\d{1,2})(?!\d)', 1, 2, 3),
+        (r'(?<![\d,])([\d,]{5,13})\s+([\d,]{5,13})\s+(\d{1,2})(?![\d.])', 1, 2, 3),
     ]
     for pat, pi1, pi2, pi_tax in patterns:
         m = re.search(pat, section)
@@ -2905,7 +3143,7 @@ def _extract_tax_decomposition(text, section, result):
                 # two serial numbers, etc.) can slip through. Real pre-tax /
                 # post-tax prices differ only by the tax rate (1-17%), so their
                 # ratio must fall in ~[0.8, 1.2]; reject otherwise.
-                is_plain_pair = pat.startswith(r'(?<!\d)')
+                is_plain_pair = pat.startswith(r'(?<!')
                 if is_plain_pair:
                     hi, lo = max(v1, v2), min(v1, v2)
                     if lo == 0 or hi / lo > 1.25:
@@ -3199,9 +3437,12 @@ def _validate_price_extraction(text, result, bid_section):
                     continue
                 if re.search(r'(?:万元|万)\s*$', prefix):
                     continue
-                # Must contain a price-indicator keyword nearby
-                if re.search(r'(?:元|人民币|CNY|RMB|￥|¥|报价[总金]|投标[总报]|'
-                             r'金额|总价|开标|一览表|大写|小写|合计|总计)', ctx):
+                # Must contain a price-indicator keyword nearby. 报价/价格
+                # bare (no 总金 suffix requirement — '总报价是350万' has 是
+                # after 报价) and 税前/税后/含税 join for the batch-4 label
+                # family ('税前价：1189450.24').
+                if re.search(r'(?:元|人民币|CNY|RMB|￥|¥|报价|价格|税前|税后|含税|'
+                             r'投标|金额|总价|开标|一览表|大写|小写|合计|总计)', ctx):
                     return True
         return False
 
@@ -3254,9 +3495,10 @@ def _validate_price_extraction(text, result, bid_section):
         if result['totalPrice'] is None and result['totalPriceInTax'] is None:
             result['taxRate'] = None
 
-        # Prices sourced purely from Chinese numerals have no Arabic form in
-        # the text; skip the near-context requirement for them.
-        cn_only = result.get('_cn_only')
+        # Prices sourced purely from Chinese numerals — or scaled by a paren
+        # 万元 unit ('合计（万元）：89.3' → 893000) — have no matching Arabic
+        # form in the text; skip the near-context requirement for them.
+        cn_only = result.get('_cn_only') or result.get('_paren_wan_scaled')
         if tpit is not None and not cn_only and not _near_price_context(tpit, window=200):
             tp_val = result['totalPrice']
             if tp_val is None or not _near_price_context(tp_val, window=200):
@@ -3297,11 +3539,11 @@ def _validate_price_extraction(text, result, bid_section):
         # ('开标一览表') can never consume the pair span as a fake 大写.
         _CN_UNIT_END = r'(?<=[元整角分圆万亿])'
         for pat in (
-            r'(?:大写[）)]?\s*[：:]?\s*[（(]?\s*)?(' + _AMT_CN + r')' + _CN_UNIT_END +
+            r'(?:大写[）)]?\s*(?:金额)?\s*[：:]?\s*[（(]?\s*)?(' + _AMT_CN_FLEX + r')' + _CN_UNIT_END +
             r'\s*[）)]?\s*[\s\S]{0,120}?'
-            r'小写[）)]?\s*[：:]?\s*[（(]?\s*([\d,]+\.?\d*)',
-            r'小写[）)]?\s*[：:]?\s*[（(]?\s*([\d,]+\.?\d*)\s*[）)]?\s*[\s\S]{0,120}?'
-            r'大写[）)]?\s*[：:]?\s*[（(]?\s*(' + _AMT_CN + r')' + _CN_UNIT_END,
+            r'小写[）)]?\s*(?:金额)?\s*[：:]?\s*[（(]?\s*([\d,]+\.?\d*)',
+            r'小写[）)]?\s*(?:金额)?\s*[：:]?\s*[（(]?\s*([\d,]+\.?\d*)\s*[）)]?\s*[\s\S]{0,120}?'
+            r'大写[）)]?\s*(?:金额)?\s*[：:]?\s*[（(]?\s*(' + _AMT_CN_FLEX + r')' + _CN_UNIT_END,
         ):
             matched = False
             for m in re.finditer(pat, text):

@@ -1017,6 +1017,292 @@ def t_price_cost_date_run_rejected():
     assert not r['costDetails'] and r['cost'] is None, r
 
 
+# ══ 第三批泛化：人员（填空下划线 / 无冒号标签 / 动词族 / 联系人 / 跨行断裂）══
+
+def t_personnel_underscore_fill_names():
+    # Values written over an underline fill survive label matching and are
+    # stripped in the result.
+    p = m.extract_personnel('授权委托书\n法定代表人：___张三___\n委托代理人：____李四____\n')
+    assert p['legal_rep'] == '张三', p
+    assert p['authorized_rep'] == '李四', p
+
+
+def t_personnel_legal_rep_paren_sign():
+    # '法定代表人（签字）：王五' — paren qualifier between label and colon.
+    p = m.extract_personnel('投标函\n法定代表人（签字）：王五\n')
+    assert p['legal_rep'] == '王五', p
+
+
+def t_personnel_signature_deputy_variant():
+    # '法定代表人或委托代理人' (missing 其) + （签字） qualifier + underline fill.
+    p = m.extract_personnel('签字盖章页\n法定代表人或委托代理人（签字）：___赵六___\n')
+    names = {x['name'] for x in p['all_persons']}
+    assert '赵六' in names, names
+
+
+def t_personnel_weipai_verb():
+    # 委派/委任 verb variants; lazy capture keeps 同志 out of the name.
+    p = m.extract_personnel('授权委托书\n兹委派孙七同志为我方代理人\n')
+    assert p['authorized_rep'] == '孙七', p
+    p2 = m.extract_personnel('授权委托书\n兹委任王五为我方代理人\n')
+    assert p2['authorized_rep'] == '王五', p2
+
+
+def t_personnel_contact_person_role():
+    # '联系人：周八' feeds all_persons as bid_contact (cross-file same-name
+    # matching previously never saw contact persons).
+    p = m.extract_personnel('投标函\n联系人：周八\n联系电话：13912345678\n')
+    roles = {x['name']: x['role'] for x in p['all_persons']}
+    assert roles.get('周八') == 'bid_contact', roles
+
+
+def t_personnel_colonless_legal_rep():
+    # Flattened-table form '法定代表人 王大锤' (no colon).
+    p = m.extract_personnel('兹委任某人\n法定代表人 王大锤\n')
+    assert p['legal_rep'] == '王大锤', p
+
+
+def t_personnel_id_newline_split():
+    # Cell-per-line PDF splits an 18-digit ID across three lines.
+    p = m.extract_personnel('身份证号：320123\n19900101\n123X\n')
+    assert '32012319900101123X' in p['id_numbers'], p['id_numbers']
+
+
+def t_personnel_mobile_group_linebreak():
+    # '1391234\n5678' — 3-4-4 grouping split at a line break.
+    p = m.extract_personnel('联系电话：1391234\n5678\n')
+    assert '13912345678' in p['phones'], p['phones']
+
+
+def t_personnel_role_vocab_extended():
+    # Supervision/construction roles: 监理工程师 / 施工负责人.
+    p = m.extract_personnel('主要人员\n李芳 监理工程师\n王雷 施工负责人\n')
+    roles = {}
+    for x in p['all_persons']:
+        roles.setdefault(x['name'], set()).add(x['role'])
+    assert 'team_member' in roles.get('李芳', set()), roles
+    assert 'project_manager' in roles.get('王雷', set()), roles
+
+
+def t_personnel_dunhao_name_role():
+    # '张三、项目经理' — 顿号 separator between name and role.
+    p = m.extract_personnel('项目团队\n张三、项目经理\n')
+    roles = {x['name']: x['role'] for x in p['all_persons']}
+    assert roles.get('张三') == 'project_manager', roles
+
+
+def t_personnel_company_label_with_name():
+    # Cover company label variant '投标人名称：…'.
+    p = m.extract_personnel('投标人名称：北京某某科技有限公司\n')
+    assert p['company_name'] == '北京某某科技有限公司', p.get('company_name')
+
+
+def t_personnel_address_fill_stripped():
+    p = m.extract_personnel('授权委托书\n地址：____北京市海淀区中关村大街1号____\n')
+    assert p['address'] == '北京市海淀区中关村大街1号', p.get('address')
+
+
+def t_personnel_bank_card_label():
+    p = m.extract_personnel('银行卡号：6222020200112233445\n')
+    assert '6222020200112233445' in p['bank_accounts'], p['bank_accounts']
+
+
+def t_personnel_colonless_name_role_table():
+    # '姓名 张三 职务 项目经理' — colon-less flattened table row.
+    p = m.extract_personnel('项目团队\n姓名 张三 职务 项目经理\n')
+    roles = {}
+    for x in p['all_persons']:
+        roles.setdefault(x['name'], set()).add(x['role'])
+    assert 'project_manager' in roles.get('张三', set()), roles
+
+
+# ══ 第三批泛化：报价（填空 / 括号变体 / 标签同义词 / 大写跨行 / 千分位）══
+
+def t_price_underscore_fill():
+    r = m.extract_prices('开标一览表\n投标总价：____98.6万元____\n')
+    assert r['totalPriceInTax'] == 986000, r
+
+
+def t_price_label_paren_note():
+    # Short annotation paren between label and colon.
+    r = m.extract_prices('开标一览表\n投标总价（含税）：1,261,819.76元\n')
+    assert abs((r['totalPriceInTax'] or 0) - 1261819.76) < 0.01, r
+
+
+def t_price_paren_unit_rmb():
+    r = m.extract_prices('开标一览表\n总报价（人民币）：500000元\n')
+    assert r['totalPriceInTax'] == 500000, r
+
+
+def t_price_paren_unit_wan_bare_value():
+    # Unit lives ONLY in the paren — bare 89.3 must scale to 893000.
+    r = m.extract_prices('开标一览表\n合计（单位：万元）：89.3\n')
+    assert r['totalPriceInTax'] == 893000, r
+    r2 = m.extract_prices('报价汇总表\n合计（万元）：89.3\n')
+    assert r2['totalPriceInTax'] == 893000, r2
+
+
+def t_price_label_synonyms():
+    for text, want in [('磋商报价：1200000元\n', 1200000),
+                       ('最后报价：98万元\n', 980000),
+                       ('报价总额：350万\n', 3500000)]:
+        r = m.extract_prices(text)
+        assert r['totalPriceInTax'] == want, (text, r)
+
+
+def t_price_daxie_split_across_lines():
+    # CN amount broken mid-number by a line break.
+    r = m.extract_prices('大写：壹佰贰拾\n叁万元整\n')
+    assert r['totalPriceInTax'] == 1230000, r
+
+
+def t_price_daxie_jine_word():
+    # '大写金额：' inserts 金额 between label and colon.
+    r = m.extract_prices('大写金额：壹佰万元整\n')
+    assert r['totalPriceInTax'] == 1000000, r
+
+
+def t_price_daxie_split_pair_consistent():
+    # Split 大写 + 小写 pair: value correct, no mismatch warning.
+    r = m.extract_prices('大写：壹佰贰拾\n叁万元整\n小写：1230000元\n')
+    assert r['totalPriceInTax'] == 1230000, r
+    assert not any('不一致' in w for w in r['warnings']), r['warnings']
+
+
+def t_price_xiaoxie_class_separator():
+    # '（小写）￥：980000元' — ￥ before the colon, class-run separator.
+    r = m.extract_prices('（小写）￥：980000元\n')
+    assert r['totalPriceInTax'] == 980000, r
+
+
+def t_price_heji_row_commas():
+    # 合计 row with thousands commas in both price columns.
+    r = m.extract_prices('合计 \\ 1,838,529 5,002,800 \\\n')
+    assert r['totalPrice'] == 1838529 and r['totalPriceInTax'] == 5002800, r
+
+
+def t_price_tax_included_wan_magnitude():
+    r = m.extract_prices('含税总价：98万元\n')
+    assert r['totalPriceInTax'] == 980000, r
+
+
+def t_price_tax_decomposition_commas():
+    # Pre-tax / post-tax pair with comma thousands: 1,838,529 × 1.03.
+    r = m.extract_prices('开标一览表\n1,838,529 1893684 3\n')
+    assert r['totalPrice'] == 1838529, r
+    assert r['totalPriceInTax'] == 1893684, r
+    assert r['taxRate'] == '3%', r
+
+
+def t_price_rmb_lowercase_token():
+    # 'rmb 98000元' — lowercase currency token.
+    r = m.extract_prices('rmb 98000元\n')
+    assert r['totalPriceInTax'] == 98000, r
+
+
+def t_price_bidrate_underscore_fill():
+    r = m.extract_prices('报价函\n下浮率：__8__%\n')
+    assert r['bidRate'] == '8%', r
+
+
+def t_price_xiaoxie_date_rejected():
+    # A date run after 小写： must not become a 20M price.
+    r = m.extract_prices('开标记录表\n小写：20250826\n')
+    assert r['totalPriceInTax'] is None, r
+
+
+# ══ 第四批泛化：括号注记组合 / 传真 / 为是连接 / 繁体大写 / 费率变体 ══
+
+def t_personnel_paren_combined_qualifier():
+    # '（签字或盖章）' combined paren qualifier on the agent label.
+    p = m.extract_personnel('投标函\n委托代理人（签字或盖章）：钱九\n')
+    assert p['authorized_rep'] == '钱九', p
+    # '法定代表人（单位负责人）：' insert-paren label variant.
+    p2 = m.extract_personnel('投标函\n法定代表人（单位负责人）：孙十\n')
+    assert p2['legal_rep'] == '孙十', p2
+
+
+def t_personnel_fax_paren_area_code():
+    # 传真 label + '(010)1234-5678' parenthesized area code (parens dropped,
+    # dash structure kept per _clean_phone convention).
+    p = m.extract_personnel('投标函\n传真：(010)1234-5678\n')
+    assert p['phone'] == '0101234-5678', p.get('phone')
+
+
+def t_personnel_bare_zhanghu_label():
+    p = m.extract_personnel('授权委托书\n账户：1100923456789001\n')
+    assert '1100923456789001' in p['bank_accounts'], p['bank_accounts']
+
+
+def t_personnel_cover_address():
+    # Address on the bid-letter cover (previously only auth sections scanned).
+    p = m.extract_personnel('投标函\n地址：北京市朝阳区建国路88号院6号楼\n')
+    assert p['address'] == '北京市朝阳区建国路88号院6号楼', p.get('address')
+
+
+def t_personnel_bare_auth_titles():
+    p = m.extract_personnel('授权书\n兹授权周明为我方代理人\n')
+    assert p['authorized_rep'] == '周明', p
+
+
+def t_personnel_contact_fill():
+    p = m.extract_personnel('投标函\n联系人：___郑一___\n')
+    roles = {x['name']: x['role'] for x in p['all_persons']}
+    assert roles.get('郑一') == 'bid_contact', roles
+
+
+def t_personnel_same_line_label_not_swallowed():
+    # A name followed by the NEXT field label on the same line must not
+    # swallow it ('联系人：王五 传真：…' once became the 'name' 王五传真).
+    # Lazy name classes stop at the boundary; the field-label suffix
+    # blacklist in _is_person_name is the backstop.
+    p = m.extract_personnel('投标函\n联系人：王五 传真：(010)1234-5678\n')
+    roles = {x['name']: x['role'] for x in p['all_persons']}
+    assert roles.get('王五') == 'bid_contact', roles
+    p2 = m.extract_personnel('授权委托书\n委托代理人：李四 电话：13800000000\n')
+    assert p2['authorized_rep'] == '李四', p2
+
+
+def t_price_wei_shi_connectors():
+    r = m.extract_prices('开标一览表\n投标总价为98万元\n')
+    assert r['totalPriceInTax'] == 980000, r
+    r2 = m.extract_prices('报价表\n总报价是350万\n')
+    assert r2['totalPriceInTax'] == 3500000, r2
+
+
+def t_price_traditional_numerals():
+    # 萬/貳 traditional glyphs normalize before CN parsing.
+    r = m.extract_prices('开标一览表\n大写：壹佰貳拾萬元整\n')
+    assert r['totalPriceInTax'] == 1200000, r
+
+
+def t_price_discount_rate_labels():
+    r = m.extract_prices('报价函\n优惠率：5%\n')
+    assert r['bidRate'] == '5%', r
+    r2 = m.extract_prices('报价函\n折扣率：8.5%\n')
+    assert r2['bidRate'] == '8.5%', r2
+    # 个百分点 wording without a % sign.
+    r3 = m.extract_prices('报价函\n下浮率：8.5个百分点\n')
+    assert r3['bidRate'] == '8.5%', r3
+
+
+def t_price_zandingjia_excluded():
+    r = m.extract_prices('开标一览表\n暂定价：500000元\n投标总价：980000元\n')
+    assert r['totalPriceInTax'] == 980000, r
+
+
+def t_price_pretax_posttax_label_family():
+    r = m.extract_prices('报价表\n税前价：1189450.24\n')
+    assert r['totalPrice'] == 1189450.24, r
+    r2 = m.extract_prices('报价表\n税后金额：1261819.76元\n')
+    assert r2['totalPriceInTax'] == 1261819.76, r2
+
+
+def t_price_xiaoxie_thin_space():
+    r = m.extract_prices('开标一览表\n小写：1 261 819.76元\n')
+    assert abs((r['totalPriceInTax'] or 0) - 1261819.76) < 0.01, r
+
+
 def main():
     for name, fn in sorted(globals().items()):
         if name.startswith('t_') and callable(fn):
