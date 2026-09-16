@@ -1518,7 +1518,7 @@ def _extract_text_uncached(filepath, max_pages=MAX_PDF_PAGES, on_progress=None,
             total_pages = len(reader.pages)
             logger.info('pypdf 无法解析 "%s"（%s），已降级为 MuPDF 修复模式提取',
                         os.path.basename(filepath), pypdf_err)
-        fname = os.path.basename(filepath)
+        fname = _display_name(filepath)
         lines = []
         pages_with_text = 0
         empty_streak = 0
@@ -1607,7 +1607,7 @@ def _extract_text_uncached(filepath, max_pages=MAX_PDF_PAGES, on_progress=None,
                     ocr_started = True
                     if ocr_fn and on_progress:
                         on_progress('pdf_ocr_start', i + 1, total_pages, False,
-                                    f'"{fname}" 含无文字页面，正在启用OCR识别扫描件内容…')
+                                    '含无文字页面，正在启用OCR识别扫描件内容…')
                 # 0 = unlimited for both budgets
                 budget_ok = (OCR_TIME_BUDGET == 0 or ocr_time_spent < OCR_TIME_BUDGET)
                 pages_ok = (OCR_MAX_PAGES == 0 or ocr_pages_done < OCR_MAX_PAGES)
@@ -1624,14 +1624,18 @@ def _extract_text_uncached(filepath, max_pages=MAX_PDF_PAGES, on_progress=None,
                     if ocr_text.strip():
                         text = ocr_text
                         has_text = True
-                        if on_progress and ocr_pages_done % 5 == 0:
+                        # Every page, not every 5th: a scan under five pages
+                        # never reported progress at all, and on a long one
+                        # the first report only arrived ~7s in — exactly the
+                        # window where the user is deciding whether it hung.
+                        if on_progress:
                             budget_note = ('（达到时间预算，剩余页面跳过）'
                                            if OCR_TIME_BUDGET > 0 and ocr_time_spent >= OCR_TIME_BUDGET else '')
                             on_progress('pdf_ocr', i + 1, total_pages, True,
-                                        f'"{fname}" OCR识别中：已完成 {ocr_pages_done} 页{budget_note}')
+                                        f'已完成 {ocr_pages_done} 页{budget_note}')
                     elif OCR_MAX_PAGES > 0 and ocr_pages_done == OCR_MAX_PAGES and on_progress:
                         on_progress('pdf_ocr', i + 1, total_pages, True,
-                                    f'"{fname}" OCR已达页数上限 {OCR_MAX_PAGES} 页，剩余图片页跳过')
+                                    f'OCR已达页数上限 {OCR_MAX_PAGES} 页，剩余图片页跳过')
 
             # ── Structural table channel (PyMuPDF) ──
             # Runs only on text-bearing pages that mention table-relevant

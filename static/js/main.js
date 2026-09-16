@@ -215,7 +215,9 @@ function updateExtractProgress(event) {
   }
 
   if (event.phase === 'pdf_ocr_start') {
-    progressText.textContent = event.detail || ('OCR识别扫描件: ' + _extractFileName);
+    progressText.textContent = 'OCR识别扫描件: ' + (event.file || _extractFileName) +
+      (event.detail ? '（' + event.detail + '）' : '');
+    progressBar.classList.add('extracting');
     return;
   }
 
