@@ -85,6 +85,11 @@ logging.basicConfig(
     format='%(asctime)s %(levelname)s [%(name)s] %(message)s',
 )
 logger = logging.getLogger('xingyicha')
+# pypdf emits a WARNING per damaged xref entry ('Ignoring wrong pointing
+# object …') on partially-broken PDFs it can still repair — hundreds of lines
+# of console noise with zero actionable value. Real parse failures raise
+# exceptions (handled per file); keep only pypdf errors in the log.
+logging.getLogger('pypdf').setLevel(logging.ERROR)
 
 # Desktop (frozen) build: keep uploads/history in the per-user data dir so
 # they survive reinstalls and work even when the app bundle itself is
@@ -897,8 +902,49 @@ def extract_text_with_tables(filepath, max_pages=MAX_PDF_PAGES, on_progress=None
         return _read_xlsx_text(filepath, cancel_event=cancel_event)
 
     if ftype == 'pdf':
-        reader = PdfReader(filepath)
-        total_pages = len(reader.pages)
+        try:
+            reader = PdfReader(filepath)
+            total_pages = len(reader.pages)
+        except Exception as pypdf_err:
+            # Damaged PDF that pypdf cannot even open (broken startxref /
+            # xref table). MuPDF's repair is much stronger — degrade to a
+            # fitz-driven page list instead of failing the whole file. The
+            # adapter mimics the pypdf page API so the loop below is unaware;
+            # the scanned-page OCR and structural-table channels keep working
+            # through _open_fitz() as usual.
+            fallback_doc = None
+            try:
+                try:
+                    import pymupdf as _pm
+                except ImportError:
+                    import fitz as _pm
+                try:
+                    _pm.TOOLS.mupdf_display_errors(False)
+                except Exception:
+                    pass
+                fallback_doc = _pm.open(filepath)
+            except Exception:
+                pass
+            if fallback_doc is None:
+                raise pypdf_err
+
+            class _FitzPage:
+                __slots__ = ('_page',)
+
+                def __init__(self, page):
+                    self._page = page
+
+                def extract_text(self):
+                    return self._page.get_text()
+
+            class _FitzReader:
+                def __init__(self, doc):
+                    self.pages = [_FitzPage(p) for p in doc]
+
+            reader = _FitzReader(fallback_doc)
+            total_pages = len(reader.pages)
+            logger.info('pypdf 无法解析 "%s"（%s），已降级为 MuPDF 修复模式提取',
+                        os.path.basename(filepath), pypdf_err)
         fname = os.path.basename(filepath)
         lines = []
         pages_with_text = 0
@@ -922,7 +968,21 @@ def extract_text_with_tables(filepath, max_pages=MAX_PDF_PAGES, on_progress=None
             if not fitz_open_tried:
                 fitz_open_tried = True
                 try:
-                    import fitz
+                    try:
+                        import pymupdf as fitz  # modern name, no deprecation
+                    except ImportError:
+                        import fitz
+                    # Broken-xref PDFs: MuPDF repairs them automatically but
+                    # prints a diagnostic per damaged entry ('MuPDF error:
+                    # format error: cannot find object in xref (3860 0 R' on
+                    # stderr, 'Ignoring wrong pointing object…' on stdout
+                    # depending on the binding version) — pure console noise,
+                    # the analysis result is unaffected. Real failures still
+                    # raise Python exceptions, handled at the call sites.
+                    try:
+                        fitz.TOOLS.mupdf_display_errors(False)
+                    except Exception:
+                        pass  # older bindings without the switch keep default
                     fitz_doc = fitz.open(filepath)
                 except Exception as e:
                     logger.info('PyMuPDF unavailable, scanned-page OCR and PDF '

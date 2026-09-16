@@ -1303,6 +1303,88 @@ def t_price_xiaoxie_thin_space():
     assert abs((r['totalPriceInTax'] or 0) - 1261819.76) < 0.01, r
 
 
+# ══ 损坏 PDF 处理：MuPDF 诊断静音 + pypdf 打不开时降级 ══
+
+
+def _make_classic_pdf_in(td, name):
+    """Build the classic-xref fixture inside `td` and return (path, offsets).
+
+    The basename check keeps the fixture write confined to the caller's
+    temp dir (path-traversal guard)."""
+    import os as _os
+    assert _os.path.basename(name) == name
+    path = _os.path.join(td, name)
+    offsets = _make_classic_pdf(path)
+    return path, offsets
+
+
+def _corrupt_xref_offset(path, obj_offset):
+    """Point one xref entry (the content-stream object) at a bogus offset —
+    the 'cannot find object in xref' repair scenario."""
+    raw = open(path, 'rb').read()
+    raw = raw.replace(b'%010d 00000 n' % obj_offset, b'0099999999 00000 n')
+    open(path, 'wb').write(raw)
+
+
+def _destroy_startxref(path):
+    """Break the startxref keyword so pypdf cannot open the file at all."""
+    raw = open(path, 'rb').read().replace(b'startxref', b'startxreaF')
+    open(path, 'wb').write(raw)
+
+
+def _make_classic_pdf(path):
+    """Hand-assemble a minimal classic-xref PDF (pymupdf writes xref streams,
+    so the plain-table layout needed for these corruption tests is built
+    byte-by-byte with correct offsets)."""
+    objs = {
+        1: b'<< /Type /Catalog /Pages 2 0 R >>',
+        2: b'<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+        3: (b'<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] '
+            b'/Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>'),
+        5: b'<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+    }
+    stream = b'BT /F1 12 Tf 72 720 Td (bid price 980000 yuan test) Tj ET'
+    objs[4] = b'<< /Length %d >>\nstream\n' % len(stream) + stream + b'\nendstream'
+    out = bytearray(b'%PDF-1.4\n%\xe2\xe3\xcf\xd3\n')
+    offsets = {}
+    for n in sorted(objs):
+        offsets[n] = len(out)
+        out += b'%d 0 obj\n' % n + objs[n] + b'\nendobj\n'
+    xref_off = len(out)
+    n_objs = max(objs) + 1
+    out += b'xref\n0 %d\n' % n_objs + b'0000000000 65535 f \n'
+    for n in range(1, n_objs):
+        out += b'%010d 00000 n \n' % offsets[n]
+    out += (b'trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n'
+            % (n_objs, xref_off))
+    open(path, 'wb').write(bytes(out))
+    return offsets
+
+
+def t_pdf_broken_xref_still_extracts():
+    # Damaged xref entry (bogus object offset): MuPDF repairs and extracts;
+    # the 'MuPDF error: cannot find object in xref' console spam is silenced.
+    import os as _os
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        path, offsets = _make_classic_pdf_in(td, 'broken.pdf')
+        _corrupt_xref_offset(path, offsets[4])
+        t = m.extract_text_with_tables(path)
+        assert 'bid price' in t, repr(t[:80])
+
+
+def t_pdf_pypdf_dead_mupdf_fallback():
+    # startxref destroyed: pypdf raises, extraction degrades to MuPDF's
+    # repair mode instead of failing the whole file.
+    import os as _os
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        path, _ = _make_classic_pdf_in(td, 'dead.pdf')
+        _destroy_startxref(path)
+        t = m.extract_text_with_tables(path)
+        assert 'bid price' in t, repr(t[:80])
+
+
 def main():
     for name, fn in sorted(globals().items()):
         if name.startswith('t_') and callable(fn):
