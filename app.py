@@ -805,9 +805,18 @@ OCR_MAX_PAGES = int(os.environ.get('OCR_MAX_PAGES', 0))          # pages/file, 0
 # shared transfer slip, a certificate issued to the other bidder), so no
 # amount of text parsing can reach them.
 DOCX_IMAGE_OCR = os.environ.get('DOCX_IMAGE_OCR', '1') != '0'
-DOCX_IMAGE_OCR_MAX = int(os.environ.get('DOCX_IMAGE_OCR_MAX', 30))     # images/file
-DOCX_IMAGE_OCR_BUDGET = float(os.environ.get('DOCX_IMAGE_OCR_BUDGET', 90))  # seconds/file
+# 0 = unlimited, matching OCR_MAX_PAGES / OCR_TIME_BUDGET / MAX_PDF_PAGES —
+# a bare `if done >= MAX` would silently OCR NOTHING at 0, the opposite of
+# what anyone setting 0 in this codebase expects.
+DOCX_IMAGE_OCR_MAX = int(os.environ.get('DOCX_IMAGE_OCR_MAX', 30))     # images/file, 0=unlimited
+DOCX_IMAGE_OCR_BUDGET = float(os.environ.get('DOCX_IMAGE_OCR_BUDGET', 90))  # seconds/file, 0=unlimited
 DOCX_IMAGE_OCR_MIN_BYTES = 10_000   # below this it is an icon, not evidence
+# Longest side an embedded image is scaled to before OCR; 0 = no scaling.
+DOCX_IMAGE_OCR_MAX_SIDE = int(os.environ.get('DOCX_IMAGE_OCR_MAX_SIDE', 2400))
+# How far a matching line's influence reaches, in LINES: a caption above its
+# image, and the run of images a heading introduces below it.
+_DOCX_IMAGE_REACH_BACK = 2
+_DOCX_IMAGE_REACH_FWD = 8
 _DOCX_IMAGE_TRIGGER = re.compile(
     r'保证金|凭证|回执|汇款|转账|缴纳|缴款|保函|'
     r'证书|认证|资质|执照|许可|CMMI|ISO|营业执照|开户许可|身份证')
@@ -867,11 +876,27 @@ def _get_ocr_fn():
             return _read(img)
 
         def _ocr_image(blob):
-            """OCR raw image bytes (a .docx media part), BGR via cv2."""
+            """OCR raw image bytes (a .docx media part), BGR via cv2.
+
+            Downscales to DOCX_IMAGE_OCR_MAX_SIDE first. Bid documents embed
+            scans at absurd resolutions — one 12697x8977 receipt — where the
+            detector's own resize makes the original size pure waste: measured
+            28.0s/97 chars at full size against 1.5s/112 chars capped at 2400.
+            Across three embedded scans the cap was never worse on text and
+            15-30x faster, which is what makes the per-file image budget go
+            from "ran out of time" to "reached every candidate".
+            """
             img = cv2.imdecode(np.frombuffer(blob, dtype=np.uint8),
                                cv2.IMREAD_COLOR)
             if img is None:
                 return ''
+            longest = max(img.shape[0], img.shape[1])
+            if DOCX_IMAGE_OCR_MAX_SIDE and longest > DOCX_IMAGE_OCR_MAX_SIDE:
+                scale = DOCX_IMAGE_OCR_MAX_SIDE / longest
+                img = cv2.resize(
+                    img, (max(1, int(img.shape[1] * scale)),
+                          max(1, int(img.shape[0] * scale))),
+                    interpolation=cv2.INTER_AREA)
             return _read(img)
 
         _ocr_fn = _ocr_page
@@ -908,10 +933,21 @@ def _ocr_docx_images(lines, images, doc, cancel_event=None, on_progress=None):
         return lines
     # Candidates first, so the progress report can say how many images will
     # actually be read — 'OCR 19 张' is far less alarming than '169 张'.
+    # A heading introduces a RUN of images — '4 磋商保证金凭证/交款单据电子件'
+    # followed by three receipt scans — so the trigger has to reach FORWARD
+    # from the line that matched, not just touch its immediate neighbours. A
+    # fixed ±2 window caught only the first image or two of such a run (and
+    # missed the third receipt entirely in testing). The per-file budget is
+    # what bounds the cost, so a generous reach is safe.
+    triggered = set()
+    for i, line in enumerate(lines):
+        if _DOCX_IMAGE_TRIGGER.search(line):
+            triggered.update(range(max(0, i - _DOCX_IMAGE_REACH_BACK),
+                                   min(len(lines), i + _DOCX_IMAGE_REACH_FWD + 1)))
     candidates = []
     seen = set()
     for idx, rid in images:
-        if not _DOCX_IMAGE_TRIGGER.search('\n'.join(lines[max(0, idx - 2):idx + 3])):
+        if idx not in triggered:
             continue
         # De-duplicate here, not at OCR time, so the count reported to the UI
         # is the number of images actually read (the same logo reused across
@@ -938,7 +974,9 @@ def _ocr_docx_images(lines, images, doc, cancel_event=None, on_progress=None):
     seen = set()
     extra = {}                      # line_index -> [ocr_text, ...]
     for idx, rid in candidates:
-        if done >= DOCX_IMAGE_OCR_MAX or time.time() - started > DOCX_IMAGE_OCR_BUDGET:
+        if ((DOCX_IMAGE_OCR_MAX and done >= DOCX_IMAGE_OCR_MAX)
+                or (DOCX_IMAGE_OCR_BUDGET
+                    and time.time() - started > DOCX_IMAGE_OCR_BUDGET)):
             logger.info('内嵌图片 OCR 触及预算上限（已处理 %d 张）', done)
             break
         _check_cancelled(cancel_event)
@@ -1113,7 +1151,8 @@ def _extract_cache_key(filepath, max_pages):
     h = hashlib.sha256()
     h.update(f'{_EXTRACT_CACHE_VERSION}|{max_pages}|{MAX_PDF_TABLE_PAGES}'
              f'|{PDF_TABLE_LAYOUT}|{OCR_TIME_BUDGET}|{OCR_MAX_PAGES}'
-             f'|{DOCX_IMAGE_OCR}|{DOCX_IMAGE_OCR_MAX}|'.encode())
+             f'|{DOCX_IMAGE_OCR}|{DOCX_IMAGE_OCR_MAX}'
+             f'|{DOCX_IMAGE_OCR_MAX_SIDE}|'.encode())
     with open(filepath, 'rb') as f:
         for chunk in iter(lambda: f.read(1 << 20), b''):
             h.update(chunk)
@@ -1331,9 +1370,10 @@ def _extract_many(paths, max_pages=MAX_PDF_PAGES, cancel_event=None,
     on_file_done: callback(index, text) as each file finishes — the parallel
                   run completes out of order, so this is how a caller streams
                   progress. Called in the sequential fallback too.
-    on_progress:  per-page callback, forwarded only on the sequential path.
-                  Page-level callbacks cannot cross into worker processes, so
-                  a parallel run reports per file via on_file_done instead.
+    on_progress:  progress callback. The sequential path calls it directly;
+                  the parallel path ships events over a queue that workers
+                  write to (see _worker_progress), so a 6th positional `file`
+                  argument carries the originating document's name.
     """
     out = [''] * len(paths)
 
@@ -1364,6 +1404,11 @@ def _extract_many(paths, max_pages=MAX_PDF_PAGES, cancel_event=None,
     stop_drain = None
     worker_cancel = None
     stop_relay = threading.Event()
+    # Explicit flag rather than inspecting sys.exc_info() in the finally: the
+    # `except Exception: return _sequential()` handler CLEARS the exception,
+    # so the finally would see "no exception" and close() a pool whose workers
+    # are still running — i.e. wait for work we already decided to abandon.
+    clean_exit = False
     try:
         # spawn, never fork: the caller is a server worker thread, and forking
         # a multi-threaded process leaves the child holding locks its other
@@ -1420,6 +1465,7 @@ def _extract_many(paths, max_pages=MAX_PDF_PAGES, cancel_event=None,
             out[idx] = text or ''
             if on_file_done:
                 on_file_done(idx, out[idx])
+        clean_exit = True
         return out
     except AnalysisCancelled:
         raise
@@ -1434,7 +1480,7 @@ def _extract_many(paths, max_pages=MAX_PDF_PAGES, cancel_event=None,
         # terminate() stays for the abnormal paths, where stopping now matters
         # more than flushing a progress bar.
         try:
-            if sys.exc_info()[0] is None:
+            if clean_exit:
                 pool.close()
             else:
                 pool.terminate()
@@ -1765,6 +1811,13 @@ def _extract_text_uncached(filepath, max_pages=MAX_PDF_PAGES, on_progress=None,
             for row in Table(child, doc).rows:
                 _check_cancelled(cancel_event)
                 lines.append(' | '.join(cell.text for cell in row.cells))
+                # Images inside table cells are NOT reached by the w:p branch
+                # above — those paragraphs live under w:tbl, not under body —
+                # so a 保证金凭证 pasted into a form table used to be skipped.
+                for blip in row._tr.iter(qn('a:blip')):
+                    rid = blip.get(_R_EMBED)
+                    if rid:
+                        images.append((len(lines) - 1, rid))
     # Page headers/footers, once per section. python-docx's .paragraphs never
     # includes them, and a bidder's name left in ANOTHER bidder's page header
     # is exactly the 混装 clue (考点七) — the text has to be present before any
@@ -3089,14 +3142,19 @@ def _demote_environmental_pool_values(all_personnel, group_names, ref_texts=None
     n = len(group_names)
     ref_norm = [_normalize_for_match(rt) for rt in (ref_texts or []) if rt]
 
+    # Strip non-digits from the references ONCE. Doing it per candidate value
+    # re-scans the whole document for every phone / account in the pool — the
+    # same mistake that made _is_in_reference the hottest function in the
+    # analysis before it was hoisted.
+    ref_digits = [re.sub(r'\D', '', rt) for rt in ref_norm]
+
     def _is_environmental(value, pool_key):
         if ref_norm:
             # Digits are compared without separators so '010-88886666' still
             # matches a reference that prints '010 56216031'.
             if pool_key in ('phones', 'id_numbers', 'bank_accounts'):
                 digits = re.sub(r'\D', '', str(value))
-                return bool(digits) and any(digits in re.sub(r'\D', '', rt)
-                                            for rt in ref_norm)
+                return bool(digits) and any(digits in rd for rd in ref_digits)
             return any(str(value) in rt for rt in ref_norm)
         return counts.get(value, 0) >= min_groups and counts.get(value, 0) / n >= ratio
 
@@ -7061,6 +7119,11 @@ _REPORT_NOTES = [
     '文本相似度比对已自动排除招标文件/模板等正常一致内容，个别模板性表述仍可能残留，请结合上下文判断。',
 ]
 
+# 《招标投标法实施条例》第三十四条（2019年修订版条文节选）
+_REGULATION_ARTICLE_34 = [
+    '单位负责人为同一人或者存在控股、管理关系的不同单位，不得参加同一标段投标'
+    '或者未划分标段的同一招标项目投标。',
+]
 # 《招标投标法实施条例》第四十条（2019年修订版条文）
 _REGULATION_ARTICLE_40 = [
     '（一）不同投标人的投标文件由同一单位或者个人编制；',
@@ -7611,13 +7674,18 @@ def generate_report_docx(analysis):
         doc.add_paragraph(note, style='List Bullet')
 
     # ── Appendix: regulation text ──
-    doc.add_heading('附录: 判定依据（《中华人民共和国招标投标法实施条例》第四十条）', level=1)
-    doc.add_paragraph('有下列情形之一的，视为投标人相互串通投标:')
+    doc.add_heading('附录: 判定依据（《中华人民共和国招标投标法实施条例》）', level=1)
+    doc.add_paragraph('第三十四条:')
+    for item in _REGULATION_ARTICLE_34:
+        doc.add_paragraph(item, style='List Bullet')
+    doc.add_paragraph('第四十条 —— 有下列情形之一的，视为投标人相互串通投标:')
     for item in _REGULATION_ARTICLE_40:
         doc.add_paragraph(item, style='List Bullet')
     doc.add_paragraph(
-        '说明: 本系统自动检测第（一）至（四）项；第（五）项（投标文件相互混装）需人工查验，'
-        '第（六）项（投标保证金从同一账户转出）可结合本报告"三、人员及联系信息分析"中的银行账号交叉结果人工判断。'
+        '说明: 本系统自动检测第三十四条，以及第四十条第（一）至（五）项——'
+        '其中第（五）项相互混装由"他方公司名称出现在本方投标文件中"自动判定；'
+        '第（六）项（投标保证金从同一单位或者个人的账户转出）可结合本报告'
+        '"三、人员及联系信息分析"中的银行账号交叉结果人工判断。'
     )
 
     # Footer disclaimer
@@ -7888,7 +7956,8 @@ def analyze_stream():
     # Collect extraction warnings to send as a separate event
     extraction_warnings = []
 
-    def _on_extract_progress(phase, current, total, has_text, detail, file=None):
+    def _on_extract_progress(phase, current, total, has_text, detail, file=None,
+                             parallel=False):
         """Callback for text extraction progress → sent as streaming events.
 
         `file` is set when the event came from a worker process: several
@@ -7908,6 +7977,12 @@ def analyze_stream():
         }
         if file:
             event['file'] = file
+        if parallel:
+            # These come from several workers at once, each reporting its OWN
+            # file's fraction. Letting them drive the bar maxes it out as soon
+            # as one document finishes its OCR while the rest are still going;
+            # the file-completion events own the bar in a parallel run.
+            event['parallel'] = True
         progress_queue.put(event)
 
     def generate():
@@ -7997,7 +8072,7 @@ def analyze_stream():
                     if phase in ('docx_img_ocr', 'docx_img_ocr_start',
                                  'pdf_ocr', 'pdf_ocr_start', 'docx_block'):
                         _on_extract_progress(phase, current, total, has_text,
-                                             detail, file)
+                                             detail, file, parallel=True)
 
                 _extract_many([p for _, _, p in jobs], max_pages=MAX_PDF_PAGES,
                               cancel_event=cancel_event,

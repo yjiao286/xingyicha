@@ -2014,6 +2014,61 @@ def t_cancel_reaches_extraction():
         m.EXTRACT_CACHE_DIR, m.EXTRACT_CACHE_ENABLED = saved_dir, saved_on
 
 
+def t_docx_image_ocr_zero_means_unlimited():
+    # 0 must mean "unlimited" here as it does for OCR_MAX_PAGES /
+    # OCR_TIME_BUDGET / MAX_PDF_PAGES. A bare `if done >= MAX` turns 0 into
+    # "OCR nothing" — the exact opposite of what anyone setting 0 in this
+    # codebase expects.
+    try:
+        import cv2  # noqa: F401
+        from docx import Document  # noqa: F401
+    except ImportError:
+        return
+    import tempfile
+    import numpy as np
+    from docx import Document as _Doc
+
+    saved_ocr = m._get_ocr_image_fn
+    saved_floor = m.DOCX_IMAGE_OCR_MIN_BYTES
+    saved_max = m.DOCX_IMAGE_OCR_MAX
+    saved_budget = m.DOCX_IMAGE_OCR_BUDGET
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            m._get_ocr_image_fn = lambda: (lambda blob: 'OCR_TEXTLINE')
+            m.DOCX_IMAGE_OCR_MIN_BYTES = 0
+            m.DOCX_IMAGE_OCR_MAX = 0          # unlimited
+            m.DOCX_IMAGE_OCR_BUDGET = 0       # unlimited
+            p = os.path.join(td, 'z.docx')
+            d = _Doc()
+            d.add_paragraph('4 磋商保证金凭证/交款单据电子件')
+            for n in range(3):
+                img = os.path.join(td, f'{n}.png')
+                # distinct bytes so the de-dup does not collapse them
+                cv2.imwrite(img, np.random.randint(0, 255, (200, 200, 3), dtype=np.uint8))
+                d.add_picture(img)
+            d.save(p)
+            text = m.extract_text_with_tables(p)
+            assert text.count('OCR_TEXTLINE') == 3, text.count('OCR_TEXTLINE')
+    finally:
+        m._get_ocr_image_fn = saved_ocr
+        m.DOCX_IMAGE_OCR_MIN_BYTES = saved_floor
+        m.DOCX_IMAGE_OCR_MAX = saved_max
+        m.DOCX_IMAGE_OCR_BUDGET = saved_budget
+
+
+def t_report_appendix_covers_new_clauses():
+    # The appendix is what a reviewer reads to check the verdict's legal
+    # footing: it must carry 第三十四条 (the new clause) and must not still
+    # claim 第（五）项 needs manual review — it is auto-detected now.
+    assert any('第三十四条' in x or '单位负责人为同一人' in x
+               for x in m._REGULATION_ARTICLE_34), m._REGULATION_ARTICLE_34
+    assert any('相互混装' in x for x in m._REGULATION_ARTICLE_40)
+    # Weights must cover every clause the verdict can emit.
+    for clause in ('第（三十四）条', '第（一）项', '第（二）项', '第（三）项',
+                   '第（五）项', '第（四）项-a', '第（四）项-b'):
+        assert clause in m._REPORT_CLAUSE_ADVICE, clause
+
+
 def main():
     # Tests must be hermetic: the extraction cache lives on disk between runs,
     # and a cached PDF extraction silently skips the very code path a test

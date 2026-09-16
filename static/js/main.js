@@ -195,10 +195,16 @@ function updateExtractProgress(event) {
   }
 
   if (event.phase === 'pdf_page' || event.phase === 'pdf_ocr' || event.phase === 'docx_img_ocr') {
-    var fileFraction = event.total > 0 ? (event.current / event.total) : 0;
-    var fileStartPct = 1 + (_fileIndex - 1) * _fileShare;
-    var realPct = Math.min(fileStartPct + fileFraction * _fileShare, 25);
-    _barSet(realPct);
+    // A parallel run's OCR events carry their own file's fraction, and several
+    // arrive at once — driving the bar from them maxes it out the moment the
+    // first document finishes its OCR. Those runs let the file-completion
+    // events own the bar and use these events for the label only.
+    if (!event.parallel) {
+      var fileFraction = event.total > 0 ? (event.current / event.total) : 0;
+      var fileStartPct = 1 + (_fileIndex - 1) * _fileShare;
+      var realPct = Math.min(fileStartPct + fileFraction * _fileShare, 25);
+      _barSet(realPct);
+    }
     if (event.phase === 'pdf_ocr') {
       progressText.textContent = 'OCR识别扫描件: ' + (event.file || _extractFileName) + (event.detail ? ' - ' + event.detail : '');
     } else if (event.phase === 'docx_img_ocr') {
@@ -746,12 +752,14 @@ function renderVerdict() {
     <details class="rules-panel">
       <summary style="cursor:pointer;font-weight:600;color:var(--text-secondary);">📋 综合判定评分规则</summary>
       <div style="margin-top:8px;line-height:1.8;">
-        <p class="rules-block-title">评分依据：《招标投标法实施条例》第四十条</p>
+        <p class="rules-block-title">评分依据：《招标投标法实施条例》第三十四条、第四十条</p>
         <table class="rules-table">
           <thead><tr><th>条款</th><th>权重</th><th>说明</th></tr></thead>
           <tbody>
+            <tr><td>第（三十四）条</td><td>50分</td><td>单位负责人为同一人或存在控股、管理关系 - 硬证据：法定代表人姓名跨投标人重叠，相关投标均无效</td></tr>
             <tr><td>第（一）项</td><td>50分</td><td>同一单位或个人编制 - 硬证据：WPS ID、授权代表=创建者、最后修改人同一</td></tr>
             <tr><td>第（二）项</td><td>25分</td><td>同一人办理投标 - 硬证据：授权代表姓名相同 / 联系电话相同 / 身份证号相同（命中即强）</td></tr>
+            <tr><td>第（五）项</td><td>25分</td><td>投标文件相互混装 - 硬证据：他方公司名称出现在本方投标文件中</td></tr>
             <tr><td>第（三）项</td><td>15分</td><td>项目管理人员相同 - 硬证据：人员高度重叠(≥50%) 或同名项目管理成员(项目经理/技术负责人等)</td></tr>
             <tr><td>第（四）项-a</td><td>5分</td><td>投标文件异常一致 - 软证据：辅助参考</td></tr>
             <tr><td>第（四）项-b</td><td>4分</td><td>报价异常一致或呈规律性差异（相同报价可达"强"） - 软证据：辅助参考</td></tr>
@@ -780,6 +788,8 @@ function renderVerdict() {
 
   // Clause → detail tab mapping
   var clauseTabs = {
+    '第（三十四）条': 'tab-personnel',
+    '第（五）项': 'tab-personnel',
     '第（一）项': 'tab-metadata',
     '第（二）项': 'tab-personnel',
     '第（三）项': 'tab-personnel',
