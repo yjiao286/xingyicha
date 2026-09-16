@@ -28,7 +28,7 @@ curl -s -o /dev/null -w "%{http_code}" http://localhost:5001/
 lsof -ti:5001 | xargs kill -9
 ```
 
-环境变量：`DEBUG=1`（开启 Flask debug）、`SECRET_KEY`（随机生成）、`MAX_CONTENT_LENGTH_MB`（可选，设置后作为单次上传总上限，413 返回 JSON 错误；**默认不设上限**）、`LOG_LEVEL=INFO`、`OCR_TIME_BUDGET`/`OCR_MAX_PAGES`（扫描件 OCR 预算，**默认 0=完全放开**，可按需限制）、`PDF_TABLE_LAYOUT`（表格通道版面模型档位，`auto` 默认 / `always` / `off`）、`EXTRACT_CACHE`（提取结果缓存，默认 `1` 开；设 `0` 关闭）、`EXTRACT_CACHE_DIR`（缓存目录，默认 `<数据目录>/extract_cache`）、`EXTRACT_CACHE_MAX_FILES=200`（LRU 上限）、`EXTRACT_WORKERS`（并行提取进程数，默认自动 = min(文件数, CPU 核数, 5)，实测 8 核机上 4 进程最优）、`ANALYSIS_TIMEOUT=3600`（整体分析超时，需 < gunicorn --timeout）。OCR 依赖（pymupdf + rapidocr_onnxruntime）缺失时扫描件自动跳过，其余功能不受影响。
+环境变量：`DEBUG=1`（开启 Flask debug）、`SECRET_KEY`（随机生成）、`MAX_CONTENT_LENGTH_MB`（可选，设置后作为单次上传总上限，413 返回 JSON 错误；**默认不设上限**）、`LOG_LEVEL=INFO`、`OCR_TIME_BUDGET`/`OCR_MAX_PAGES`（扫描件 OCR 预算，**默认 0=完全放开**，可按需限制）、`PDF_TABLE_LAYOUT`（表格通道版面模型档位，`auto` 默认 / `always` / `off`）、`EXTRACT_CACHE`（提取结果缓存，默认 `1` 开；设 `0` 关闭）、`EXTRACT_CACHE_DIR`（缓存目录，默认 `<数据目录>/extract_cache`）、`EXTRACT_CACHE_MAX_FILES=200`（LRU 上限）、`EXTRACT_WORKERS`（并行提取进程数，默认按机型自动定档，见「Extraction Performance」；设了则覆盖自动值）、`EXTRACT_MAX_WORKERS=16`（硬上限）、`ANALYSIS_TIMEOUT=3600`（整体分析超时，需 < gunicorn --timeout）。OCR 依赖（pymupdf + rapidocr_onnxruntime）缺失时扫描件自动跳过，其余功能不受影响。
 
 ## 桌面版（Windows / Linux / macOS）
 
@@ -113,6 +113,16 @@ lsof -ti:5001 | xargs kill -9
 - 离线验证：`tools/replay_extraction.py <语料目录>` 批量回放文本/人员/报价提取（报告固定写到当前目录 `replay_report.json`）；`tests/test_extraction.py` 单元样本回归（105 例）
 - 分析结果字段：`pricing.files[].bidRate`（费率/下浮率报价）；`personnel.files[].phones[]/id_numbers[]/emails[]`（多值联系池，前端与 .docx 报告均已展示）；顶层 `project_name`（跨文档投票提取的项目名——标签正则含"项目名称/工程名称/标段名称"等，值经引号书名号剥离/填空下划线剔除/标签词与日期值过滤，≥2 份文档一致优先；`_prepare_history_data` 保留顶层键，旧历史记录缺失时报告命名自动退化）。报告下载名：`围串标风险识别分析报告_[项目名_]判定等级_YYYYMMDD_HHMMSS.docx`（前端优先取 Content-Disposition 的服务端文件名）
 
+### 并行度自适应（多机部署）
+
+应用要装到各种机器上，进程数由 `_extract_worker_count(paths)` 现算，取四者最小值：**批次数 / 可用核数 / 内存预算 / 硬上限 16**。任一环境变量 `EXTRACT_WORKERS` 设了就完全覆盖自动值。
+
+**可用核数**（`_usable_cpu_count`）：`os.cpu_count()` 返回的是整机核数，在容器里是**宿主**的核数——2 核容器跑在 64 核宿主上会按 64 配池。故优先 `os.process_cpu_count()`（3.13+，尊重 affinity/cgroup 配额），回退 `os.sched_getaffinity()`（3.11/3.12 Linux），再回退 `os.cpu_count()`。
+
+**内存预算**（`_memory_budget_mb`）：这是真正的约束——实测单个 worker 峰值 RSS（auto 档、200MB 扫描文字版 PDF）**0.8–0.9GB**，5 个就是 ~4.5GB，纯按 CPU 定档会把小内存桌面机拖进 swap。模型 `400MB + 2.2 × 最大文件MB`（实测对照：2MB 文件 458MB / 242MB 文件 903MB）。按平台取数：Linux 读 `/proc/meminfo` 的 **MemAvailable**×0.7（MemFree 不含可回收页缓存，会严重低估）；macOS/BSD 无可用内存 API（`SC_AVPHYS_PAGES` 直接抛 ValueError），退化用 `SC_PHYS_PAGES` 总量×0.5 刻意低估；Windows 无 stdlib API，走 ctypes `GlobalMemoryStatusEx` 取 AvailablePhys×0.7；都拿不到则返回 None，此时不设内存约束、只受硬上限保护。
+
+实测定档（40 份 242MB 大文件）：2 核 2GB 容器 → **1 进程**、4 核 4GB 笔记本 → 2、8 核 8GB 桌面 → 4、16 核 32GB 服务器 → 16、64 核 128GB → 16（硬上限）；换成 2MB 小文件时 2GB 容器能跑 2 进程（内存模型随输入大小缩放）。8 核 16GB 本机实际定档 5 进程。
+
 ### Similarity Performance（参照文件归一化）
 
 `text_similarity_analysis` 曾把分析阶段 94% 的时间花在 `_is_in_reference` 里——它对每个匹配到的段落（5 份标书约 3,824 次）都把整份参照文件**从头归一化一遍**，累计约 3.8 亿次 Python 逐字符循环。参照文件的内容全程不变，故改为在 `text_similarity_analysis` 开头归一化一次（`ref_texts_norm`），`_is_in_reference` 接收已归一化的列表。
@@ -125,7 +135,7 @@ lsof -ti:5001 | xargs kill -9
 
 **缓存**（`extract_text_with_tables` 包装层，`_extract_text_uncached` 为原实现）：键 = 文件全文字节 sha256 + 会改变输出的全部设置（`max_pages`/`MAX_PDF_TABLE_PAGES`/`PDF_TABLE_LAYOUT`/`OCR_TIME_BUDGET`/`OCR_MAX_PAGES`/`_EXTRACT_CACHE_VERSION`）。用内容而非路径/mtime 是关键——上传文件每次都以新的随机前缀落盘（`efbb5365_上海全大…` → `7e2cb04c_上海全大…`），路径键永远不会命中。全量 sha256 实测 840MB 仅 1.16s（提取的 3%），故不做抽样哈希：抽样一旦碰撞就是拿 A 公司的标书文本冒充 B 公司。键只算一次，读写复用（事后重算 = 再读一遍 200MB）。空结果不入缓存——那也正是瞬时失败的样子，而没提取出东西的文档重跑本来就便宜。缓存目录随 `history/` 落在数据目录，已入 `.gitignore`，LRU 上限 200 份。实测：热缓存 0.35s / 冷缓存 19.3s。
 
-**并行**（`_extract_many`，替换三处串行循环）：提取是单线程的（实测 8 核机上 CPU 并行度 **1.0x**），而文件之间彼此独立，故按文件分发到进程池。**实测 40.3s → 17.0s（2.4x），输出与串行逐字节一致**；8 核机上 4 进程最优（17.0s），5 进程反而略慢（18.5s，超订），3 进程 22.1s。刻意限制 ONNX 线程数无益（OMP=1 反而更慢），故不干预。**必须 spawn、不能 fork**：调用方是服务器工作线程，fork 多线程进程会让子进程继承其他线程永不会释放的锁。三条降级路径（`len(paths)<2`、进程池构建失败、运行中异常）全部回退串行——提取绝不能因为并发而起不来。worker 上限按内存而非 CPU 定（每个升级表格通道的 worker 自带一份 ~50MB 版面模型），实测已完成：池失败时确实回退且输出正确。
+**并行**（`_extract_many`，替换三处串行循环）：提取是单线程的（实测 8 核机上 CPU 并行度 **1.0x**），而文件之间彼此独立，故按文件分发到进程池。**实测 40.3s → 17.0s（2.4x），输出与串行逐字节一致**；8 核机上 4 进程最优（17.0s），5 进程反而略慢（18.5s，超订），3 进程 22.1s。刻意限制 ONNX 线程数无益（OMP=1 反而更慢），故不干预。**必须 spawn、不能 fork**：调用方是服务器工作线程，fork 多线程进程会让子进程继承其他线程永不会释放的锁。三条降级路径（`len(paths)<2`、进程池构建失败、运行中异常）全部回退串行——提取绝不能因为并发而起不来。池失败时确实回退且输出正确。
 
 踩过的坑（都写进了测试）：① **桌面版必须 `multiprocessing.freeze_support()`**（已放在 `__main__` 最前）——spawn 下冻结 exe 会被重新拉起当 worker，缺了这行会递归启动服务器直到耗尽内存。② **测试必须密闭**：缓存跨运行落盘，`main()` 开头统一 `EXTRACT_CACHE_ENABLED = False`，否则 `t_pdf_broken_xref_still_extracts` 等测试第二次跑就命中缓存、根本走不到要测的代码路径（曾经因此让依赖「上一步已 import pymupdf.layout」副作用的表格测试假性失败）。③ 流式端点（`/api/analyze_stream`）的逐页进度回调跨不了进程：多文件时改为按完成数上报（`phase:'pdf_page'` + `unit:'份'`，前端加 `event.unit || '页'` 兼容），单文件仍走原逐页路径，UI 无回退。
 

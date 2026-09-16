@@ -1031,10 +1031,104 @@ def _extract_cache_prune():
 # worker processes. Every path here degrades to the plain sequential loop —
 # extraction must never fail because a pool could not be built.
 EXTRACT_WORKERS = int(os.environ.get('EXTRACT_WORKERS', 0))   # 0 = auto
-# Bounded by memory rather than CPU: a worker that escalates the table channel
-# carries its own copy of the ~50MB layout model plus page buffers. On the
-# desktop build this runs on the user's machine alongside the server thread.
-EXTRACT_MAX_WORKERS = 5
+# Hard ceiling regardless of machine size; the memory budget below is the
+# binding constraint in practice.
+EXTRACT_MAX_WORKERS = 16
+# Memory model for one worker, fitted to measurements on scanned-text PDFs
+# (peak RSS 458MB for a 2MB input, 903MB for a 242MB one): a worker holds its
+# own page buffers plus, once the table channel escalates, its own copy of the
+# ~50MB layout model. Sizing by CPU alone puts five of these on five 240MB
+# bids — ~4.5GB — which is what a small desktop deployment would notice.
+EXTRACT_WORKER_BASE_MB = 400
+EXTRACT_WORKER_PER_INPUT_MB = 2.2
+
+
+def _usable_cpu_count():
+    """CPUs this process may actually use.
+
+    os.cpu_count() reports the machine's CPU count, which inside a container
+    is the *host's* — a 2-CPU container on a 64-core host would otherwise size
+    its pool for 64. os.process_cpu_count (3.13+) honours affinity and cgroup
+    limits; sched_getaffinity is the 3.11/3.12 Linux fallback.
+    """
+    for probe in (getattr(os, 'process_cpu_count', None),
+                  (lambda: len(os.sched_getaffinity(0)))
+                  if hasattr(os, 'sched_getaffinity') else None):
+        if probe is None:
+            continue
+        try:
+            n = probe()
+            if n:
+                return int(n)
+        except Exception:
+            pass
+    return int(os.cpu_count() or 1)
+
+
+def _memory_budget_mb():
+    """RAM we are willing to hand to extraction workers, or None if unknown.
+
+    Reads *available* memory wherever the platform exposes it — total capacity
+    says nothing about what the rest of the machine is already using, and the
+    whole point is to avoid swapping on a small desktop.
+    """
+    # Linux: MemAvailable is the figure that matters (MemFree excludes
+    # reclaimable page cache and badly understates what we can actually get).
+    try:
+        with open('/proc/meminfo', 'r') as f:
+            for line in f:
+                if line.startswith('MemAvailable:'):
+                    return int(line.split()[1]) // 1024 * 7 // 10
+    except (OSError, ValueError, IndexError):
+        pass
+    # macOS / BSD: no available-memory sysconf (SC_AVPHYS_PAGES raises
+    # ValueError), so fall back to total. Half of it is a deliberate
+    # under-estimate to leave room for everything else.
+    try:
+        total_mb = (os.sysconf('SC_PHYS_PAGES') * os.sysconf('SC_PAGE_SIZE')
+                    // (1024 * 1024))
+        if total_mb > 0:
+            return int(total_mb) * 5 // 10
+    except (ValueError, OSError, AttributeError, TypeError):
+        pass
+    # Windows: no stdlib API at all — GlobalMemoryStatusEx via ctypes.
+    try:
+        import ctypes
+
+        class _MEMORYSTATUSEX(ctypes.Structure):
+            _fields_ = [('dwLength', ctypes.c_ulong),
+                        ('dwMemoryLoad', ctypes.c_ulong),
+                        ('ullTotalPhys', ctypes.c_ulonglong),
+                        ('ullAvailPhys', ctypes.c_ulonglong),
+                        ('ullTotalPageFile', ctypes.c_ulonglong),
+                        ('ullAvailPageFile', ctypes.c_ulonglong),
+                        ('ullTotalVirtual', ctypes.c_ulonglong),
+                        ('ullAvailVirtual', ctypes.c_ulonglong),
+                        ('ullAvailExtendedVirtual', ctypes.c_ulonglong)]
+
+        st = _MEMORYSTATUSEX()
+        st.dwLength = ctypes.sizeof(_MEMORYSTATUSEX)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st)):
+            return int(st.ullAvailPhys // (1024 * 1024)) * 7 // 10
+    except Exception:
+        pass
+    # Unknown platform: no ceiling, the flat cap still applies.
+    return None
+
+
+def _extract_worker_count(paths):
+    """Widest extraction pool that is safe on this machine for this batch."""
+    n = min(len(paths), _usable_cpu_count())
+    budget = _memory_budget_mb()
+    if budget:
+        try:
+            largest_mb = max(os.path.getsize(p) for p in paths) / (1024 * 1024)
+        except OSError:
+            largest_mb = 0.0
+        per_worker = (EXTRACT_WORKER_BASE_MB
+                      + EXTRACT_WORKER_PER_INPUT_MB * largest_mb)
+        n = min(n, max(1, int(budget / per_worker)))
+    return max(1, min(n, EXTRACT_MAX_WORKERS))
 
 
 def _extract_worker(args):
@@ -1075,7 +1169,7 @@ def _extract_many(paths, max_pages=MAX_PDF_PAGES, cancel_event=None,
                 on_file_done(idx, out[idx])
         return out
 
-    workers = EXTRACT_WORKERS or min(len(paths), os.cpu_count() or 1)
+    workers = EXTRACT_WORKERS or _extract_worker_count(paths)
     workers = max(1, min(workers, len(paths), EXTRACT_MAX_WORKERS))
     if len(paths) < 2 or workers < 2:
         return _sequential()

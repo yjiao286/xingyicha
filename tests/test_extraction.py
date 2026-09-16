@@ -1629,6 +1629,63 @@ def t_reference_filter_normalized():
     assert not m._is_in_reference(same_content, []), '无参照文件时不应命中'
 
 
+def t_extract_worker_sizing():
+    # Worker count must adapt to the machine it lands on: bounded by the batch
+    # size, the usable CPU count, the memory budget and the hard cap — and
+    # never 0, never more than the batch. The memory term scales with input
+    # size because a worker's footprint does (measured 458MB for a 2MB PDF,
+    # 903MB for a 242MB one).
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        tiny = []
+        for i in range(6):
+            p = os.path.join(td, f'{i}.pdf')
+            with open(p, 'wb') as f:
+                f.write(b'x' * 1024)
+            tiny.append(p)
+        big = os.path.join(td, 'big.pdf')
+        with open(big, 'wb') as f:          # sparse: 200MB, no real disk use
+            f.seek(200 * 1024 * 1024 - 1)
+            f.write(b'\0')
+
+        saved_cpu, saved_mem = m._usable_cpu_count, m._memory_budget_mb
+        try:
+            # Roomy machine: bounded by the batch and the cap, not by cores.
+            m._usable_cpu_count = lambda: 64
+            m._memory_budget_mb = lambda: 131072
+            assert m._extract_worker_count(tiny) == min(6, m.EXTRACT_MAX_WORKERS)
+
+            # Tight memory binds well below the CPU count.
+            m._usable_cpu_count = lambda: 8
+            m._memory_budget_mb = lambda: 1024
+            assert m._extract_worker_count(tiny) == 2, m._extract_worker_count(tiny)
+
+            # The same budget buys fewer workers once the inputs are large —
+            # this is what stops a 4GB desktop from swapping on 240MB bids.
+            m._memory_budget_mb = lambda: 4096
+            assert m._extract_worker_count([big] * 6) == 4, m._extract_worker_count([big] * 6)
+
+            # Never below one worker, however little memory is reported.
+            m._memory_budget_mb = lambda: 1
+            assert m._extract_worker_count(tiny) == 1
+
+            # Unknown memory (no API on the platform) → CPU decides.
+            m._memory_budget_mb = lambda: None
+            m._usable_cpu_count = lambda: 3
+            assert m._extract_worker_count(tiny) == 3
+
+            # A single file never deserves a pool.
+            assert m._extract_worker_count([tiny[0]]) == 1
+        finally:
+            m._usable_cpu_count, m._memory_budget_mb = saved_cpu, saved_mem
+
+    # On whatever machine this runs on, both probes must return something
+    # usable rather than raising.
+    assert m._usable_cpu_count() >= 1
+    budget = m._memory_budget_mb()
+    assert budget is None or budget > 0, budget
+
+
 def main():
     # Tests must be hermetic: the extraction cache lives on disk between runs,
     # and a cached PDF extraction silently skips the very code path a test
