@@ -18,7 +18,8 @@ docker compose up -d                    # 构建并启动，绑定 5001 端口
 # 语法检查
 ./venv/bin/python3 -c "import py_compile; py_compile.compile('app.py', doraise=True)"
 
-# 依赖自检（便携包目标机校验）
+# 依赖自检（便携包目标机校验）；同时跑一次 spawn 进程池自检，
+# 覆盖冻结版的并行提取路径（自检不过只告警降级，不阻断）
 ./venv/bin/python3 app.py --check
 
 # 健康检查

@@ -7923,6 +7923,11 @@ def _open_page(url):
     webbrowser.open(url)
 
 
+def _mp_selftest():
+    """Trivial picklable worker for the --check process-pool probe."""
+    return 2 * 3
+
+
 def _probe_own_instance(preferred_port, span=10):
     """Desktop single-instance probe: if another 星易查 server already answers
     on 127.0.0.1 ports [preferred_port, preferred_port+span), return its URL.
@@ -8029,6 +8034,18 @@ if __name__ == '__main__':
         from docx import Document
         from pypdf import PdfReader
         print('OK: 所有关键模块可正常导入')
+        # 并行提取靠 spawn 进程池：冻结版里若 freeze_support() 没生效、或
+        # worker 函数跨进程 pickle 不过，只有等用户真的上传标书才会暴露。
+        # 这里先真跑一遍——自检函数刻意定义在本模块（__main__），因为「把
+        # __main__ 里的函数 pickle 给子进程」正是最容易在冻结版上出问题的一环。
+        try:
+            import multiprocessing as _mp
+            _mp.freeze_support()
+            with _mp.get_context('spawn').Pool(1) as _pool:
+                assert _pool.apply(_mp_selftest) == 6
+            print('OK: 多进程并行提取可用（spawn 进程池 + 跨进程 pickle 自检通过）')
+        except Exception as _e:
+            print(f'WARN: 多进程自检未通过，并行提取将降级为串行（功能不受影响）: {_e}')
         sys.exit(0)
     port = int(sys.argv[1]) if len(sys.argv) > 1 else int(os.environ.get('PORT', 5001))
     debug = os.environ.get('DEBUG', '0') == '1'
