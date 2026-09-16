@@ -32,5 +32,8 @@ EOF
 
 write_hook pre-commit --staged
 write_hook commit-msg --message '"$1"'
+# pre-push：引用列表由 git 写到 stdin（不是 argv），钩子脚本原样透传 stdin。
+# 兜住 `git commit --no-verify` 绕过 pre-commit 的缺口。
+write_hook pre-push --pre-push
 
 echo "完成。手动全量自检：tools/check_sensitive.py --all"

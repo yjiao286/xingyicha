@@ -32,6 +32,13 @@ ENV ANALYSIS_TIMEOUT=3600
 
 EXPOSE 5001
 
-# Production: use gunicorn. --timeout must exceed ANALYSIS_TIMEOUT (3600)
-# so the analysis thread can flush a timeout error before the worker kills it.
-CMD ["gunicorn", "--bind", "0.0.0.0:5001", "--workers", "2", "--timeout", "3900", "app:app"]
+# Production: use gunicorn. gthread (1 process + 8 threads, same shape as the
+# desktop build's waitress) instead of 2 sync workers:
+#  - a sync worker stays occupied for the whole NDJSON stream (up to
+#    ANALYSIS_TIMEOUT), so 2 workers = 2 concurrent analyses, 3rd request queues;
+#  - _CANCEL_EVENTS is a per-process dict — with >1 worker, POST /api/cancel
+#    may land on a worker that is not running the analysis and the stop button
+#    silently does nothing.
+# --timeout must exceed ANALYSIS_TIMEOUT (3600) so the analysis thread can
+# flush a timeout error before the worker kills it.
+CMD ["gunicorn", "--bind", "0.0.0.0:5001", "--worker-class", "gthread", "--workers", "1", "--threads", "8", "--timeout", "3900", "app:app"]

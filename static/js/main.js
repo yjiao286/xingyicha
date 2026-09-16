@@ -4,6 +4,9 @@ let selectedRefFiles = [];
 let analysisResult = null;
 let fileGroups = {}; // {filename: groupName} — same group = same bidder
 let isAnalyzing = false;
+// 进度面板自动隐藏定时器：新一轮分析开始前必须清掉，否则上一轮挂起的
+// 定时器会把新分析的进度面板（含停止按钮）一并藏掉。
+let _progressHideTimer = null;
 
 // ── Analyzing lock (guard against mid-run state changes) ──
 function _unloadGuard(e) { e.preventDefault(); e.returnValue = ''; }
@@ -114,6 +117,10 @@ var _totalFiles = 1;
 var _fileShare = 24;
 
 function startProgress() {
+  if (_progressHideTimer !== null) {
+    clearTimeout(_progressHideTimer);
+    _progressHideTimer = null;
+  }
   _progressMaxPct = 0;
   _analysisFailed = false;
   _fileIndex = 1;
@@ -347,7 +354,10 @@ if (btnCancel) btnCancel.addEventListener('click', requestCancel);
 function finishProgress() {
   if (_analysisFailed) {
     // Keep the red failure state up a bit longer than the success state.
-    setTimeout(function() { progressPanel.style.display = 'none'; }, 5000);
+    _progressHideTimer = setTimeout(function() {
+      _progressHideTimer = null;
+      progressPanel.style.display = 'none';
+    }, 5000);
     return;
   }
   _barSet(100);
@@ -355,7 +365,10 @@ function finishProgress() {
   progressText.textContent = '分析完成';
   var steps = progressSteps.querySelectorAll('.progress-step');
   steps.forEach(function(el) { el.classList.remove('active'); el.classList.add('done'); });
-  setTimeout(function() { progressPanel.style.display = 'none'; }, 2000);
+  _progressHideTimer = setTimeout(function() {
+    _progressHideTimer = null;
+    progressPanel.style.display = 'none';
+  }, 2000);
 }
 
 function addFiles(files, type) {
@@ -1361,7 +1374,7 @@ function renderSimilarity() {
     const tplCnt = pr.template_count || 0;
     overview += `<div class="pair-overview-card" onclick="scrollToPair(${pi})">
       <div class="pair-overview-header">对比 ${pi + 1}</div>
-      <div style="font-size:12px;color:#666;margin:4px 0;">${shortenName(pr.file1)} ↔ ${shortenName(pr.file2)}</div>
+      <div style="font-size:12px;color:#666;margin:4px 0;">${escapeHtml(shortenName(pr.file1))} ↔ ${escapeHtml(shortenName(pr.file2))}</div>
       <div style="display:flex;gap:8px;font-size:12px;">
         ${subCnt > 0 ? `<span style="color:#dc2626;font-weight:600;">${subCnt}可能高风险</span>` : ''}
         ${susCnt > 0 ? `<span style="color:#d97706;font-weight:600;">${susCnt}疑似</span>` : ''}
@@ -1418,7 +1431,7 @@ function renderSimilarity() {
     dhtml += `<div class="pair-section" id="${pairId}">
       <div class="pair-header" onclick="togglePair('${pairId}')">
         <span class="pair-toggle" id="${pairId}-toggle">${toggleIcon}</span>
-        <span class="pair-title">对比 ${pairIdx + 1}: ${shortenName(pr.file1, 15)} ↔ ${shortenName(pr.file2, 15)}</span>
+        <span class="pair-title">对比 ${pairIdx + 1}: ${escapeHtml(shortenName(pr.file1, 15))} ↔ ${escapeHtml(shortenName(pr.file2, 15))}</span>
         <span class="pair-stats">
           ${subCnt > 0 ? `<span style="color:#dc2626;">${subCnt}可能高风险</span>` : ''}
           ${susCnt > 0 ? `<span style="color:#d97706;margin-left:8px;">${susCnt}疑似</span>` : ''}
@@ -2121,7 +2134,7 @@ btnDownload.addEventListener('click', async () => {
 
     if (!resp.ok) {
       const errData = await resp.json().catch(() => null);
-      throw new Error(errData?.error || `服务器错误 (${resp.status})`);
+      throw new Error((errData && errData.error) || `服务器错误 (${resp.status})`);
     }
 
     const blob = await resp.blob();

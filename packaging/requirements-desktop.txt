@@ -14,7 +14,13 @@ pymupdf>=1.24
 # 融合（find_tables(union=True)）。精确锁 PyMuPDF==1.28.2；包缺失时表格通道
 # 自动降级回纯线框检测，不影响其他功能。
 pymupdf-layout>=1.28
-rapidocr-onnxruntime>=1.3
+# rapidocr-onnxruntime（旧引擎包）不支持 Python>=3.13：py<3.13 走旧包，
+# py>=3.13 走统一新包 rapidocr（app.py 对两种引擎的 import 与返回值均兼容）。
+# 桌面构建机 PATH 上的 python 版本不定，这里必须与 requirements.txt 同步分档，
+# 否则 3.13+ 环境装不上/装错引擎。
+rapidocr-onnxruntime>=1.3; python_version < "3.13"
+rapidocr>=2.0; python_version >= "3.13"
+onnxruntime>=1.19; python_version >= "3.13"
 waitress>=3.0
 pyobjc-framework-Cocoa>=10.0; sys_platform == "darwin"
 pyinstaller>=6.6

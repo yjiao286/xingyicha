@@ -35,12 +35,19 @@ if ON_MACOS:
     # app.py 冻结入口用 AppKit 跑 Cocoa 事件循环（Dock reopen / 菜单栏）
     hiddenimports += ['AppKit', 'Foundation']
 
-# rapidocr_onnxruntime 把 ONNX 模型与 YAML 配置作为 package data 分发，
-# 静态分析发现不了，collect_all 一次性收集 data 文件 / DLL / 子模块。
-_ocr_datas, _ocr_binaries, _ocr_hiddenimports = collect_all('rapidocr_onnxruntime')
-datas += _ocr_datas
-binaries += _ocr_binaries
-hiddenimports += _ocr_hiddenimports
+# OCR 引擎两个发行包二选一：py<3.13 → rapidocr_onnxruntime；py>=3.13 →
+# rapidocr（+onnxruntime）。两者都把 ONNX 模型与 YAML 配置作为 package
+# data 分发，静态分析发现不了；app.py 又是在函数内动态 import 的，所以
+# 对两个包各跑一次 collect_all 兜底收集。包缺失时 collect_all 返回空三元
+# 组或抛异常都不影响构建——运行时 OCR 自动降级跳过（app.py 的设计行为）。
+for _ocr_pkg in ('rapidocr', 'rapidocr_onnxruntime'):
+    try:
+        _ocr_datas, _ocr_binaries, _ocr_hiddenimports = collect_all(_ocr_pkg)
+        datas += _ocr_datas
+        binaries += _ocr_binaries
+        hiddenimports += _ocr_hiddenimports
+    except Exception:
+        pass
 
 # pymupdf.layout（pymupdf-layout 发行包）同理：~50MB ONNX 模型 + yaml 配置
 # 在 resources/onnx 下作为 package data 分发，且 app.py 在函数内动态 import，
@@ -101,9 +108,11 @@ if ON_MACOS:
         info_plist={
             'CFBundleDisplayName': '星易查',
             'CFBundleName': NAME,
-            'CFBundleShortVersionString': '1.1.0',
+            'CFBundleShortVersionString': '2.1.1',
             'NSHighResolutionCapable': True,
-            'LSMinimumSystemVersion': '10.13',
+            # onnxruntime>=1.19 的 macOS x86_64 wheel 最低要求 10.15，
+            # 标低了会在 10.13/10.14 上启动即 import 失败（OCR 降级）。
+            'LSMinimumSystemVersion': '10.15',
         },
     )
 else:

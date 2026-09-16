@@ -325,6 +325,19 @@ def _display_name(path_or_name):
     return _UPLOAD_PREFIX_RE.sub('', base) or base
 
 
+def _clean_group_name(raw, fallback):
+    """Sanitize a user-supplied bidder group name (file_groups form value).
+
+    The name is echoed into UI/report text verbatim, so strip control
+    characters and HTML special characters (defense in depth behind the
+    frontend's escapeHtml) and cap its length. Falls back when empty."""
+    s = sanitize_text(str(raw or '')).strip()
+    s = re.sub(r'[<>"\']', '', s).strip()
+    if len(s) > 80:
+        s = s[:80].strip()
+    return s or fallback
+
+
 def _is_within_upload_folder(path):
     """Return True if the real path of `path` is inside UPLOAD_FOLDER.
 
@@ -378,10 +391,18 @@ def convert_doc_to_docx(filepath):
             return cached[1]
 
     outdir = tempfile.mkdtemp(prefix='doc_conv_')
+    # 每次转换一个独立的 LibreOffice 用户 profile。并行提取（spawn 进程池）
+    # 会把多份 .doc 同时送进转换，而 soffice 对同一默认 profile 是单实例
+    # 语义：后启动的实例直接转发给先前的实例并退出（实测 exit 1、无输出），
+    # 该文件的文本随即静默丢失。-env:UserInstallation 让每次调用彼此隔离，
+    # 是 LibreOffice 官方的并发转换方案。
+    profile_dir = tempfile.mkdtemp(prefix='doc_conv_profile_')
     docx_path = None
     try:
         subprocess.run(
-            [_DOC_CONVERTER, '--headless', '--convert-to', 'docx', '--outdir', outdir, filepath],
+            [_DOC_CONVERTER,
+             f'-env:UserInstallation={Path(profile_dir).as_uri()}',
+             '--headless', '--convert-to', 'docx', '--outdir', outdir, filepath],
             capture_output=True, timeout=60, check=True
         )
         for f in os.listdir(outdir):
@@ -393,8 +414,9 @@ def convert_doc_to_docx(filepath):
     except Exception as e:
         logger.warning('.doc->.docx conversion failed for %s: %s', filepath, e)
     finally:
-        # On failure clean the temp dir now; on success keep it (docx_path lives
-        # inside) and cache for reuse.
+        # profile 只是转换的临时工作目录，无论成败都清理；outdir 在失败时
+        # 清理、成功时保留（缓存的 docx 在其中）。
+        shutil.rmtree(profile_dir, ignore_errors=True)
         if docx_path is None:
             shutil.rmtree(outdir, ignore_errors=True)
 
@@ -6175,18 +6197,45 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
             on_progress(step, label, percent, detail)
     filenames = [os.path.basename(fp) for fp in filepaths]
 
-    # Determine display names: use group names if available
-    if group_map and len(group_map) < len(filenames):
+    # Determine display names. Whenever the caller supplies group_map — the
+    # multi-volume merge case AND the 1-file-per-group case — its keys ARE the
+    # display names the user chose (frontend sends one group per file by
+    # default). Honoring them only when groups were merged used to drop every
+    # custom name in the common case and fall back to storage-prefixed
+    # filenames ('46e8be14_乙公司.docx') all over the results; it also broke
+    # the group_texts key match, forcing a redundant re-extraction.
+    if group_map:
+        # 端点已经清洗过组名；这里兜底再清洗一次——run_full_analysis 的输出
+        # 字符串会原样进入 UI / 报告 / 历史记录，纵深防御不依赖调用方自律。
+        # 清洗后为空或与其他组撞名时保留原键，组键必须保持唯一。
+        _dn_map = {}
+        for _g, _ps in group_map.items():
+            _fb = _display_name(_ps[0]) if _ps else _g
+            _dn = _clean_group_name(_g, _fb)
+            _dn_map[_g] = _dn if _dn and _dn not in _dn_map.values() else _g
+        if any(k != v for k, v in _dn_map.items()):
+            group_map = {_dn_map[g]: ps for g, ps in group_map.items()}
+            if group_texts:
+                group_texts = {_dn_map.get(k, k): v
+                               for k, v in group_texts.items()}
         display_names = list(group_map.keys())
-        # Map each original filename to its group
         file_to_group = {}
         for g, paths in group_map.items():
             for p in paths:
                 file_to_group[os.path.basename(p)] = g
     else:
-        display_names = filenames
-        file_to_group = {fn: fn for fn in filenames}
-        group_map = {fn: [fp] for fn, fp in zip(filenames, filepaths)}
+        # No grouping: one group per file, named after the file with the
+        # upload storage prefix stripped. Two uploads of the same original
+        # name would collide after stripping — keep their storage names so
+        # the group keys can never merge two files into one bidder.
+        from collections import Counter
+        _disp = [_display_name(fn) for fn in filenames]
+        _dups = {n for n, c in Counter(_disp).items() if c > 1}
+        display_names = [d if d not in _dups else fn
+                         for d, fn in zip(_disp, filenames)]
+        file_to_group = {os.path.basename(fp): dn
+                         for fp, dn in zip(filepaths, display_names)}
+        group_map = {dn: [fp] for dn, fp in zip(display_names, filepaths)}
 
     # Ensure group_texts is populated for every display name. Callers that
     # already extracted text (streaming endpoint) pass it in to avoid a costly
@@ -7006,7 +7055,9 @@ def run_full_analysis(filepaths, ref_filepaths=None, group_map=None, group_texts
 
     return {
         'metadata': {
-            'files': [{'name': fn, **all_meta[fn]} for fn in filenames],
+            # Storage-prefixed storage names are internal; show the name the
+            # user picked (results tabs, report file list, history).
+            'files': [{'name': _display_name(fn), **all_meta[fn]} for fn in filenames],
             'matches': meta_matches,
             'findings': time_findings + list(filter(None, [
                 'KSOProductBuildVer一致: 同一WPS版本' if any(m['field'] == 'KSOProductBuildVer' for m in meta_matches) else '',
@@ -7873,8 +7924,8 @@ def _write_history_entry(history_results, saved, saved_refs):
         'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         'bid_count': len(saved),
         'ref_count': len(saved_refs),
-        'bid_files': [os.path.basename(s) for s in saved],
-        'ref_files': [os.path.basename(s) for s in saved_refs],
+        'bid_files': [_display_name(s) for s in saved],
+        'ref_files': [_display_name(s) for s in saved_refs],
         'verdict': history_results['verdict']['conclusion'],
         'abnormal_matches': sum(
             p.get('abnormal_count', 0)
@@ -7937,14 +7988,14 @@ def analyze_stream():
     group_map = {}
     if file_groups:
         for fp, group in zip(saved, file_groups):
-            group = group.strip() or os.path.basename(fp)
+            group = _clean_group_name(group, _display_name(fp))
             group_map.setdefault(group, []).append(fp)
     else:
         # Default: each file is its own group (no explicit grouping).
         # Matches the fallback inside run_full_analysis so the threaded
         # Phase 0 extraction actually has files to process.
         for fp in saved:
-            group_map.setdefault(os.path.basename(fp), []).append(fp)
+            group_map.setdefault(_display_name(fp), []).append(fp)
 
     import queue
     progress_queue = queue.Queue()
@@ -8291,7 +8342,7 @@ def single_upload_and_analyze():
         file_groups = request.form.getlist('file_groups')
         group_map = {}  # group_name -> [filepath, ...]
         for fp, group in zip(saved, file_groups):
-            group = group.strip() or os.path.basename(fp)
+            group = _clean_group_name(group, _display_name(fp))
             group_map.setdefault(group, []).append(fp)
 
         # Merge files by group: create combined filepaths for analysis

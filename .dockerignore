@@ -1,10 +1,37 @@
 .git
+.github
+.gitignore
 __pycache__
 *.pyc
 .env
 .DS_Store
-*.docx
-*.pdf
+node_modules/
+
+# 真实业务数据绝不进入 build context：history/ 含身份证号、银行账号等
+# 分析记录；extract_cache/output/ 为本地运行产物。
+history/
+extract_cache/
+output/
 uploads/
 *.log
-node_modules/
+
+# 本地产物与构建目录（dist/ 数百 MB）
+dist/
+build/
+venv/
+*.tar.gz
+*.docx
+*.doc
+*.pdf
+*.xlsx
+
+# 工具与文档不进镜像（Dockerfile 按白名单 COPY，这里是防将来 COPY . .）
+docs/
+tests/
+tools/
+packaging/
+.claude/
+.mimosa/
+.playwright-cli/
+AGENTS.md
+README.md
