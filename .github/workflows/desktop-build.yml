@@ -50,7 +50,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # 版本号唯一来源：app.py 的 APP_VERSION（前端展示、Release 产物文件名、
       # 安装器版本均由此派生）。sed 而非 grep -P：macOS runner 的 BSD grep 无 -P。
@@ -66,7 +66,7 @@ jobs:
 
       - name: Setup Python 3.11 (native arch)
         if: matrix.arch != 'x86_64'
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.11'
           cache: 'pip'
@@ -211,7 +211,7 @@ jobs:
 
       - name: Upload artifacts (manual runs only)
         if: github.event_name == 'workflow_dispatch' && inputs.release_tag == ''
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: 星易查-${{ matrix.suffix }}
           retention-days: 1
