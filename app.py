@@ -28,6 +28,13 @@ from pypdf import PdfReader
 import olefile
 import threading
 
+# ── Version ─────────────────────────────────────────────────────
+# Single source of truth. 升版本只改这里：
+#   - 前端 footer 版本标注与静态资源缓存参数（?v=）由模板渲染注入；
+#   - 桌面版 Release 产物文件名后缀、Inno Setup 安装器版本由 CI 从此处
+#     读取（desktop-build.yml「Derive version from app.py」）。
+APP_VERSION = '2.2.0'
+
 # ── Frozen (PyInstaller) detection ──────────────────────────────
 # When bundled as a desktop exe, templates/static live inside the bundle
 # (_MEIPASS) and user data must NOT be written next to the exe (Program Files
@@ -7757,7 +7764,7 @@ def generate_report_docx(analysis):
 # ── Routes ───────────────────────────────────────────────────────
 @app.route('/')
 def index():
-    return render_template('index.html')
+    return render_template('index.html', app_version=APP_VERSION)
 
 @app.route('/api/upload', methods=['POST'])
 def upload():

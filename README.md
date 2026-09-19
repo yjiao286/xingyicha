@@ -16,17 +16,17 @@
 
 桌面版免 Python、免命令行。到
 [Releases 页面](https://github.com/yjiao286/xingyicha/releases)
-（当前最新 [v2.1.1](https://github.com/yjiao286/xingyicha/releases/tag/v2.1.1)）
+（当前最新 [v2.2.0](https://github.com/yjiao286/xingyicha/releases/tag/v2.2.0)）
 按操作系统下载对应附件：
 
 | 操作系统 / 环境 | 下载文件 | 安装方式 | 详细指南 |
 |-----------------|----------|----------|----------|
-| Windows 10/11 | `XingYiCha-Setup.exe` | 双击安装，带卸载程序与桌面快捷方式 | [Windows部署.md](docs/Windows部署.md) |
-| Windows（U盘/内网离线） | `XingYiCha-portable.zip` | 解压即用，双击 `星易查.exe` | 同上 |
-| macOS（M1–M4 Apple Silicon） | `XingYiCha-macOS-arm64.dmg` | 拖入 Applications；首次打开右键→打开放行 | [macOS部署.md](docs/macOS部署.md) |
-| macOS（Intel） | `XingYiCha-macOS-x86_64.dmg` | 同上 | 同上 |
-| Linux x86_64（Ubuntu/Debian 等主流发行版） | `XingYiCha-x86_64.AppImage` 或 `XingYiCha-linux-x86_64.tar.gz` | `chmod +x` 后运行 / 解压即用 | [Linux部署.md](docs/Linux部署.md) |
-| **银河麒麟 V10（x86_64：Intel/AMD/海光/兆芯）** | `XingYiCha-linux-x86_64.tar.gz`（推荐） | 见麒麟指南（glibc/KYLSEC/离线安装注意事项） | [银河麒麟部署.md](docs/银河麒麟部署.md) |
+| Windows 10/11 | `XingYiCha-Setup-<版本号>.exe` | 双击安装，带卸载程序与桌面快捷方式 | [Windows部署.md](docs/Windows部署.md) |
+| Windows（U盘/内网离线） | `XingYiCha-portable-<版本号>.zip` | 解压即用，双击 `星易查.exe` | 同上 |
+| macOS（M1–M4 Apple Silicon） | `XingYiCha-macOS-arm64-<版本号>.dmg` | 拖入 Applications；首次打开右键→打开放行 | [macOS部署.md](docs/macOS部署.md) |
+| macOS（Intel） | `XingYiCha-macOS-x86_64-<版本号>.dmg` | 同上 | 同上 |
+| Linux x86_64（Ubuntu/Debian 等主流发行版） | `XingYiCha-x86_64-<版本号>.AppImage` 或 `XingYiCha-linux-x86_64-<版本号>.tar.gz` | `chmod +x` 后运行 / 解压即用 | [Linux部署.md](docs/Linux部署.md) |
+| **银河麒麟 V10（x86_64：Intel/AMD/海光/兆芯）** | `XingYiCha-linux-x86_64-<版本号>.tar.gz`（推荐） | 见麒麟指南（glibc/KYLSEC/离线安装注意事项） | [银河麒麟部署.md](docs/银河麒麟部署.md) |
 | **银河麒麟 V10（aarch64：飞腾/鲲鹏/麒麟990）** | 暂无预编译产物 → 源码部署 | 麒麟指南第六节 | [银河麒麟部署.md](docs/银河麒麟部署.md) |
 | 服务器（任意系统） | 源码 + Docker | `docker compose up -d --build` | 仓库根目录 `docker-compose.yml` |
 

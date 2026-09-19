@@ -1375,6 +1375,12 @@ details > summary::marker { color: var(--accent); }
   -webkit-background-clip: text; background-clip: text;
   -webkit-text-fill-color: transparent; color: transparent;
 }
+.footer-version {
+  font-size: 10px; font-weight: 600; letter-spacing: .5px;
+  color: var(--text-dim);
+  border: 1px solid #cbd5e1; border-radius: 999px;
+  padding: 1px 8px; line-height: 1.5;
+}
 
 @media (max-width: 700px) {
   .site-footer { margin-top: 36px; }

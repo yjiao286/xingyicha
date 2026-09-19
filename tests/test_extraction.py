@@ -2069,6 +2069,26 @@ def t_report_appendix_covers_new_clauses():
         assert clause in m._REPORT_CLAUSE_ADVICE, clause
 
 
+def t_app_version_consistent_across_release_surfaces():
+    # APP_VERSION 是版本号唯一来源：前端 footer 标注、静态资源缓存参数、
+    # Release 产物文件名后缀、安装器版本都由它派生。iss 与 star.spec 没有
+    # CI 自动同步，靠这个测试在本地拦截漂移。
+    ver = m.APP_VERSION
+    assert re.fullmatch(r'\d+\.\d+\.\d+', ver), ver
+    # 渲染路径：'/' 必须把版本号带进页面（footer 标注 + 缓存参数）
+    resp = m.app.test_client().get('/')
+    assert resp.status_code == 200, resp.status_code
+    body = resp.data.decode('utf-8')
+    assert f'v{ver}' in body, 'footer 版本标注缺失'
+    assert f'style.css?v={ver}' in body and f'main.js?v={ver}' in body, body[-500:]
+    # 打包侧：iss 安装器版本与 macOS Bundle 版本须与 APP_VERSION 一致
+    root = os.path.dirname(os.path.abspath(m.__file__))
+    with open(os.path.join(root, 'packaging', '星易查.iss'), encoding='utf-8') as f:
+        assert f'#define MyAppVersion "{ver}"' in f.read(), '星易查.iss 版本未同步'
+    with open(os.path.join(root, 'packaging', 'star.spec'), encoding='utf-8') as f:
+        assert f"'CFBundleShortVersionString': '{ver}'" in f.read(), 'star.spec 版本未同步'
+
+
 def main():
     # Tests must be hermetic: the extraction cache lives on disk between runs,
     # and a cached PDF extraction silently skips the very code path a test

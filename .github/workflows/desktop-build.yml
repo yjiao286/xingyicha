@@ -5,10 +5,11 @@ name: 桌面版三平台构建
 #   1. 手动：Actions 页面 -> 桌面版三平台构建 -> Run workflow
 #      （可选参数 release_tag：构建产物直传到该 Release，如 v1.3.0）
 #   2. 打 tag（v*）：构建完成后产物直接上传 GitHub Release（ASCII 名）
-# 产物（构建约 15-25 分钟；Release 页为 ASCII 名）：
-#   Windows: 星易查-Setup.exe + 星易查-便携版.zip   (XingYiCha-Setup.exe / XingYiCha-portable.zip)
-#   Linux:   星易查-linux-x86_64.tar.gz + XingYiCha-x86_64.AppImage
-#   macOS:   XingYiCha-macOS-arm64.dmg/.zip + XingYiCha-macOS-x86_64.dmg/.zip
+# 产物（构建约 15-25 分钟；Release 页为 ASCII 名，文件名带版本后缀，
+# 版本号唯一来源为 app.py 的 APP_VERSION）：
+#   Windows: 星易查-Setup.exe + 星易查-便携版.zip   (XingYiCha-Setup-<ver>.exe / XingYiCha-portable-<ver>.zip)
+#   Linux:   星易查-linux-x86_64.tar.gz + XingYiCha-x86_64-<ver>.AppImage
+#   macOS:   XingYiCha-macOS-arm64-<ver>.dmg/.zip + XingYiCha-macOS-x86_64-<ver>.dmg/.zip
 
 on:
   workflow_dispatch:
@@ -50,6 +51,18 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # 版本号唯一来源：app.py 的 APP_VERSION（前端展示、Release 产物文件名、
+      # 安装器版本均由此派生）。sed 而非 grep -P：macOS runner 的 BSD grep 无 -P。
+      - name: Derive version from app.py
+        shell: bash
+        run: |
+          VER=$(sed -n "s/^APP_VERSION = '\([^']*\)'.*/\1/p" app.py | head -n1)
+          if [ -z "$VER" ]; then
+            echo "ERROR: APP_VERSION not found in app.py"; exit 1
+          fi
+          echo "APP_VERSION=$VER" >> "$GITHUB_ENV"
+          echo "version: $VER"
 
       - name: Setup Python 3.11 (native arch)
         if: matrix.arch != 'x86_64'
@@ -137,6 +150,10 @@ jobs:
         run: |
           if (Test-Path 'dist/星易查-便携版.zip') { Remove-Item 'dist/星易查-便携版.zip' }
           Compress-Archive -Path 'dist/星易查' -DestinationPath 'dist/星易查-便携版.zip'
+          # 安装器版本与 app.py 对齐（iss 里的是兜底值，这里以 CI 读取的为准）
+          (Get-Content 'packaging/星易查.iss' -Raw) `
+            -replace '#define MyAppVersion ".*"', "#define MyAppVersion `"$env:APP_VERSION`"" |
+            Set-Content 'packaging/星易查.iss'
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           if (-not (Test-Path $iscc)) { $iscc = "${env:ProgramFiles}\Inno Setup 6\ISCC.exe" }
           & $iscc 'packaging/星易查.iss'
@@ -145,7 +162,7 @@ jobs:
         if: matrix.platform == 'linux'
         run: |
           # 便携版 tar.gz
-          tar -czf dist/XingYiCha-linux-x86_64.tar.gz -C dist XingYiCha
+          tar -czf "dist/XingYiCha-linux-x86_64-${APP_VERSION}.tar.gz" -C dist XingYiCha
           # AppImage: AppDir = AppRun + .desktop + 图标 + onedir
           mkdir -p AppDir/usr/bin
           cp -r dist/XingYiCha AppDir/usr/bin/
@@ -155,7 +172,7 @@ jobs:
           chmod +x AppDir/AppRun
           curl -fsSL -o appimagetool https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
           chmod +x appimagetool
-          ./appimagetool --appimage-extract-and-run AppDir dist/XingYiCha-x86_64.AppImage
+          ./appimagetool --appimage-extract-and-run AppDir "dist/XingYiCha-x86_64-${APP_VERSION}.AppImage"
 
       - name: Package macOS (.app ad-hoc sign + dmg + zip)
         if: matrix.platform == 'macos'
@@ -166,16 +183,16 @@ jobs:
           mkdir -p dmg_staging
           cp -R dist/XingYiCha.app dmg_staging/
           ln -s /Applications dmg_staging/Applications
-          hdiutil create -volname 星易查 -srcfolder dmg_staging -ov -format UDZO dist/XingYiCha-macOS-${{ matrix.arch }}.dmg
+          hdiutil create -volname 星易查 -srcfolder dmg_staging -ov -format UDZO "dist/XingYiCha-macOS-${{ matrix.arch }}-${APP_VERSION}.dmg"
           # zip 便携版
-          ditto -c -k --keepParent dist/XingYiCha.app dist/XingYiCha-macOS-${{ matrix.arch }}.zip
+          ditto -c -k --keepParent dist/XingYiCha.app "dist/XingYiCha-macOS-${{ matrix.arch }}-${APP_VERSION}.zip"
 
       - name: Copy release files to ASCII names (Windows)
         if: matrix.platform == 'windows'
         shell: pwsh
         run: |
-          Copy-Item 'dist/星易查-Setup.exe' 'dist/XingYiCha-Setup.exe'
-          Copy-Item 'dist/星易查-便携版.zip' 'dist/XingYiCha-portable.zip'
+          Copy-Item 'dist/星易查-Setup.exe' "dist/XingYiCha-Setup-$env:APP_VERSION.exe"
+          Copy-Item 'dist/星易查-便携版.zip' "dist/XingYiCha-portable-$env:APP_VERSION.zip"
 
       # 私有仓库的 Actions Artifact 存储配额极易触顶（按月累计，清空也不解禁），
       # Release 附件走独立通道不受限，故 tag 构建产物直传 Release。
@@ -199,12 +216,6 @@ jobs:
           name: 星易查-${{ matrix.suffix }}
           retention-days: 1
           if-no-files-found: error
-          path: |
-            dist/XingYiCha-Setup.exe
-            dist/XingYiCha-portable.zip
-            dist/XingYiCha-linux-x86_64.tar.gz
-            dist/XingYiCha-x86_64.AppImage
-            dist/XingYiCha-macOS-arm64.dmg
-            dist/XingYiCha-macOS-arm64.zip
-            dist/XingYiCha-macOS-x86_64.dmg
-            dist/XingYiCha-macOS-x86_64.zip
+          # 文件名含版本后缀（XingYiCha-Setup-<ver>.exe 等），用通配符；
+          # onedir 目录名是 dist/XingYiCha（无连字符），不会被此 glob 误收
+          path: dist/XingYiCha-*

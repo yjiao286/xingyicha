@@ -6,7 +6,7 @@
 <title>星易查 — 围串标风险识别分析系统</title>
 <link rel="icon" type="image/png" href="/static/img/logo.png?v=3">
 <!-- 无外链字体：内网/离线部署下外链样式表会阻塞首屏渲染，回退到系统字体栈 -->
-<link rel="stylesheet" href="/static/css/style.css?v=12">
+<link rel="stylesheet" href="/static/css/style.css?v={{ app_version }}">
 </head>
 <body>
 
@@ -207,6 +207,7 @@
     <p class="footer-meta">
       <span class="footer-brand">星易查</span>
       围串标风险识别分析系统
+      <span class="footer-version">v{{ app_version }}</span>
     </p>
   </footer>
 </div>
@@ -252,6 +253,6 @@
   </div>
 </div>
 
-<script src="/static/js/main.js?v=9"></script>
+<script src="/static/js/main.js?v={{ app_version }}"></script>
 </body>
 </html>

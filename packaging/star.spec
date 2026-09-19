@@ -108,7 +108,7 @@ if ON_MACOS:
         info_plist={
             'CFBundleDisplayName': '星易查',
             'CFBundleName': NAME,
-            'CFBundleShortVersionString': '2.1.1',
+            'CFBundleShortVersionString': '2.2.0',
             'NSHighResolutionCapable': True,
             # onnxruntime>=1.19 的 macOS x86_64 wheel 最低要求 10.15，
             # 标低了会在 10.13/10.14 上启动即 import 失败（OCR 降级）。
